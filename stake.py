@@ -42,28 +42,40 @@ except ImportError:
     except ImportError:
         _http = requests.Session()
 
-# FlareSolverr: local Docker service that solves Cloudflare JS challenges
+# FlareSolverr: local Docker service that proxies requests through real Chrome
 FLARESOLVERR_URL = os.environ.get("FLARESOLVERR_URL", "http://localhost:8191/v1")
-_cf_cookies = {}  # populated by _solve_cloudflare()
+_use_flaresolverr = False  # auto-enabled if direct access gets 403
 
-def _solve_cloudflare(target_url: str) -> dict:
-    """Use FlareSolverr to get valid Cloudflare cookies for target_url."""
-    global _cf_cookies
+def _flaresolverr_available() -> bool:
+    """Check if FlareSolverr is running."""
+    try:
+        r = requests.get(FLARESOLVERR_URL.replace("/v1", "/health"), timeout=3)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+def _flaresolverr_post(url: str, headers: dict, payload: dict) -> Optional[dict]:
+    """Make a POST request through FlareSolverr's Chrome browser."""
     try:
         r = requests.post(FLARESOLVERR_URL, json={
-            "cmd": "request.get",
-            "url": target_url,
+            "cmd": "request.post",
+            "url": url,
+            "postData": json.dumps(payload),
+            "customHeaders": headers,
             "maxTimeout": 60000,
         }, timeout=65)
         data = r.json()
         if data.get("status") == "ok":
             sol = data.get("solution", {})
-            cookies = {c["name"]: c["value"] for c in sol.get("cookies", [])}
-            _cf_cookies = cookies
-            return cookies
+            body = sol.get("response", "")
+            # FlareSolverr returns the response body as string
+            try:
+                return json.loads(body)
+            except (json.JSONDecodeError, TypeError):
+                return None
     except Exception:
         pass
-    return {}
+    return None
 
 # ===========================================================
 #  CONSTANTS
@@ -754,78 +766,69 @@ def _headers() -> dict:
         "Referer":          API_BASE.split("/_api")[0] + f"/casino/games/{state.game}",
         "User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
     }
-    # Build cookie string: user-provided + FlareSolverr CF cookies
-    cookie_parts = []
     if state.cookie:
-        cookie_parts.append(state.cookie)
-    if _cf_cookies:
-        cf_str = "; ".join(f"{k}={v}" for k, v in _cf_cookies.items()
-                           if k not in (state.cookie or ""))
-        if cf_str:
-            cookie_parts.append(cf_str)
-    if cookie_parts:
-        h["Cookie"] = "; ".join(cookie_parts)
+        h["Cookie"] = state.cookie
     return h
 
-def _try_api_bases(payload, endpoint, resp_key) -> tuple:
-    """Try all API bases, return (base, data) on success or raise."""
-    last_err = None
-    for base in API_BASES:
-        url = base + endpoint
-        try:
-            r = _http.post(url, headers=_headers(),
-                              json=payload, timeout=15)
-            if r.status_code != 200:
-                body = r.text[:300] if r.text else "(empty)"
-                last_err = f"HTTP {r.status_code} from {url}: {body}"
-                continue
-            data = r.json()
-            if resp_key in data:
-                return base, data
-            if "data" in data and resp_key in data["data"]:
-                return base, data
-            last_err = f"Missing {resp_key} in response from {url}"
-        except Exception as e:
-            last_err = f"{url}: {e}"
-            continue
-    return None, last_err
+def _api_post(url: str, payload: dict) -> Optional[dict]:
+    """Make a POST request, using FlareSolverr proxy if enabled."""
+    if _use_flaresolverr:
+        return _flaresolverr_post(url, _headers(), payload)
+    r = _http.post(url, headers=_headers(), json=payload, timeout=15)
+    if r.status_code != 200:
+        body = r.text[:300] if r.text else "(empty)"
+        raise ConnectionError(f"HTTP {r.status_code} from {url}: {body}")
+    return r.json()
 
 def api_test_connection() -> bool:
-    """Test auth with a zero-bet on the selected game via REST.
-    Tries all API_BASES; if all fail with 403, uses FlareSolverr to get CF cookies."""
-    global API_BASE
+    """Test auth with a zero-bet. Tries direct first, falls back to FlareSolverr proxy."""
+    global API_BASE, _use_flaresolverr
     game_info = GAMES[state.game]
     build = game_info["build_payload"]
     resp_key = game_info["response_key"]
     endpoint = game_info["endpoint"]
 
-    # Temporarily force amount=0 for test
     saved_bet = state.current_bet
     state.current_bet = 0
     payload = build(state)
     state.current_bet = saved_bet
 
-    # First attempt: direct
-    base, result = _try_api_bases(payload, endpoint, resp_key)
-    if base:
-        API_BASE = base
-        return True
+    def _check(data):
+        return data and (resp_key in data or (isinstance(data.get("data"), dict) and resp_key in data["data"]))
 
-    # If blocked by Cloudflare, try FlareSolverr
-    if "403" in str(result):
-        for domain_base in API_BASES:
-            site = domain_base.split("/_api")[0]
-            console.print(f"  [yellow]Trying FlareSolverr for {site}...[/yellow]")
-            cookies = _solve_cloudflare(site)
-            if cookies:
-                console.print(f"  [green]Got CF cookies ({len(cookies)} cookies)[/green]")
-                # Retry with CF cookies
-                base2, result2 = _try_api_bases(payload, endpoint, resp_key)
-                if base2:
-                    API_BASE = base2
+    # Pass 1: direct requests
+    last_err = None
+    for base in API_BASES:
+        url = base + endpoint
+        try:
+            data = _api_post(url, payload)
+            if _check(data):
+                API_BASE = base
+                return True
+            last_err = f"Missing {resp_key} from {url}"
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    # Pass 2: FlareSolverr proxy (routes requests through headless Chrome)
+    if "403" in str(last_err) and _flaresolverr_available():
+        console.print("  [yellow]Cloudflare blocked. Switching to FlareSolverr proxy...[/yellow]")
+        _use_flaresolverr = True
+        for base in API_BASES:
+            url = base + endpoint
+            try:
+                data = _flaresolverr_post(url, _headers(), payload)
+                if _check(data):
+                    API_BASE = base
+                    console.print(f"  [green]Connected via FlareSolverr ({base.split('//')[1].split('/')[0]})[/green]")
                     return True
+                last_err = f"Missing {resp_key} from {url} (via FlareSolverr)"
+            except Exception as e:
+                last_err = f"{url} (FlareSolverr): {e}"
+                continue
+        _use_flaresolverr = False  # didn't work, disable
 
-    raise Exception(result or "All API domains failed")
+    raise Exception(last_err or "All API domains failed")
 
 def api_place_bet(amount: float) -> Optional[dict]:
     """Place a bet on the current game via REST. Returns parsed result dict or None."""
@@ -838,7 +841,6 @@ def api_place_bet(amount: float) -> Optional[dict]:
     build = game_info["build_payload"]
     parse = game_info["parse_result"]
 
-    # Build payload (uses state.current_bet internally, but we override)
     saved = state.current_bet
     state.current_bet = amount
     payload = build(state)
@@ -847,31 +849,31 @@ def api_place_bet(amount: float) -> Optional[dict]:
     url = API_BASE + endpoint
     logger.debug("BET [%s] url=%s payload=%s", state.game, url, json.dumps(payload))
     try:
-        r = _http.post(url, headers=_headers(),
-                          json=payload, timeout=15)
-
-        if r.status_code == 200:
-            data = r.json()
-            # REST response: {"limboBet": {...}} or top-level
-            raw = data.get(resp_key, data)
-            if not raw:
-                logger.error("Empty response from %s: %s", url, data)
-                with state.lock:
-                    state.last_error = f"Empty response from {endpoint}"
-                return None
-            result = parse(raw)
-            logger.debug("BET OK  id=%s result=%s win=%s",
-                         raw.get("id"), result["result_display"], result["is_win"])
-            return result
-        elif r.status_code == 429:
+        data = _api_post(url, payload)
+        if data is None:
+            with state.lock:
+                state.last_error = "Empty response (proxy timeout?)"
+            return None
+        raw = data.get(resp_key, data)
+        if not raw:
+            logger.error("Empty response from %s: %s", url, data)
+            with state.lock:
+                state.last_error = f"Empty response from {endpoint}"
+            return None
+        result = parse(raw)
+        logger.debug("BET OK  id=%s result=%s win=%s",
+                     raw.get("id"), result["result_display"], result["is_win"])
+        return result
+    except ConnectionError as e:
+        err = str(e)
+        if "429" in err:
             logger.warning("RATE LIMIT 429")
             with state.lock:
                 state.last_error = "Rate limit 429 -- backing off..."
         else:
-            body = r.text[:500]
-            logger.error("HTTP %d  response=%s", r.status_code, body)
+            logger.error("API error: %s", err)
             with state.lock:
-                state.last_error = f"HTTP {r.status_code}: {r.text[:120]}"
+                state.last_error = err[:120]
     except requests.exceptions.Timeout:
         logger.warning("REQUEST TIMEOUT on bet #%d", state.total_bets + 1)
         with state.lock:
