@@ -34,14 +34,14 @@ except ImportError:
 # ===========================================================
 #  CONSTANTS
 # ===========================================================
-API_BASE     = "https://stake.com/_api/casino"
+API_BASE     = "https://stake.com/_api/graphql"
 DB_PATH      = os.path.expanduser("~/.stake_autobot.db")
 CONFIG_PATH  = os.path.expanduser("~/.stake_autobot.json")
 STATE_PATH   = os.path.expanduser("~/.stake_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.1.0"
+VERSION      = "1.2.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 
 # -- Daily rotating logger --
@@ -71,23 +71,23 @@ STRATEGIES = {
 }
 
 # ===========================================================
-#  GAME REGISTRY
+#  GAME REGISTRY  (GraphQL-based)
 # ===========================================================
 # Each game defines:
-#   endpoint:     POST path relative to API_BASE
-#   response_key: top-level key in JSON response
-#   build_payload(state) -> dict
+#   query:        GraphQL mutation string
+#   response_key: key under data{} in GraphQL response
+#   build_variables(state) -> dict of GraphQL variables
 #   parse_result(data) -> dict with keys:
 #       amount, payout, payout_mult, result_display, is_win, raw_state
 
 GAMES = {}
 
-def _register_game(name, label, endpoint, response_key, build_payload, parse_result):
+def _register_game(name, label, query, response_key, build_variables, parse_result):
     GAMES[name] = {
         "label": label,
-        "endpoint": endpoint,
+        "query": query,
         "response_key": response_key,
-        "build_payload": build_payload,
+        "build_variables": build_variables,
         "parse_result": parse_result,
     }
 
@@ -97,7 +97,25 @@ def _gen_identifier() -> str:
 
 
 # -- LIMBO --
-def _limbo_payload(st):
+_LIMBO_QUERY = """
+mutation LimboBet($amount: Float!, $currency: CurrencyEnum!, $multiplierTarget: Float!, $identifier: String!) {
+  limboBet(amount: $amount, currency: $currency, multiplierTarget: $multiplierTarget, identifier: $identifier) {
+    id
+    active
+    amount
+    currency
+    payoutMultiplier
+    payout
+    state {
+      result
+    }
+    createdAt
+    updatedAt
+  }
+}
+"""
+
+def _limbo_variables(st):
     return {
         "multiplierTarget": st.multiplier_target,
         "identifier": _gen_identifier(),
@@ -119,11 +137,31 @@ def _limbo_parse(data):
         "raw_state": limbo_state,
     }
 
-_register_game("limbo", "Limbo", "/limbo/bet", "limboBet", _limbo_payload, _limbo_parse)
+_register_game("limbo", "Limbo", _LIMBO_QUERY, "limboBet", _limbo_variables, _limbo_parse)
 
 
 # -- DICE --
-def _dice_payload(st):
+_DICE_QUERY = """
+mutation DiceRoll($amount: Float!, $currency: CurrencyEnum!, $target: Float!, $condition: CasinoGameDiceConditionEnum!, $identifier: String!) {
+  diceRoll(amount: $amount, currency: $currency, target: $target, condition: $condition, identifier: $identifier) {
+    id
+    active
+    amount
+    currency
+    payoutMultiplier
+    payout
+    state {
+      result
+      target
+      condition
+    }
+    createdAt
+    updatedAt
+  }
+}
+"""
+
+def _dice_variables(st):
     return {
         "target": st.dice_target,
         "condition": st.dice_condition,
@@ -136,8 +174,6 @@ def _dice_parse(data):
     dice_state = data.get("state", {})
     payout_mult = float(data.get("payoutMultiplier", 0))
     result = float(dice_state.get("result", 0))
-    condition = dice_state.get("condition", "above")
-    target = float(dice_state.get("target", 0))
     return {
         "amount": float(data.get("amount", 0)),
         "payout": float(data.get("payout", 0)),
@@ -148,7 +184,7 @@ def _dice_parse(data):
         "raw_state": dice_state,
     }
 
-_register_game("dice", "Dice", "/dice/roll", "diceRoll", _dice_payload, _dice_parse)
+_register_game("dice", "Dice", _DICE_QUERY, "diceRoll", _dice_variables, _dice_parse)
 
 
 # ===========================================================
@@ -726,53 +762,66 @@ def _headers() -> dict:
     return h
 
 def api_test_connection() -> bool:
-    """Test auth with a zero-bet on the selected game."""
+    """Test auth with a zero-bet on the selected game via GraphQL."""
     game_info = GAMES[state.game]
-    build = game_info["build_payload"]
+    build = game_info["build_variables"]
     resp_key = game_info["response_key"]
-    endpoint = game_info["endpoint"]
+    query = game_info["query"]
 
     # Temporarily force amount=0 for test
     saved_bet = state.current_bet
     state.current_bet = 0
-    payload = build(state)
+    variables = build(state)
     state.current_bet = saved_bet
 
-    r = requests.post(f"{API_BASE}{endpoint}", headers=_headers(),
-                      json=payload, timeout=15)
+    gql_payload = {"query": query, "variables": variables}
+    r = requests.post(API_BASE, headers=_headers(),
+                      json=gql_payload, timeout=15)
     r.raise_for_status()
     data = r.json()
-    return resp_key in data
+    # GraphQL wraps in {"data": {"limboBet": {...}}}
+    if "errors" in data:
+        err_msg = data["errors"][0].get("message", "Unknown GraphQL error")
+        raise Exception(f"GraphQL error: {err_msg}")
+    return resp_key in data.get("data", {})
 
 def api_place_bet(amount: float) -> Optional[dict]:
-    """Place a bet on the current game. Returns parsed result dict or None."""
+    """Place a bet on the current game via GraphQL. Returns parsed result dict or None."""
     if amount > 0 and amount < MIN_BET:
         amount = MIN_BET
 
     game_info = GAMES[state.game]
-    endpoint = game_info["endpoint"]
+    query = game_info["query"]
     resp_key = game_info["response_key"]
-    build = game_info["build_payload"]
+    build = game_info["build_variables"]
     parse = game_info["parse_result"]
 
-    # Build payload (uses state.current_bet internally, but we override)
+    # Build variables (uses state.current_bet internally, but we override)
     saved = state.current_bet
     state.current_bet = amount
-    payload = build(state)
+    variables = build(state)
     state.current_bet = saved
 
-    logger.debug("BET [%s] payload=%s", state.game, json.dumps(payload))
+    gql_payload = {"query": query, "variables": variables}
+    logger.debug("BET [%s] variables=%s", state.game, json.dumps(variables))
     try:
-        r = requests.post(f"{API_BASE}{endpoint}", headers=_headers(),
-                          json=payload, timeout=15)
+        r = requests.post(API_BASE, headers=_headers(),
+                          json=gql_payload, timeout=15)
 
         if r.status_code == 200:
             data = r.json()
-            raw = data.get(resp_key, {})
-            if not raw:
-                logger.error("Missing %s in response: %s", resp_key, data)
+            # Check for GraphQL-level errors
+            if "errors" in data:
+                err_msg = data["errors"][0].get("message", "Unknown error")
+                logger.error("GraphQL error: %s", err_msg)
                 with state.lock:
-                    state.last_error = f"Missing {resp_key} in response"
+                    state.last_error = f"GraphQL: {err_msg[:120]}"
+                return None
+            raw = data.get("data", {}).get(resp_key, {})
+            if not raw:
+                logger.error("Missing data.%s in response: %s", resp_key, data)
+                with state.lock:
+                    state.last_error = f"Missing data.{resp_key} in response"
                 return None
             result = parse(raw)
             logger.debug("BET OK  id=%s result=%s win=%s",

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.0 (2026-03-11)
+
+### Breaking Changes
+
+- **GraphQL API** — Switched from REST endpoints (`/limbo/bet`, `/dice/roll`) to Stake.com's GraphQL API (`/_api/graphql`). REST endpoints were internal browser routes behind Cloudflare protection and returned 403 from non-browser clients (especially VPS). GraphQL works reliably with just the access token.
+
+### Fixes
+
+- **403 Forbidden on VPS** — Root cause: `cf_clearance` cookie is IP-bound and doesn't transfer between machines. GraphQL API doesn't require Cloudflare cookies, only `x-access-token`.
+
 ## v1.1.0 (2026-03-11)
 
 ### New Features

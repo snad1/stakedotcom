@@ -1,4 +1,4 @@
-# Stake AutoBot v1.1
+# Stake AutoBot v1.2
 
 High-speed multi-game auto-betting engine for Stake.com with a live, ultra-compact terminal dashboard. Supports Limbo and Dice out of the box — extensible game registry makes adding new games trivial. Runs on any VPS or local machine — leave it running in tmux and check stats any time.
 
@@ -263,12 +263,14 @@ sqlite3 ~/.stake_autobot.db "SELECT state, COUNT(*), SUM(profit) FROM bets GROUP
 
 ## API
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /limbo/bet` | Place a Limbo bet |
-| `POST /dice/roll` | Place a Dice bet |
+Uses Stake.com's **GraphQL API** at `https://stake.com/_api/graphql`.
 
-Base URL: `https://stake.com/_api/casino`
+| Mutation | Purpose |
+| --- | --- |
+| `limboBet` | Place a Limbo bet |
+| `diceRoll` | Place a Dice bet |
+
+GraphQL avoids Cloudflare's REST endpoint protection — no `cf_clearance` cookie needed. Works from any VPS with just the access token.
 
 ---
 
