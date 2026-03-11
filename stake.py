@@ -1917,17 +1917,48 @@ def setup_wizard():
 
     def step_currency():
         console.print(Rule("[bold cyan]Step 3 / 7 -- Currency & Balance[/]"))
-        console.print("  [dim]Stake.com doesn't expose a balance API we can query.[/]")
-        console.print("  [dim]Enter your current balance manually (check on stake.com).[/]")
-        console.print()
 
-        v = _ask("Select currency", default=state.currency, choices=CURRENCIES)
-        if v is _BACK:
-            return False
-        state.currency = v.lower()
+        # Fetch balances from API
+        console.print("  [dim]Fetching balances from Stake.com…[/]")
+        balances = api_get_balances()
 
-        v = _ask(f"Enter your current {state.currency.upper()} balance",
-                 default=str(state.start_balance) if state.start_balance else "")
+        if balances:
+            console.print("  [green]Balances found:[/]")
+            bal_map = {}
+            for b in balances:
+                cur = b["currency"].lower()
+                amt = b["amount"]
+                bal_map[cur] = amt
+                console.print(f"    [yellow]{cur.upper():>6}[/]  {amt:.8f}")
+            console.print()
+
+            v = _ask("Select currency", default=state.currency, choices=CURRENCIES)
+            if v is _BACK:
+                return False
+            state.currency = v.lower()
+
+            if state.currency in bal_map:
+                bal = bal_map[state.currency]
+                console.print(f"  [green]Using API balance: {bal:.8f} {state.currency.upper()}[/]")
+                v = _ask("Accept this balance? (or enter a different one)",
+                         default=str(bal))
+            else:
+                console.print(f"  [yellow]No {state.currency.upper()} balance found on API.[/]")
+                v = _ask(f"Enter your current {state.currency.upper()} balance",
+                         default=str(state.start_balance) if state.start_balance else "")
+        else:
+            console.print("  [yellow]Could not fetch balances from API.[/]")
+            console.print("  [dim]Enter your balance manually (check on stake.com).[/]")
+            console.print()
+
+            v = _ask("Select currency", default=state.currency, choices=CURRENCIES)
+            if v is _BACK:
+                return False
+            state.currency = v.lower()
+
+            v = _ask(f"Enter your current {state.currency.upper()} balance",
+                     default=str(state.start_balance) if state.start_balance else "")
+
         if v is _BACK:
             return False
         try:
