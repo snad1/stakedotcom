@@ -31,6 +31,13 @@ except ImportError:
     print("Missing dependencies. Run:  pip install requests rich")
     sys.exit(1)
 
+# cloudscraper bypasses Cloudflare "Just a moment" challenges
+try:
+    import cloudscraper
+    _http = cloudscraper.create_scraper()
+except ImportError:
+    _http = requests.Session()
+
 # ===========================================================
 #  CONSTANTS
 # ===========================================================
@@ -785,7 +792,7 @@ def api_test_connection() -> bool:
     state.current_bet = saved_bet
 
     gql_payload = {"operationName": game_info["operation_name"], "query": query, "variables": variables}
-    r = requests.post(API_BASE, headers=_headers(),
+    r = _http.post(API_BASE, headers=_headers(),
                       json=gql_payload, timeout=15)
     if r.status_code != 200:
         # Show the actual response for debugging
@@ -818,7 +825,7 @@ def api_place_bet(amount: float) -> Optional[dict]:
     gql_payload = {"operationName": game_info["operation_name"], "query": query, "variables": variables}
     logger.debug("BET [%s] variables=%s", state.game, json.dumps(variables))
     try:
-        r = requests.post(API_BASE, headers=_headers(),
+        r = _http.post(API_BASE, headers=_headers(),
                           json=gql_payload, timeout=15)
 
         if r.status_code == 200:
