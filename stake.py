@@ -120,11 +120,11 @@ mutation LimboBet($amount: Float!, $multiplierTarget: Float!, $currency: Currenc
   limboBet(amount: $amount, currency: $currency, multiplierTarget: $multiplierTarget, identifier: $identifier) {
     ...CasinoBetFragment
     state {
-      result
-      multiplierTarget
-      __typename
+      ... on CasinoGameLimbo {
+        result
+        multiplierTarget
+      }
     }
-    __typename
   }
 }
 """ + _CASINO_BET_FRAGMENT
@@ -160,12 +160,12 @@ mutation DiceRoll($amount: Float!, $target: Float!, $condition: CasinoGameDiceCo
   diceRoll(amount: $amount, target: $target, condition: $condition, currency: $currency, identifier: $identifier) {
     ...CasinoBetFragment
     state {
-      result
-      target
-      condition
-      __typename
+      ... on CasinoGameDice {
+        result
+        target
+        condition
+      }
     }
-    __typename
   }
 }
 """ + _CASINO_BET_FRAGMENT
