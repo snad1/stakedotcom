@@ -45,7 +45,9 @@ except ImportError:
 # ===========================================================
 #  CONSTANTS
 # ===========================================================
-API_BASE     = "https://stake.com/_api/graphql"
+# Try multiple domains — stake.com has aggressive Cloudflare on datacenter IPs
+API_DOMAINS  = ["https://stake.com/_api/graphql", "https://stake.bet/_api/graphql"]
+API_BASE     = API_DOMAINS[0]  # default, auto-detected during connection test
 DB_PATH      = os.path.expanduser("~/.stake_autobot.db")
 CONFIG_PATH  = os.path.expanduser("~/.stake_autobot.json")
 STATE_PATH   = os.path.expanduser("~/.stake_autobot_live.json")
@@ -774,8 +776,8 @@ def _headers() -> dict:
         "x-access-token":   state.access_token,
         "x-lockdown-token": state.lockdown_token,
         "x-language":       "en",
-        "Origin":           "https://stake.com",
-        "Referer":          f"https://stake.com/casino/games/{state.game}",
+        "Origin":           API_BASE.split("/_api")[0],
+        "Referer":          API_BASE.split("/_api")[0] + f"/casino/games/{state.game}",
         "User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
     }
     if state.cookie:
@@ -783,7 +785,9 @@ def _headers() -> dict:
     return h
 
 def api_test_connection() -> bool:
-    """Test auth with a zero-bet on the selected game via GraphQL."""
+    """Test auth with a zero-bet on the selected game via GraphQL.
+    Tries all API_DOMAINS and picks the first that works."""
+    global API_BASE
     game_info = GAMES[state.game]
     build = game_info["build_variables"]
     resp_key = game_info["response_key"]
@@ -796,18 +800,30 @@ def api_test_connection() -> bool:
     state.current_bet = saved_bet
 
     gql_payload = {"operationName": game_info["operation_name"], "query": query, "variables": variables}
-    r = _http.post(API_BASE, headers=_headers(),
-                      json=gql_payload, timeout=15)
-    if r.status_code != 200:
-        # Show the actual response for debugging
-        body = r.text[:300] if r.text else "(empty)"
-        raise Exception(f"HTTP {r.status_code}: {body}")
-    data = r.json()
-    # GraphQL wraps in {"data": {"limboBet": {...}}}
-    if "errors" in data:
-        err_msg = data["errors"][0].get("message", "Unknown GraphQL error")
-        raise Exception(f"GraphQL error: {err_msg}")
-    return resp_key in data.get("data", {})
+
+    last_err = None
+    for domain in API_DOMAINS:
+        try:
+            r = _http.post(domain, headers=_headers(),
+                              json=gql_payload, timeout=15)
+            if r.status_code != 200:
+                body = r.text[:300] if r.text else "(empty)"
+                last_err = f"HTTP {r.status_code} from {domain}: {body}"
+                continue
+            data = r.json()
+            if "errors" in data:
+                err_msg = data["errors"][0].get("message", "Unknown GraphQL error")
+                last_err = f"GraphQL error ({domain}): {err_msg}"
+                continue
+            if resp_key in data.get("data", {}):
+                API_BASE = domain  # lock in working domain
+                return True
+            last_err = f"Missing data.{resp_key} from {domain}"
+        except Exception as e:
+            last_err = f"{domain}: {e}"
+            continue
+
+    raise Exception(last_err or "All API domains failed")
 
 def api_place_bet(amount: float) -> Optional[dict]:
     """Place a bet on the current game via GraphQL. Returns parsed result dict or None."""
