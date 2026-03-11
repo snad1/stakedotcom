@@ -391,10 +391,11 @@ COND_TYPES = {
 }
 
 SEQ_MODES = {
-    "1": ("every",         "Every N"),
-    "2": ("every_streak",  "Every streak of N"),
-    "3": ("streak_above",  "Streak above N"),
-    "4": ("streak_below",  "Streak below N"),
+    "1": ("every",         "Every N (total count)"),
+    "2": ("every_streak",  "Every N in streak (N, 2N, 3N…)"),
+    "3": ("first_streak",  "First streak of N (once, resets on flip)"),
+    "4": ("streak_above",  "Streak above N (every bet past N)"),
+    "5": ("streak_below",  "Streak below N"),
 }
 SEQ_TRIGGERS = {"1": "win", "2": "loss", "3": "bet"}
 
@@ -454,6 +455,7 @@ class StrategyRule:
 def _describe_rule(r: StrategyRule) -> str:
     if r.cond_type == "sequence":
         mode_label = dict(every="Every", every_streak="Every streak of",
+                          first_streak="First streak of",
                           streak_above="Streak above", streak_below="Streak below").get(r.cond_mode, r.cond_mode)
         cond = f"{mode_label} {int(r.cond_value)} {r.cond_trigger}(s)"
     elif r.cond_type == "profit":
@@ -579,6 +581,13 @@ def apply_rules(bet_state: str):
                 elif trig == "bet":
                     triggered = (state.total_bets > 0 and state.total_bets % int(n) == 0)
             elif rule.cond_mode == "every_streak":
+                # Fires at every Nth bet in the streak (N, 2N, 3N…)
+                if trig == "win" and bet_state == "win":
+                    triggered = (streak > 0 and streak % int(n) == 0)
+                elif trig == "loss" and bet_state == "loss":
+                    triggered = (abs(streak) > 0 and abs(streak) % int(n) == 0)
+            elif rule.cond_mode == "first_streak":
+                # Fires ONCE when streak first hits N, silent until streak resets
                 if trig == "win" and bet_state == "win":
                     triggered = (streak == int(n))
                 elif trig == "loss" and bet_state == "loss":
