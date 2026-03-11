@@ -42,6 +42,29 @@ except ImportError:
     except ImportError:
         _http = requests.Session()
 
+# FlareSolverr: local Docker service that solves Cloudflare JS challenges
+FLARESOLVERR_URL = os.environ.get("FLARESOLVERR_URL", "http://localhost:8191/v1")
+_cf_cookies = {}  # populated by _solve_cloudflare()
+
+def _solve_cloudflare(target_url: str) -> dict:
+    """Use FlareSolverr to get valid Cloudflare cookies for target_url."""
+    global _cf_cookies
+    try:
+        r = requests.post(FLARESOLVERR_URL, json={
+            "cmd": "request.get",
+            "url": target_url,
+            "maxTimeout": 60000,
+        }, timeout=65)
+        data = r.json()
+        if data.get("status") == "ok":
+            sol = data.get("solution", {})
+            cookies = {c["name"]: c["value"] for c in sol.get("cookies", [])}
+            _cf_cookies = cookies
+            return cookies
+    except Exception:
+        pass
+    return {}
+
 # ===========================================================
 #  CONSTANTS
 # ===========================================================
@@ -731,25 +754,21 @@ def _headers() -> dict:
         "Referer":          API_BASE.split("/_api")[0] + f"/casino/games/{state.game}",
         "User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
     }
+    # Build cookie string: user-provided + FlareSolverr CF cookies
+    cookie_parts = []
     if state.cookie:
-        h["Cookie"] = state.cookie
+        cookie_parts.append(state.cookie)
+    if _cf_cookies:
+        cf_str = "; ".join(f"{k}={v}" for k, v in _cf_cookies.items()
+                           if k not in (state.cookie or ""))
+        if cf_str:
+            cookie_parts.append(cf_str)
+    if cookie_parts:
+        h["Cookie"] = "; ".join(cookie_parts)
     return h
 
-def api_test_connection() -> bool:
-    """Test auth with a zero-bet on the selected game via REST.
-    Tries all API_BASES and picks the first that works."""
-    global API_BASE
-    game_info = GAMES[state.game]
-    build = game_info["build_payload"]
-    resp_key = game_info["response_key"]
-    endpoint = game_info["endpoint"]
-
-    # Temporarily force amount=0 for test
-    saved_bet = state.current_bet
-    state.current_bet = 0
-    payload = build(state)
-    state.current_bet = saved_bet
-
+def _try_api_bases(payload, endpoint, resp_key) -> tuple:
+    """Try all API bases, return (base, data) on success or raise."""
     last_err = None
     for base in API_BASES:
         url = base + endpoint
@@ -762,18 +781,51 @@ def api_test_connection() -> bool:
                 continue
             data = r.json()
             if resp_key in data:
-                API_BASE = base  # lock in working domain
-                return True
-            # Some responses wrap differently
+                return base, data
             if "data" in data and resp_key in data["data"]:
-                API_BASE = base
-                return True
+                return base, data
             last_err = f"Missing {resp_key} in response from {url}"
         except Exception as e:
             last_err = f"{url}: {e}"
             continue
+    return None, last_err
 
-    raise Exception(last_err or "All API domains failed")
+def api_test_connection() -> bool:
+    """Test auth with a zero-bet on the selected game via REST.
+    Tries all API_BASES; if all fail with 403, uses FlareSolverr to get CF cookies."""
+    global API_BASE
+    game_info = GAMES[state.game]
+    build = game_info["build_payload"]
+    resp_key = game_info["response_key"]
+    endpoint = game_info["endpoint"]
+
+    # Temporarily force amount=0 for test
+    saved_bet = state.current_bet
+    state.current_bet = 0
+    payload = build(state)
+    state.current_bet = saved_bet
+
+    # First attempt: direct
+    base, result = _try_api_bases(payload, endpoint, resp_key)
+    if base:
+        API_BASE = base
+        return True
+
+    # If blocked by Cloudflare, try FlareSolverr
+    if "403" in str(result):
+        for domain_base in API_BASES:
+            site = domain_base.split("/_api")[0]
+            console.print(f"  [yellow]Trying FlareSolverr for {site}...[/yellow]")
+            cookies = _solve_cloudflare(site)
+            if cookies:
+                console.print(f"  [green]Got CF cookies ({len(cookies)} cookies)[/green]")
+                # Retry with CF cookies
+                base2, result2 = _try_api_bases(payload, endpoint, resp_key)
+                if base2:
+                    API_BASE = base2
+                    return True
+
+    raise Exception(result or "All API domains failed")
 
 def api_place_bet(amount: float) -> Optional[dict]:
     """Place a bet on the current game via REST. Returns parsed result dict or None."""
