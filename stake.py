@@ -54,27 +54,37 @@ def _flaresolverr_available() -> bool:
     except Exception:
         return False
 
-def _flaresolverr_post(url: str, headers: dict, payload: dict) -> Optional[dict]:
+def _flaresolverr_post(url: str, hdrs: dict, payload: dict) -> Optional[dict]:
     """Make a POST request through FlareSolverr's Chrome browser."""
     try:
         r = requests.post(FLARESOLVERR_URL, json={
             "cmd": "request.post",
             "url": url,
             "postData": json.dumps(payload),
-            "customHeaders": headers,
+            "customHeaders": hdrs,
             "maxTimeout": 60000,
         }, timeout=65)
         data = r.json()
         if data.get("status") == "ok":
             sol = data.get("solution", {})
             body = sol.get("response", "")
-            # FlareSolverr returns the response body as string
+            status = sol.get("status", 0)
+            # Debug: show what FlareSolverr returned
+            logger.debug("FlareSolverr response status=%s body=%s", status, body[:500] if body else "(empty)")
+            if not body:
+                # Try alternate response location
+                console.print(f"  [dim]FlareSolverr debug: status={status}, keys={list(sol.keys())}[/dim]")
+                console.print(f"  [dim]Full solution: {json.dumps(sol)[:500]}[/dim]")
+                return None
             try:
                 return json.loads(body)
             except (json.JSONDecodeError, TypeError):
+                console.print(f"  [dim]FlareSolverr body (not JSON): {body[:300]}[/dim]")
                 return None
-    except Exception:
-        pass
+        else:
+            console.print(f"  [dim]FlareSolverr error: {data.get('message', 'unknown')}[/dim]")
+    except Exception as e:
+        console.print(f"  [dim]FlareSolverr exception: {e}[/dim]")
     return None
 
 # ===========================================================
