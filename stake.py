@@ -31,12 +31,16 @@ except ImportError:
     print("Missing dependencies. Run:  pip install requests rich")
     sys.exit(1)
 
-# cloudscraper bypasses Cloudflare "Just a moment" challenges
+# curl_cffi impersonates Chrome TLS fingerprint to bypass Cloudflare
 try:
-    import cloudscraper
-    _http = cloudscraper.create_scraper()
+    from curl_cffi import requests as cffi_requests
+    _http = cffi_requests.Session(impersonate="chrome")
 except ImportError:
-    _http = requests.Session()
+    try:
+        import cloudscraper
+        _http = cloudscraper.create_scraper()
+    except ImportError:
+        _http = requests.Session()
 
 # ===========================================================
 #  CONSTANTS

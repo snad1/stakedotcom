@@ -1,3 +1,4 @@
 requests
 rich
+curl_cffi
 cloudscraper
