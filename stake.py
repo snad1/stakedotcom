@@ -42,50 +42,37 @@ except ImportError:
     except ImportError:
         _http = requests.Session()
 
-# FlareSolverr: local Docker service that proxies requests through real Chrome
+# FlareSolverr: solve Cloudflare challenges, then use cookies with curl_cffi
 FLARESOLVERR_URL = os.environ.get("FLARESOLVERR_URL", "http://localhost:8191/v1")
-_use_flaresolverr = False  # auto-enabled if direct access gets 403
+_cf_cookie_str = ""   # Cloudflare cookies from FlareSolverr
+_cf_user_agent = ""   # User-Agent that solved the challenge
 
 def _flaresolverr_available() -> bool:
-    """Check if FlareSolverr is running."""
     try:
         r = requests.get(FLARESOLVERR_URL.replace("/v1", "/health"), timeout=3)
         return r.status_code == 200
     except Exception:
         return False
 
-def _flaresolverr_post(url: str, hdrs: dict, payload: dict) -> Optional[dict]:
-    """Make a POST request through FlareSolverr's Chrome browser."""
+def _solve_cloudflare(site_url: str) -> bool:
+    """Use FlareSolverr to solve Cloudflare challenge. Stores cookies + user-agent."""
+    global _cf_cookie_str, _cf_user_agent
     try:
         r = requests.post(FLARESOLVERR_URL, json={
-            "cmd": "request.post",
-            "url": url,
-            "postData": json.dumps(payload),
-            "customHeaders": hdrs,
+            "cmd": "request.get",
+            "url": site_url,
             "maxTimeout": 60000,
         }, timeout=65)
         data = r.json()
         if data.get("status") == "ok":
             sol = data.get("solution", {})
-            body = sol.get("response", "")
-            status = sol.get("status", 0)
-            # Debug: show what FlareSolverr returned
-            logger.debug("FlareSolverr response status=%s body=%s", status, body[:500] if body else "(empty)")
-            if not body:
-                # Try alternate response location
-                console.print(f"  [dim]FlareSolverr debug: status={status}, keys={list(sol.keys())}[/dim]")
-                console.print(f"  [dim]Full solution: {json.dumps(sol)[:500]}[/dim]")
-                return None
-            try:
-                return json.loads(body)
-            except (json.JSONDecodeError, TypeError):
-                console.print(f"  [dim]FlareSolverr body (not JSON): {body[:300]}[/dim]")
-                return None
-        else:
-            console.print(f"  [dim]FlareSolverr error: {data.get('message', 'unknown')}[/dim]")
-    except Exception as e:
-        console.print(f"  [dim]FlareSolverr exception: {e}[/dim]")
-    return None
+            _cf_user_agent = sol.get("userAgent", "")
+            cookies = sol.get("cookies", [])
+            _cf_cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+            return bool(_cf_cookie_str)
+    except Exception:
+        pass
+    return False
 
 # ===========================================================
 #  CONSTANTS
@@ -766,6 +753,8 @@ console = Console()
 #  API HELPERS
 # ===========================================================
 def _headers() -> dict:
+    # Use FlareSolverr's user-agent if we solved CF, otherwise default
+    ua = _cf_user_agent or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
     h = {
         "Content-Type":     "application/json",
         "Accept":           "*/*",
@@ -774,16 +763,20 @@ def _headers() -> dict:
         "x-language":       "en",
         "Origin":           API_BASE.split("/_api")[0],
         "Referer":          API_BASE.split("/_api")[0] + f"/casino/games/{state.game}",
-        "User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        "User-Agent":       ua,
     }
+    # Merge user-provided cookies with FlareSolverr CF cookies
+    cookie_parts = []
+    if _cf_cookie_str:
+        cookie_parts.append(_cf_cookie_str)
     if state.cookie:
-        h["Cookie"] = state.cookie
+        cookie_parts.append(state.cookie)
+    if cookie_parts:
+        h["Cookie"] = "; ".join(cookie_parts)
     return h
 
 def _api_post(url: str, payload: dict) -> Optional[dict]:
-    """Make a POST request, using FlareSolverr proxy if enabled."""
-    if _use_flaresolverr:
-        return _flaresolverr_post(url, _headers(), payload)
+    """Make a POST request via curl_cffi (with CF cookies if solved)."""
     r = _http.post(url, headers=_headers(), json=payload, timeout=15)
     if r.status_code != 200:
         body = r.text[:300] if r.text else "(empty)"
@@ -791,8 +784,8 @@ def _api_post(url: str, payload: dict) -> Optional[dict]:
     return r.json()
 
 def api_test_connection() -> bool:
-    """Test auth with a zero-bet. Tries direct first, falls back to FlareSolverr proxy."""
-    global API_BASE, _use_flaresolverr
+    """Test auth with a zero-bet. Tries direct first, then FlareSolverr cookies + curl_cffi."""
+    global API_BASE
     game_info = GAMES[state.game]
     build = game_info["build_payload"]
     resp_key = game_info["response_key"]
@@ -806,39 +799,41 @@ def api_test_connection() -> bool:
     def _check(data):
         return data and (resp_key in data or (isinstance(data.get("data"), dict) and resp_key in data["data"]))
 
-    # Pass 1: direct requests
-    last_err = None
-    for base in API_BASES:
-        url = base + endpoint
-        try:
-            data = _api_post(url, payload)
-            if _check(data):
-                API_BASE = base
-                return True
-            last_err = f"Missing {resp_key} from {url}"
-        except Exception as e:
-            last_err = str(e)
-            continue
-
-    # Pass 2: FlareSolverr proxy (routes requests through headless Chrome)
-    if "403" in str(last_err) and _flaresolverr_available():
-        console.print("  [yellow]Cloudflare blocked. Switching to FlareSolverr proxy...[/yellow]")
-        _use_flaresolverr = True
+    def _try_all_bases():
+        last_err = None
         for base in API_BASES:
             url = base + endpoint
             try:
-                data = _flaresolverr_post(url, _headers(), payload)
+                data = _api_post(url, payload)
                 if _check(data):
-                    API_BASE = base
-                    console.print(f"  [green]Connected via FlareSolverr ({base.split('//')[1].split('/')[0]})[/green]")
-                    return True
-                last_err = f"Missing {resp_key} from {url} (via FlareSolverr)"
+                    return base, None
+                last_err = f"Missing {resp_key} from {url}"
             except Exception as e:
-                last_err = f"{url} (FlareSolverr): {e}"
+                last_err = str(e)
                 continue
-        _use_flaresolverr = False  # didn't work, disable
+        return None, last_err
 
-    raise Exception(last_err or "All API domains failed")
+    # Pass 1: direct requests
+    base, err = _try_all_bases()
+    if base:
+        API_BASE = base
+        return True
+
+    # Pass 2: solve Cloudflare with FlareSolverr, then retry with curl_cffi + CF cookies
+    if "403" in str(err) and _flaresolverr_available():
+        for domain_base in API_BASES:
+            site = domain_base.split("/_api")[0]
+            console.print(f"  [yellow]Solving Cloudflare for {site}...[/yellow]")
+            if _solve_cloudflare(site):
+                console.print(f"  [green]Got CF cookies + user-agent, retrying...[/green]")
+                base2, err2 = _try_all_bases()
+                if base2:
+                    API_BASE = base2
+                    console.print(f"  [green]Connected via {base2.split('//')[1].split('/')[0]}[/green]")
+                    return True
+                err = err2
+
+    raise Exception(err or "All API domains failed")
 
 def api_place_bet(amount: float) -> Optional[dict]:
     """Place a bet on the current game via REST. Returns parsed result dict or None."""
