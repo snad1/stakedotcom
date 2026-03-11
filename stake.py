@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 +----------------------------------------------------------+
-|   Stake AutoBot v1.1  -- Multi-Game Auto-Betting Engine  |
+|   Stake AutoBot v1.2  -- Multi-Game Auto-Betting Engine  |
 |   Limbo + Dice | Live TUI | Session logging & strategies |
 +----------------------------------------------------------+
 """
@@ -1794,7 +1794,7 @@ def setup_wizard():
     console.print()
     console.print(Align.center(
         Panel(
-            "[bold cyan]Stake AutoBot  v1.1[/]\n"
+            "[bold cyan]Stake AutoBot  v1.2[/]\n"
             "[dim]Multi-game auto-bettor with live TUI dashboard[/]",
             box=box.DOUBLE, expand=False, padding=(1, 6), style="magenta"
         )
@@ -2430,9 +2430,23 @@ def cmd_session_bets(session_id: int):
     avg_s = "+" if avg_pnl >= 0 else ""
     game_label = GAMES.get(game, {}).get("label", game or "?")
 
+    # compute uptime
+    uptime_str = "—"
+    try:
+        t0 = datetime.strptime(started[:19], "%Y-%m-%d %H:%M:%S") if started else None
+        t1 = datetime.strptime(ended[:19], "%Y-%m-%d %H:%M:%S") if ended else datetime.now()
+        if t0:
+            delta = int((t1 - t0).total_seconds())
+            h, rem = divmod(max(delta, 0), 3600)
+            m, s = divmod(rem, 60)
+            uptime_str = f"{h}h {m}m {s}s"
+    except Exception:
+        pass
+
     console.print(Rule(f"[bold cyan]Session #{sid} — Full Stats[/]"))
     console.print(f"  [dim]Started:[/]       {(started or '?')[:19]}")
     console.print(f"  [dim]Ended:[/]         {(ended or 'running')[:19]}")
+    console.print(f"  [dim]Uptime:[/]        {uptime_str}")
     console.print(f"  [dim]Game:[/]          {game_label}")
     console.print(f"  [dim]Currency:[/]      {cur}")
     console.print(f"  [dim]Strategy:[/]      {strat}  {mult}x  Base: {base:.8f}")
@@ -3106,7 +3120,20 @@ def cmd_stats():
         avg_s = "+" if avg_pnl >= 0 else ""
         game_label = GAMES.get(game, {}).get("label", game or "?")
 
-        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?')[:19]} -> {(ended or 'running')[:19]}[/]")
+        # compute uptime
+        uptime_str = ""
+        try:
+            t0 = datetime.strptime(started[:19], "%Y-%m-%d %H:%M:%S") if started else None
+            t1 = datetime.strptime(ended[:19], "%Y-%m-%d %H:%M:%S") if ended else datetime.now()
+            if t0:
+                delta = int((t1 - t0).total_seconds())
+                h, rem = divmod(max(delta, 0), 3600)
+                m, s = divmod(rem, 60)
+                uptime_str = f"  [dim]Uptime:[/] {h}h {m}m {s}s"
+        except Exception:
+            pass
+
+        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?')[:19]} -> {(ended or 'running')[:19]}[/]{uptime_str}")
         console.print(f"    [dim]Game:[/] {game_label}  [dim]Currency:[/] {cur or '?'}  [dim]Strategy:[/] {strat or '?'}  [dim]Mult:[/] {mult}x  [dim]Base:[/] {base:.8f}")
         console.print(f"    [dim]Bets:[/] {bets}  [dim]W:[/] [green]{wins}[/]  [dim]L:[/] [red]{losses}[/]  [dim]WR:[/] {wr}")
         console.print(f"    [dim]Speed:[/] {bps:.1f} avg/s  {bpm:.0f} avg/m  [dim]BPS:[/] {s_low_bps}-{s_peak_bps}/s  [dim]BPM:[/] {s_low_bpm}-{s_peak_bpm}/m")

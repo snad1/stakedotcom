@@ -1,6 +1,6 @@
 # Stake AutoBot v1.2
 
-High-speed multi-game auto-betting engine for Stake.com with a live, ultra-compact terminal dashboard. Supports Limbo and Dice out of the box — extensible game registry makes adding new games trivial. Runs on any VPS or local machine — leave it running in tmux and check stats any time.
+High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard. Includes Cloudflare bypass for VPS via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
 ---
 
@@ -15,7 +15,10 @@ High-speed multi-game auto-betting engine for Stake.com with a live, ultra-compa
 | **Editable multipliers** | Customize loss/win multipliers per strategy (no more hardcoded 2x) |
 | **Rule editor** | Edit any part of existing rules, delete, add, clear, or rebuild from scratch |
 | **Named presets** | Save & load strategy configs by name with `--preset` |
-| **Smart rate recovery** | Exponential probe instead of hard freeze — resumes as soon as capacity restores |
+| **Cloudflare bypass** | 3-pass chain: Direct → Cached CF cookies → FlareSolverr headless Chrome solve |
+| **CF cookie caching** | Persists solved cookies to `~/.stake_cf_cookies.json` with 30-min TTL |
+| **Multi-domain fallback** | Tries stake.bet first (lighter CF), falls back to stake.com |
+| **Balance API** | Fetches real balances via GraphQL `UserBalances` query |
 | **Smart stop conditions** | Max profit, max loss, max bets, max wins, min balance floor |
 | **Safety cap** | Never bets more than 20% of current balance in one go |
 | **Session database** | SQLite log of every bet and session — survives restarts |
@@ -24,8 +27,8 @@ High-speed multi-game auto-betting engine for Stake.com with a live, ultra-compa
 | **Daemon mode** | `--daemon` for background running, `--status` to check, `--stop` to halt |
 | **Performance tracking** | BPS, BPM, peak/low speed ranges, peak/low balance, best win, worst loss, avg P/L |
 | **Streak distribution** | Per-session bar charts showing win/loss streak frequency |
+| **Uptime tracking** | Session history shows computed uptime for each session |
 | **Test mode** | Set bet amount to `0` for free bets (no real money risked) |
-| **Cloudflare bypass** | Full cookie passthrough for Cloudflare-protected endpoints |
 | **Daily log rotation** | Logs at `~/.stake_logs/stake.log`, rotates at midnight, 30-day retention |
 | **Interactive keyboard** | `P` pause, `R` resume, `H` history, `Q` quit — all from dashboard |
 
@@ -39,7 +42,7 @@ High-speed multi-game auto-betting engine for Stake.com with a live, ultra-compa
 # 1. Setup
 cd stake
 python3 -m venv .venv && source .venv/bin/activate
-pip install requests rich
+pip install -r requirements.txt
 
 # 2. Run (wizard guides you through config)
 python3 stake.py
@@ -47,36 +50,87 @@ python3 stake.py
 # 3. You'll need from your browser DevTools (F12 → Network tab → any stake.com request):
 #    - x-access-token (from request headers)
 #    - x-lockdown-token (from request headers)
-#    - Full Cookie string (for Cloudflare bypass)
 
 # 4. Resume with saved config
 python3 stake.py --resume
 ```
 
-### VPS
+### VPS (Ubuntu)
 
 ```bash
-# Upload and install
-scp stake.py requirements.txt user@your-vps:~/
-ssh user@your-vps
-python3 -m venv .venv && source .venv/bin/activate
-pip install requests rich
+# 1. Upload files
+scp stake.py requirements.txt install.sh user@your-vps:~/
 
-# Run in tmux (survives SSH disconnect)
-tmux new -s stake
-python3 stake.py
-# Detach: Ctrl+B then D
-# Re-attach: tmux attach -t stake
+# 2. Install (sets up venv, systemd, Docker, FlareSolverr)
+ssh user@your-vps
+chmod +x install.sh && ./install.sh
+
+# 3. Configure
+stakectl setup
+
+# 4. Start & monitor
+stakectl start
+stakectl monitor
 ```
+
+---
+
+## Cloudflare Bypass (VPS)
+
+Stake.com uses Cloudflare which blocks datacenter IPs. The bot uses a 3-pass connection strategy:
+
+1. **Direct** — Try connecting without any CF cookies (works on residential IPs)
+2. **Cached cookies** — Load previously solved CF cookies from `~/.stake_cf_cookies.json` (30-min TTL)
+3. **FlareSolverr** — Solve fresh Cloudflare challenge via headless Chrome, extract cookies + user-agent, cache to disk
+
+The solved cookies are paired with `curl_cffi` (Chrome TLS fingerprint) and the matching user-agent from FlareSolverr to avoid TLS fingerprint mismatches.
+
+### FlareSolverr Setup
+
+```bash
+# Install Docker (if not already installed)
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# Log out and back in for group change
+
+# Start FlareSolverr
+docker run -d --name flaresolverr \
+  -p 8191:8191 \
+  --restart unless-stopped \
+  ghcr.io/flaresolverr/flaresolverr:latest
+
+# Verify it's running
+curl -s http://localhost:8191/v1 | head -c 100
+```
+
+The bot auto-detects FlareSolverr at `http://localhost:8191/v1` and uses it when direct connections fail. The `install.sh` script handles Docker + FlareSolverr setup automatically.
+
+---
+
+## Games
+
+| Game | Endpoint | Parameters |
+|---|---|---|
+| **Limbo** | `POST /_api/casino/limbo/bet` | `multiplierTarget`, `amount`, `currency`, `identifier` |
+| **Dice** | `POST /_api/casino/dice/roll` | `target`, `condition` (above/below), `amount`, `currency`, `identifier` |
+
+### Dice target math
+
+- **Above**: `target = 100 - 99/multiplier` (e.g. 2x → 50.5)
+- **Below**: `target = 99/multiplier` (e.g. 2x → 49.5)
+
+### Adding new games
+
+Games are registered via `_register_game(name, label, endpoint, response_key, build_payload, parse_result)`. Define a payload builder and result parser, then register — ~20 lines of code.
 
 ---
 
 ## Dashboard
 
-The dashboard uses pure ANSI rendering (no Rich flicker) — pinned rows + adaptive recent bets. Fits any terminal.
+Pure ANSI rendering — pinned rows + adaptive recent bets. Fits any terminal.
 
 ```text
-─── Stake v1.1  Limbo  #3  00:12:34  ● LIVE ──────────────────────
+─── Stake v1.2  Limbo  #3  00:12:34  ● LIVE ──────────────────────
  BAL  0.00845321 USDT  PnL +0.00012500  WAG 0.00832100  WR 51.2%
  Bets 2042  W 1046  L 996  Str W+4  Best W+11/L-8
  Bet 0.00010000  Hi 0.00640000  Martingale  2.0x  BPS 5.2  BPM 312
@@ -89,24 +143,6 @@ The dashboard uses pure ANSI rendering (no Rich flicker) — pinned rows + adapt
 ──────────────────────────────────────────────────────────────────
  W WIN | Result: 2.31x | P/L: +0.00009800      [P]ause [R]esume [Q]uit [H]istory
 ```
-
----
-
-## Games
-
-| Game | How it works | Key field |
-|---|---|---|
-| **Limbo** | Pick a target multiplier — if the roll exceeds it, you win | `multiplierTarget` (e.g. 2.0 = 2x payout) |
-| **Dice** | Pick a target number + above/below — if the roll matches, you win | `target` + `condition` (e.g. 50.5 above = 2x payout) |
-
-### Dice target math
-
-- **Above**: `target = 100 - 99/multiplier` (e.g. 2x → 50.5)
-- **Below**: `target = 99/multiplier` (e.g. 2x → 49.5)
-
-### Adding new games
-
-Games are registered via the `_register_game()` function. To add a new game, define a `build_payload` and `parse_result` function, then register it — ~20 lines of code.
 
 ---
 
@@ -167,8 +203,6 @@ A Martingale variant:
 
 ## Named Presets
 
-Save your strategy configuration and reuse it instantly:
-
 ```bash
 # During wizard: last step asks to save as preset.
 
@@ -198,18 +232,41 @@ Configure during setup wizard:
 ## CLI Options
 
 ```bash
-python3 stake.py                 # Interactive wizard + TUI dashboard
-python3 stake.py --resume        # Skip wizard, reuse saved config
-python3 stake.py --preset X      # Load preset X and start
-python3 stake.py --daemon        # Run in background (no TUI, implies --resume)
-python3 stake.py --monitor       # Attach live TUI to running daemon
-python3 stake.py --status        # Check running session status (one-shot)
-python3 stake.py --stop          # Stop a running daemon
-python3 stake.py --setup-only    # Run wizard, save config, don't start
-python3 stake.py --list-presets  # Show saved presets
-python3 stake.py --stats         # Show all session history + totals
-python3 stake.py --last-bets N   # Show last N bets across sessions
+python3 stake.py                   # Interactive wizard + TUI dashboard
+python3 stake.py --resume          # Skip wizard, reuse saved config
+python3 stake.py --preset X        # Load preset X and start
+python3 stake.py --daemon          # Run in background (no TUI, implies --resume)
+python3 stake.py --monitor         # Attach live TUI to running daemon
+python3 stake.py --status          # Check running session status (one-shot)
+python3 stake.py --stop            # Stop a running daemon
+python3 stake.py --setup-only      # Run wizard, save config, don't start
+python3 stake.py --list-presets    # Show saved presets
+python3 stake.py --stats           # Show all session history + totals + uptime
+python3 stake.py --last-bets N     # Show last N bets across sessions
 python3 stake.py --session-bets N  # Full stats + streak distribution for session N
+```
+
+---
+
+## stakectl (VPS Management)
+
+After running `install.sh`, the `stakectl` command is available:
+
+```bash
+stakectl setup          # Run wizard to configure
+stakectl start          # Start bot as background daemon
+stakectl stop           # Stop the bot
+stakectl restart        # Restart the bot
+stakectl monitor        # Attach live TUI to running daemon
+stakectl status         # Quick status snapshot
+stakectl logs           # Stream live logs
+stakectl logs-full      # Show last 200 log lines
+stakectl interactive    # Start daemon + attach monitor
+stakectl tmux           # Monitor in detachable tmux session
+stakectl stats          # View all-time statistics
+stakectl session ID     # Full stats + streak distribution
+stakectl presets        # List saved presets
+stakectl update         # Update bot from current directory
 ```
 
 ---
@@ -222,20 +279,9 @@ python3 stake.py --session-bets N  # Full stats + streak distribution for sessio
 | `R` | Resume betting |
 | `H` | Show session history screen |
 | `Q` | Stop bot and save session |
+| `S` | Stop (in monitor mode) |
 | `Ctrl+C` | Emergency stop (also saves) |
 | `Ctrl+\` | Emergency stop (also saves) |
-
----
-
-## Authentication
-
-Stake.com uses Cloudflare protection. You need three values from your browser DevTools:
-
-1. **x-access-token** — Found in request headers (Network tab → any stake.com API request)
-2. **x-lockdown-token** — Found in request headers
-3. **Cookie string** — Full cookie header (includes `cf_clearance`, `session`, `__cf_bm`, etc.)
-
-To get these: Open DevTools (F12) → Network tab → place a manual bet → copy the values from the request headers.
 
 ---
 
@@ -248,8 +294,9 @@ To get these: Open DevTools (F12) → Network tab → place a manual bet → cop
 | `~/.stake_autobot.json` | Saved config for `--resume` |
 | `~/.stake_presets.json` | Named strategy presets |
 | `~/.stake_logs/stake.log` | Daily rotating log (30 days) |
-| `~/.stake_autobot_live.json` | Live state for `--status` |
+| `~/.stake_autobot_live.json` | Live state for `--status` / `--monitor` |
 | `~/.stake_autobot.pid` | PID file for `--stop` |
+| `~/.stake_cf_cookies.json` | Cached Cloudflare cookies (30-min TTL) |
 
 ```bash
 # Query session history
@@ -263,14 +310,15 @@ sqlite3 ~/.stake_autobot.db "SELECT state, COUNT(*), SUM(profit) FROM bets GROUP
 
 ## API
 
-Uses Stake.com's **GraphQL API** at `https://stake.com/_api/graphql`.
+| Endpoint | Purpose |
+|---|---|
+| `POST /_api/casino/limbo/bet` | Place Limbo bet |
+| `POST /_api/casino/dice/roll` | Place Dice bet |
+| `POST /_api/graphql` | Fetch user balances (GraphQL `UserBalances` query) |
 
-| Mutation | Purpose |
-| --- | --- |
-| `limboBet` | Place a Limbo bet |
-| `diceRoll` | Place a Dice bet |
+Base URLs: `https://stake.bet/_api/casino` (primary), `https://stake.com/_api/casino` (fallback)
 
-GraphQL avoids Cloudflare's REST endpoint protection — no `cf_clearance` cookie needed. Works from any VPS with just the access token.
+Auth headers: `x-access-token`, `x-lockdown-token` (from browser DevTools)
 
 ---
 

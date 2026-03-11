@@ -2,47 +2,52 @@
 
 ## v1.2.0 (2026-03-11)
 
-### Breaking Changes
+### Added
+- **Cloudflare bypass chain**: 3-pass connection — Direct → Cached CF cookies → FlareSolverr (headless Chrome) → curl_cffi with Chrome TLS fingerprint + matching user-agent
+- **CF cookie caching**: Persist solved cookies to `~/.stake_cf_cookies.json` with 30-minute TTL — avoids re-solving on every restart
+- **Multi-domain fallback**: Auto-detects working domain (tries stake.bet first, falls back to stake.com)
+- **Balance API**: Fetch real balances via GraphQL `UserBalances` query
+- **Monitor mode** (`--monitor`): Attach live TUI to a running daemon — pause/resume/stop remotely
+- **Session bets** (`--session-bets ID`): Full stats + streak distribution for a specific session
+- **Last bets** (`--last-bets N`): Show last N bets across all sessions
+- **Uptime tracking**: Session history and session detail views show computed uptime (hours/minutes/seconds)
+- **Enhanced `--stats`**: Detailed session history with speed metrics, balance peaks, streaks, uptime
+- **Enhanced `--status`**: Rich one-shot status display with all session metrics
+- **VPS installer**: `install.sh` with systemd service, `stakectl` management CLI, Docker/FlareSolverr setup
 
-- **GraphQL API** — Switched from REST endpoints (`/limbo/bet`, `/dice/roll`) to Stake.com's GraphQL API (`/_api/graphql`). REST endpoints were internal browser routes behind Cloudflare protection and returned 403 from non-browser clients (especially VPS). GraphQL works reliably with just the access token.
+### Changed
+- HTTP client chain: curl_cffi (Chrome TLS) → cloudscraper → plain requests
+- Connection test uses 3-pass fallback with automatic domain switching
+- Headers include CF cookies and matching user-agent from FlareSolverr
+- Switched from GraphQL mutations to REST endpoints for bets (REST works reliably with CF bypass)
+- GraphQL used only for balance query
 
-### Fixes
+### Fixed
+- **403 Forbidden on VPS**: Solved via FlareSolverr cookie extraction + curl_cffi Chrome TLS fingerprinting on same IP
 
-- **403 Forbidden on VPS** — Root cause: `cf_clearance` cookie is IP-bound and doesn't transfer between machines. GraphQL API doesn't require Cloudflare cookies, only `x-access-token`.
+## v1.1.0 (2026-03-10)
 
-## v1.1.0 (2026-03-11)
+### Added
+- **Dice game support** — Full Dice game with target number + above/below condition
+- **Game registry pattern** — `_register_game()` with per-game endpoint, payload builder, response parser
+- **Game selection in wizard** — Choose Limbo or Dice at setup
+- **Cloudflare cookie passthrough** — Cookie header support for CF-protected endpoints
 
-### New Features
+### Changed
+- Renamed from "Limbo AutoBot" to "Multi-Game Auto-Betting Engine"
+- Bets table extended with `game` and `result_display` columns (auto-migrated)
 
-- **Dice game support** — Full Dice game implementation with target number + above/below condition. Automatic target/multiplier calculation.
-- **Multi-game architecture** — Pluggable game registry via `_register_game()`. Each game defines its own endpoint, payload builder, and result parser. Adding a new game takes ~20 lines of code.
-- **Game selection in wizard** — Step 1 now asks which game to play (Limbo or Dice). Dice prompts for target and condition (above/below).
-- **Cloudflare cookie bypass** — Added full Cookie header passthrough to handle Stake.com's Cloudflare protection. Wizard prompts for browser cookie string.
+## v1.0.0 (2026-03-09)
 
-### Enhancements
-
-- **Bets table extended** — Added `game TEXT` and `result_display TEXT` columns with automatic migration for existing databases.
-- **Per-game dashboard** — Result column shows game-specific data: `2.31x` for Limbo, `61.20` for Dice.
-
-## v1.0.0 (2026-03-11)
-
-### New Features
-
-- **Limbo game** — Auto-betting on Stake.com Limbo with configurable multiplier target.
-- **Pure ANSI TUI** — Direct ANSI rendering dashboard (no Rich flicker), alternate screen buffer with proper terminal state save/restore.
-- **7 betting strategies** — Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, Delay Martingale, Rule-Based.
-- **Rule-based engine** — Build custom IF/THEN rules with interactive wizard. 3 condition types (Sequence, Profit, Bet) and 12 actions.
-- **Customizable multipliers** — Strategies 2, 3, 5, 6 prompt for loss/win multiplier in the wizard.
-- **Named presets** — Save & load strategy configs by name. `--preset NAME`, `--list-presets`.
-- **Smart rate recovery** — Exponential probe system instead of hard cooldown.
-- **Monitor mode** (`--monitor`) — Attach a live TUI to a running daemon. Pause/resume/stop remotely.
-- **Daemon mode** (`--daemon`) — Background running with `--status` to check and `--stop` to halt.
-- **Session database** — SQLite log of every bet and session, survives restarts.
-- **Config persistence** — Save/load with `--resume`, smart wizard with defaults.
-- **Performance tracking** — BPS, BPM, peak/low speed ranges, peak/low balance, best win, worst loss, avg P/L.
-- **Streak distribution** — `--session-bets N` shows win/loss streak frequency bar charts.
-- **Test mode** — Set bet amount to `0` for free practice bets.
-- **Stop conditions** — Max profit, max loss, max bets, max wins, min balance floor.
-- **Safety cap** — 20% balance cap prevents runaway bets.
-- **Daily log rotation** — `~/.stake_logs/stake.log` with midnight rotation, 30-day retention.
-- **Interactive keyboard** — `P` pause, `R` resume, `H` history, `Q` quit from dashboard.
+### Initial Release
+- Limbo game support on Stake.com
+- 7 betting strategies: Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, Delay Martingale, Rule-Based
+- Rule-based strategy with interactive wizard
+- Named presets system
+- Pure ANSI TUI dashboard with 2fps refresh
+- SQLite session + bet logging
+- Daemon mode with `--resume`, `--status`, `--stop`
+- Smart stop conditions (profit, loss, bets, wins, min balance)
+- 20% balance safety cap
+- Daily log rotation (30 days)
+- Config persistence

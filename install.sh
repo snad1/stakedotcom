@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────
-#  Stake AutoBot — Ubuntu VPS Installer v1.0
+#  Stake AutoBot — Ubuntu VPS Installer v1.1
 #  Tested on Ubuntu 22.04 / 24.04
-#  Sets up: venv, systemd service, management commands
+#  Sets up: Docker, FlareSolverr, venv, systemd, stakectl
 # ─────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -13,31 +13,64 @@ STAKECTL="$HOME/.local/bin/stakectl"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
-echo "║   Stake AutoBot — VPS Installer v1.0         ║"
+echo "║   Stake AutoBot — VPS Installer v1.1         ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
 # ── 1. System dependencies ─────────────────────────────
-echo "[1/6] Installing system packages…"
+echo "[1/8] Installing system packages…"
 sudo apt-get update -qq
 sudo apt-get install -y -qq \
     python3 python3-pip python3-venv python3-dev \
     sqlite3 tmux curl
 
-# ── 2. Bot directory ───────────────────────────────────
-echo "[2/6] Setting up bot directory…"
+# ── 2. Docker ────────────────────────────────────────
+echo "[2/8] Setting up Docker…"
+if command -v docker &>/dev/null; then
+    echo "   Docker already installed: $(docker --version)"
+else
+    echo "   Installing Docker…"
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker "$(whoami)"
+    echo "   Docker installed. NOTE: You may need to log out and back in for group changes."
+fi
+
+# ── 3. FlareSolverr (Cloudflare bypass) ──────────────
+echo "[3/8] Setting up FlareSolverr…"
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
+    echo "   FlareSolverr already running."
+elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
+    echo "   Starting existing FlareSolverr container…"
+    docker start flaresolverr
+else
+    echo "   Pulling and starting FlareSolverr…"
+    docker run -d --name flaresolverr \
+        -p 8191:8191 \
+        --restart unless-stopped \
+        ghcr.io/flaresolverr/flaresolverr:latest
+fi
+# Verify
+if curl -s http://localhost:8191/v1 &>/dev/null; then
+    echo "   FlareSolverr OK at http://localhost:8191"
+else
+    echo "   WARNING: FlareSolverr not responding yet (may still be starting)."
+    echo "   Check with: curl http://localhost:8191/v1"
+fi
+
+# ── 4. Bot directory ───────────────────────────────────
+echo "[4/8] Setting up bot directory…"
 mkdir -p "$INSTALL_DIR"
 cp stake.py         "$INSTALL_DIR/"
 cp requirements.txt "$INSTALL_DIR/"
 
-# ── 3. Python virtual environment ─────────────────────
-echo "[3/6] Creating Python virtual environment…"
+# ── 5. Python virtual environment ─────────────────────
+echo "[5/8] Creating Python virtual environment…"
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 
-# ── 4. Systemd user service (runs as your user, no root) ─
-echo "[4/6] Setting up systemd service…"
+# ── 6. Systemd user service (runs as your user, no root) ─
+echo "[6/8] Setting up systemd service…"
 mkdir -p "$SYSTEMD_DIR"
 
 cat > "$SYSTEMD_DIR/${SERVICE_NAME}.service" << SERVICEEOF
@@ -73,8 +106,8 @@ sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
 systemctl --user daemon-reload
 echo "   Service installed: ${SERVICE_NAME}.service"
 
-# ── 5. Management scripts ─────────────────────────────
-echo "[5/6] Creating management commands…"
+# ── 7. Management scripts ─────────────────────────────
+echo "[7/8] Creating management commands…"
 mkdir -p "$HOME/.local/bin"
 
 # stakectl — single command to manage everything
@@ -115,6 +148,13 @@ usage() {
     echo "    stakectl session ID  Full stats + streak distribution for a session"
     echo "    stakectl presets     List saved presets"
     echo "    stakectl update      Update bot from current directory"
+    echo ""
+    echo "  CLOUDFLARE:"
+    echo "    stakectl flaresolverr           Show FlareSolverr status"
+    echo "    stakectl flaresolverr start     Start FlareSolverr container"
+    echo "    stakectl flaresolverr stop      Stop FlareSolverr container"
+    echo "    stakectl flaresolverr restart   Restart FlareSolverr container"
+    echo "    stakectl flaresolverr logs      Stream FlareSolverr logs"
     echo ""
 }
 
@@ -244,29 +284,68 @@ cmd_update() {
     fi
 }
 
+cmd_flaresolverr() {
+    local action="${1:-status}"
+    case "$action" in
+        status)
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
+                echo "FlareSolverr: RUNNING"
+                curl -s http://localhost:8191/v1 2>/dev/null | head -c 200 || echo "  (not responding)"
+            else
+                echo "FlareSolverr: NOT RUNNING"
+                echo "  Start with: stakectl flaresolverr start"
+            fi
+            ;;
+        start)
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
+                echo "FlareSolverr already running."
+            elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
+                docker start flaresolverr
+                echo "FlareSolverr started."
+            else
+                docker run -d --name flaresolverr -p 8191:8191 --restart unless-stopped ghcr.io/flaresolverr/flaresolverr:latest
+                echo "FlareSolverr started."
+            fi
+            ;;
+        stop)
+            docker stop flaresolverr 2>/dev/null && echo "FlareSolverr stopped." || echo "Not running."
+            ;;
+        restart)
+            docker restart flaresolverr 2>/dev/null && echo "FlareSolverr restarted." || echo "Not running."
+            ;;
+        logs)
+            docker logs -f flaresolverr
+            ;;
+        *)
+            echo "Usage: stakectl flaresolverr [status|start|stop|restart|logs]"
+            ;;
+    esac
+}
+
 # ── Dispatch ──────────────────────────────────────────
 case "${1:-}" in
-    setup)       cmd_setup ;;
-    start)       cmd_start ;;
-    stop)        cmd_stop ;;
-    restart)     cmd_restart ;;
-    status)      cmd_status ;;
-    monitor)     cmd_monitor ;;
-    logs)        cmd_logs ;;
-    logs-full)   cmd_logs_full ;;
-    interactive) cmd_interactive ;;
-    tmux)        cmd_tmux ;;
-    stats)       cmd_stats ;;
-    session)     cmd_session "${2:-}" ;;
-    presets)     cmd_presets ;;
-    update)      cmd_update ;;
-    *)           usage ;;
+    setup)        cmd_setup ;;
+    start)        cmd_start ;;
+    stop)         cmd_stop ;;
+    restart)      cmd_restart ;;
+    status)       cmd_status ;;
+    monitor)      cmd_monitor ;;
+    logs)         cmd_logs ;;
+    logs-full)    cmd_logs_full ;;
+    interactive)  cmd_interactive ;;
+    tmux)         cmd_tmux ;;
+    stats)        cmd_stats ;;
+    session)      cmd_session "${2:-}" ;;
+    presets)      cmd_presets ;;
+    update)       cmd_update ;;
+    flaresolverr) cmd_flaresolverr "${2:-}" ;;
+    *)            usage ;;
 esac
 CTLEOF
 chmod +x "$STAKECTL"
 
-# ── 6. Quick-run scripts (kept for compatibility) ─────
-echo "[6/6] Creating helper scripts…"
+# ── 8. Quick-run scripts (kept for compatibility) ─────
+echo "[8/8] Creating helper scripts…"
 
 cat > "$INSTALL_DIR/run.sh" << 'EOF'
 #!/usr/bin/env bash
@@ -302,10 +381,16 @@ echo "    - Auto-restart on crashes (after 10s)"
 echo "    - Keep running after you log out (lingering enabled)"
 echo "    - Log to journalctl (stakectl logs)"
 echo ""
-echo "  Files:"
-echo "    Bot:      $INSTALL_DIR/"
-echo "    Config:   ~/.stake_autobot.json"
-echo "    Database: ~/.stake_autobot.db"
-echo "    Logs:     ~/.stake_logs/stake.log"
-echo "    Service:  $SYSTEMD_DIR/${SERVICE_NAME}.service"
+echo "  CLOUDFLARE BYPASS:"
+echo "    FlareSolverr is running on http://localhost:8191"
+echo "    The bot auto-detects it when direct connections fail."
+echo "    CF cookies are cached at ~/.stake_cf_cookies.json (30-min TTL)"
+echo ""
+echo "  FILES:"
+echo "    Bot:        $INSTALL_DIR/"
+echo "    Config:     ~/.stake_autobot.json"
+echo "    Database:   ~/.stake_autobot.db"
+echo "    Logs:       ~/.stake_logs/stake.log"
+echo "    CF cookies: ~/.stake_cf_cookies.json"
+echo "    Service:    $SYSTEMD_DIR/${SERVICE_NAME}.service"
 echo ""
