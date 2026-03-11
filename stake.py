@@ -82,10 +82,11 @@ STRATEGIES = {
 
 GAMES = {}
 
-def _register_game(name, label, query, response_key, build_variables, parse_result):
+def _register_game(name, label, query, operation_name, response_key, build_variables, parse_result):
     GAMES[name] = {
         "label": label,
         "query": query,
+        "operation_name": operation_name,
         "response_key": response_key,
         "build_variables": build_variables,
         "parse_result": parse_result,
@@ -96,24 +97,37 @@ def _gen_identifier() -> str:
     return "".join(random.choices(chars, k=21))
 
 
-# -- LIMBO --
-_LIMBO_QUERY = """
-mutation LimboBet($amount: Float!, $currency: CurrencyEnum!, $multiplierTarget: Float!, $identifier: String!) {
-  limboBet(amount: $amount, currency: $currency, multiplierTarget: $multiplierTarget, identifier: $identifier) {
-    id
-    active
-    amount
-    currency
-    payoutMultiplier
-    payout
-    state {
-      result
-    }
-    createdAt
-    updatedAt
-  }
+# -- Shared CasinoBet fragment --
+_CASINO_BET_FRAGMENT = """
+fragment CasinoBetFragment on CasinoBet {
+  id
+  active
+  payoutMultiplier
+  amountMultiplier
+  amount
+  payout
+  updatedAt
+  currency
+  game
+  user { id name __typename }
+  __typename
 }
 """
+
+# -- LIMBO --
+_LIMBO_QUERY = """
+mutation LimboBet($amount: Float!, $multiplierTarget: Float!, $currency: CurrencyEnum!, $identifier: String!) {
+  limboBet(amount: $amount, currency: $currency, multiplierTarget: $multiplierTarget, identifier: $identifier) {
+    ...CasinoBetFragment
+    state {
+      result
+      multiplierTarget
+      __typename
+    }
+    __typename
+  }
+}
+""" + _CASINO_BET_FRAGMENT
 
 def _limbo_variables(st):
     return {
@@ -137,29 +151,24 @@ def _limbo_parse(data):
         "raw_state": limbo_state,
     }
 
-_register_game("limbo", "Limbo", _LIMBO_QUERY, "limboBet", _limbo_variables, _limbo_parse)
+_register_game("limbo", "Limbo", _LIMBO_QUERY, "LimboBet", "limboBet", _limbo_variables, _limbo_parse)
 
 
 # -- DICE --
 _DICE_QUERY = """
-mutation DiceRoll($amount: Float!, $currency: CurrencyEnum!, $target: Float!, $condition: CasinoGameDiceConditionEnum!, $identifier: String!) {
-  diceRoll(amount: $amount, currency: $currency, target: $target, condition: $condition, identifier: $identifier) {
-    id
-    active
-    amount
-    currency
-    payoutMultiplier
-    payout
+mutation DiceRoll($amount: Float!, $target: Float!, $condition: CasinoGameDiceConditionEnum!, $currency: CurrencyEnum!, $identifier: String!) {
+  diceRoll(amount: $amount, target: $target, condition: $condition, currency: $currency, identifier: $identifier) {
+    ...CasinoBetFragment
     state {
       result
       target
       condition
+      __typename
     }
-    createdAt
-    updatedAt
+    __typename
   }
 }
-"""
+""" + _CASINO_BET_FRAGMENT
 
 def _dice_variables(st):
     return {
@@ -184,7 +193,7 @@ def _dice_parse(data):
         "raw_state": dice_state,
     }
 
-_register_game("dice", "Dice", _DICE_QUERY, "diceRoll", _dice_variables, _dice_parse)
+_register_game("dice", "Dice", _DICE_QUERY, "DiceRoll", "diceRoll", _dice_variables, _dice_parse)
 
 
 # ===========================================================
@@ -753,6 +762,7 @@ def _headers() -> dict:
         "Accept":           "*/*",
         "x-access-token":   state.access_token,
         "x-lockdown-token": state.lockdown_token,
+        "x-language":       "en",
         "Origin":           "https://stake.com",
         "Referer":          f"https://stake.com/casino/games/{state.game}",
         "User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -774,10 +784,13 @@ def api_test_connection() -> bool:
     variables = build(state)
     state.current_bet = saved_bet
 
-    gql_payload = {"query": query, "variables": variables}
+    gql_payload = {"operationName": game_info["operation_name"], "query": query, "variables": variables}
     r = requests.post(API_BASE, headers=_headers(),
                       json=gql_payload, timeout=15)
-    r.raise_for_status()
+    if r.status_code != 200:
+        # Show the actual response for debugging
+        body = r.text[:300] if r.text else "(empty)"
+        raise Exception(f"HTTP {r.status_code}: {body}")
     data = r.json()
     # GraphQL wraps in {"data": {"limboBet": {...}}}
     if "errors" in data:
@@ -802,7 +815,7 @@ def api_place_bet(amount: float) -> Optional[dict]:
     variables = build(state)
     state.current_bet = saved
 
-    gql_payload = {"query": query, "variables": variables}
+    gql_payload = {"operationName": game_info["operation_name"], "query": query, "variables": variables}
     logger.debug("BET [%s] variables=%s", state.game, json.dumps(variables))
     try:
         r = requests.post(API_BASE, headers=_headers(),
