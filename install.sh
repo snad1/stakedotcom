@@ -77,6 +77,14 @@ cp tg/engine.py      "$INSTALL_DIR/tg/"
 cp tg/formatter.py   "$INSTALL_DIR/tg/"
 cp tg/handlers.py    "$INSTALL_DIR/tg/"
 cp tg/bot.py         "$INSTALL_DIR/tg/"
+# Copy .env
+if [ -f ".env" ]; then
+    cp .env "$INSTALL_DIR/.env"
+    echo "   Copied .env to $INSTALL_DIR/.env"
+elif [ -f ".env.example" ]; then
+    cp .env.example "$INSTALL_DIR/.env"
+    echo "   Created $INSTALL_DIR/.env from .env.example"
+fi
 
 # ── 5. Python virtual environment ─────────────────────
 echo "[5/9] Creating Python virtual environment…"
@@ -334,6 +342,8 @@ cmd_presets() {
 cmd_update() {
     if [ -f "stake.py" ]; then
         cp stake.py "$INSTALL_DIR/stake.py"
+        cp requirements.txt "$INSTALL_DIR/" 2>/dev/null
+        [ -f ".env.example" ] && cp .env.example "$INSTALL_DIR/"
         # Update TG bot files if present
         if [ -d "core" ] && [ -d "tg" ]; then
             mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/tg"
@@ -442,8 +452,27 @@ cmd_tg() {
         logs-full)
             journalctl --user -u "$TG_SERVICE" -n 200 --no-pager
             ;;
+        env)
+            ENV_FILE="$INSTALL_DIR/.env"
+            if [ ! -f "$ENV_FILE" ]; then
+                if [ -f "$INSTALL_DIR/.env.example" ]; then
+                    cp "$INSTALL_DIR/.env.example" "$ENV_FILE"
+                else
+                    echo "# Stake AutoBot — Environment" > "$ENV_FILE"
+                    echo "STAKE_TG_TOKEN=" >> "$ENV_FILE"
+                fi
+            fi
+            ${EDITOR:-nano} "$ENV_FILE"
+            # Sync TG token to systemd env file
+            TOKEN=$(grep -E "^STAKE_TG_TOKEN=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ')
+            if [ -n "$TOKEN" ]; then
+                echo "STAKE_TG_TOKEN=$TOKEN" > "$TG_ENV"
+                chmod 600 "$TG_ENV"
+                echo "Token synced to $TG_ENV"
+            fi
+            ;;
         *)
-            echo "Usage: stakectl tg [setup|start|stop|restart|status|logs|logs-full]"
+            echo "Usage: stakectl tg [setup|start|stop|restart|status|logs|logs-full|env]"
             ;;
     esac
 }
