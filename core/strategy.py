@@ -39,10 +39,19 @@ RULE_ACTIONS = {
     "6":  ("set_amount",      "Set amount"),
     "7":  ("switch",          "Switch above/below (dice only)"),
     "8":  ("stop",            "Stop betting"),
-    "9":  ("set_winchance",   "Set win chance (changes multiplier)"),
-    "10": ("increase_wc",     "Increase win chance by %"),
-    "11": ("decrease_wc",     "Decrease win chance by %"),
-    "12": ("reset_game",      "Reset game (full reset)"),
+    "9":  ("reset_winchance", "Reset win chance"),
+    "10": ("set_winchance",   "Set win chance"),
+    "11": ("increase_wc",     "Increase win chance by %"),
+    "12": ("decrease_wc",     "Decrease win chance by %"),
+    "13": ("add_wc",          "Add to win chance"),
+    "14": ("deduct_wc",       "Deduct from win chance"),
+    "15": ("reset_payout",    "Reset payout"),
+    "16": ("set_payout",      "Set payout"),
+    "17": ("increase_payout", "Increase payout by %"),
+    "18": ("decrease_payout", "Decrease payout by %"),
+    "19": ("add_payout",      "Add to payout"),
+    "20": ("deduct_payout",   "Deduct from payout"),
+    "21": ("reset_game",      "Reset game (full reset)"),
 }
 
 # Action name → label (used by describe_rule)

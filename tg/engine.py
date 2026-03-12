@@ -134,6 +134,7 @@ class BettingEngine:
         self.game              = config.get("game") or "limbo"
         self.currency          = config.get("currency") or "usdt"
         self.multiplier_target = _cfg(config, "multiplier_target", 2.0)
+        self.initial_multiplier = self.multiplier_target
         self.dice_target       = _cfg(config, "dice_target", 50.5)
         self.dice_condition    = config.get("dice_condition") or "above"
         self.base_bet          = _cfg(config, "base_bet", 0.0001)
@@ -608,6 +609,7 @@ class BettingEngine:
             mutations = apply_action(
                 rule, self.current_bet, self.base_bet,
                 self.dice_condition, self.multiplier_target, self.current_streak,
+                initial_multiplier=self.initial_multiplier,
             )
             for k, v in mutations.items():
                 setattr(self, k, v)

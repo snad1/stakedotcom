@@ -558,6 +558,80 @@ def _apply_action(rule: StrategyRule):
                 state.dice_target = round(100.0 - wc, 2)
             else:
                 state.dice_target = round(wc, 2)
+    elif a == "reset_winchance":
+        state.multiplier_target = state.initial_multiplier
+        if state.game == "dice":
+            wc = 99.0 / state.multiplier_target
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "add_wc":
+        wc = _get_win_chance()
+        wc = max(0.01, min(98.99, wc + v))
+        state.multiplier_target = round(99.0 / wc, 4)
+        if state.game == "dice":
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "deduct_wc":
+        wc = _get_win_chance()
+        wc = max(0.01, min(98.99, wc - v))
+        state.multiplier_target = round(99.0 / wc, 4)
+        if state.game == "dice":
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "reset_payout":
+        state.multiplier_target = state.initial_multiplier
+        if state.game == "dice":
+            wc = 99.0 / state.multiplier_target
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "set_payout":
+        state.multiplier_target = max(1.01, v)
+        if state.game == "dice":
+            wc = 99.0 / state.multiplier_target
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "increase_payout":
+        state.multiplier_target = state.multiplier_target * (1 + v / 100)
+        if state.game == "dice":
+            wc = max(0.01, 99.0 / state.multiplier_target)
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "decrease_payout":
+        state.multiplier_target = max(1.01, state.multiplier_target * (1 - v / 100))
+        if state.game == "dice":
+            wc = 99.0 / state.multiplier_target
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "add_payout":
+        state.multiplier_target = state.multiplier_target + v
+        if state.game == "dice":
+            wc = max(0.01, 99.0 / state.multiplier_target)
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
+    elif a == "deduct_payout":
+        state.multiplier_target = max(1.01, state.multiplier_target - v)
+        if state.game == "dice":
+            wc = 99.0 / state.multiplier_target
+            if state.dice_condition == "above":
+                state.dice_target = round(100.0 - wc, 2)
+            else:
+                state.dice_target = round(wc, 2)
     elif a == "reset_game":
         state.current_bet = state.base_bet
         state.current_streak = 0
@@ -702,6 +776,7 @@ class BotState:
         self.currency         = "usdt"
         self.game             = "limbo"       # "limbo" or "dice"
         self.multiplier_target = 2.0          # shared: target payout multiplier
+        self.initial_multiplier = 2.0         # saved at session start for reset actions
         # dice-specific
         self.dice_target      = 50.5          # roll target (0-100)
         self.dice_condition   = "above"       # "above" or "below"
@@ -3344,6 +3419,7 @@ def main():
 
     state.session_id    = _db_start_session()
     state.session_start = time.time()
+    state.initial_multiplier = state.multiplier_target
     state.running       = True
 
     with open(PID_PATH, "w") as f:
