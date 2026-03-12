@@ -914,8 +914,9 @@ class BettingEngine:
                         s = self.get_status()
                         s["milestone_reason"] = reason
                         self.on_milestone(s)
-                    except Exception:
-                        pass
+                        logger.info("User %d: Milestone fired: %s", self.user_id, reason)
+                    except Exception as e:
+                        logger.error("User %d: Milestone callback failed: %s", self.user_id, e)
 
         # session ended — flush remaining bets and save final state
         self._flush_bets()
