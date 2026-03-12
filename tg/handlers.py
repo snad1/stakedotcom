@@ -134,6 +134,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Rules*\n"
         "/rules — List current rules\n"
         "/addrule — Add rule (JSON)\n"
+        "/delrule — Delete rule by number\n"
+        "/editrule — Edit rule by number (JSON patch)\n"
         "/clearrules — Clear all rules\n\n"
         "*Presets*\n"
         "/presets — List presets\n"
@@ -892,6 +894,84 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config["custom_rules_text"] = json.dumps([rl.to_dict() for rl in rules])
     save_user_config(user_id, config)
     await update.message.reply_text(f"Rule added: `{r.description}`", parse_mode="Markdown")
+
+
+# ── /delrule ────────────────────────────────────────────
+async def cmd_delrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text("Usage: /delrule <number>\nSee /rules for rule numbers.")
+        return
+
+    try:
+        idx = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid number. Usage: /delrule <number>")
+        return
+
+    config = load_user_config(user_id)
+    rules_text = config.get("custom_rules_text", "")
+    rules = load_rules_from_text(rules_text) if rules_text else []
+
+    if idx < 1 or idx > len(rules):
+        await update.message.reply_text(f"Invalid rule number. You have {len(rules)} rule(s).")
+        return
+
+    removed = rules.pop(idx - 1)
+    config["custom_rules_text"] = json.dumps([rl.to_dict() for rl in rules]) if rules else ""
+    save_user_config(user_id, config)
+    await update.message.reply_text(f"Deleted rule {idx}: `{removed.description}`", parse_mode="Markdown")
+
+
+# ── /editrule ───────────────────────────────────────────
+async def cmd_editrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /editrule <number> <json>\n"
+            "Example: /editrule 2 {\"action_value\":200}\n\n"
+            "Editable fields: `cond_type`, `cond_mode`, `cond_value`, "
+            "`cond_trigger`, `cond_field`, `action`, `action_value`",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        idx = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("First argument must be a rule number.")
+        return
+
+    config = load_user_config(user_id)
+    rules_text = config.get("custom_rules_text", "")
+    rules = load_rules_from_text(rules_text) if rules_text else []
+
+    if idx < 1 or idx > len(rules):
+        await update.message.reply_text(f"Invalid rule number. You have {len(rules)} rule(s).")
+        return
+
+    raw = " ".join(context.args[1:])
+    raw = raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+    try:
+        patch = json.loads(raw)
+    except json.JSONDecodeError as e:
+        await update.message.reply_text(f"Invalid JSON: `{e}`", parse_mode="Markdown")
+        return
+
+    # Merge patch into existing rule
+    old_dict = rules[idx - 1].to_dict()
+    old_dict.update(patch)
+    try:
+        new_rule = StrategyRule.from_dict(old_dict)
+        new_rule.description = describe_rule(new_rule)
+    except Exception as e:
+        await update.message.reply_text(f"Invalid rule after edit: `{e}`", parse_mode="Markdown")
+        return
+
+    rules[idx - 1] = new_rule
+    config["custom_rules_text"] = json.dumps([rl.to_dict() for rl in rules])
+    save_user_config(user_id, config)
+    await update.message.reply_text(f"Updated rule {idx}: `{new_rule.description}`", parse_mode="Markdown")
 
 
 # ── /clearrules ──────────────────────────────────────────

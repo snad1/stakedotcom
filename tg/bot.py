@@ -13,7 +13,7 @@ from .handlers import (
     cmd_start, cmd_help, cmd_settoken, cmd_balance, cmd_config,
     cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_pause, cmd_resume,
     cmd_status, cmd_monitor, cmd_stats, cmd_lastbets,
-    cmd_rules, cmd_addrule, cmd_clearrules,
+    cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
     cmd_session,
     callback_handler,
@@ -83,6 +83,8 @@ def main():
     app.add_handler(CommandHandler("session", cmd_session))
     app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("addrule", cmd_addrule))
+    app.add_handler(CommandHandler("delrule", cmd_delrule))
+    app.add_handler(CommandHandler("editrule", cmd_editrule))
     app.add_handler(CommandHandler("clearrules", cmd_clearrules))
     app.add_handler(CommandHandler("presets", cmd_presets))
     app.add_handler(CommandHandler("savepreset", cmd_savepreset))
