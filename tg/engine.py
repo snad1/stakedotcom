@@ -199,6 +199,7 @@ class BettingEngine:
         # ── error backoff ──
         self.consecutive_errors = 0
         self.backoff_delay   = 1.0
+        self._insufficient_balance = False
 
         # ── strategy internals ──
         self.dalembert_unit  = 0
@@ -453,6 +454,16 @@ class BettingEngine:
             data = self._api_post(url, payload)
             if data is None:
                 self.last_error = "Empty response"
+                return None
+            # Check for API errors (e.g. insufficient balance)
+            errors = data.get("errors") or data.get("error")
+            if errors:
+                err_str = str(errors).lower()
+                if "insufficient" in err_str or "balance" in err_str:
+                    self.last_error = "Insufficient balance"
+                    self._insufficient_balance = True
+                    return None
+                self.last_error = f"API error: {str(errors)[:120]}"
                 return None
             raw = data.get(resp_key, data)
             if not raw:
@@ -798,6 +809,13 @@ class BettingEngine:
             result = self._api_place_bet(self.current_bet)
 
             if result is None:
+                if self._insufficient_balance:
+                    self.running = False
+                    self.stop_reason = f"Insufficient balance for bet {self.current_bet:.8f}"
+                    self.status = f"STOPPED: {self.stop_reason}"
+                    self._flush_bets()
+                    self._db_save_session(final=True)
+                    break
                 self.consecutive_errors += 1
                 self.backoff_delay = min(self.backoff_delay * 2, 30.0)
                 time.sleep(self.backoff_delay)
