@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────
-#  Stake AutoBot — Ubuntu VPS Installer v1.1
-#  Tested on Ubuntu 22.04 / 24.04
+#  Stake AutoBot — Server Installer v1.2
+#  Sets up on Linux servers with apt package manager
 #  Sets up: Docker, FlareSolverr, venv, systemd, stakectl
 # ─────────────────────────────────────────────────────────
 set -euo pipefail
@@ -13,7 +13,7 @@ STAKECTL="$HOME/.local/bin/stakectl"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
-echo "║   Stake AutoBot — VPS Installer v1.1         ║"
+echo "║   Stake AutoBot — Server Installer v1.2         ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 

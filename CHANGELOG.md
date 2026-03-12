@@ -13,7 +13,7 @@
 - **Uptime tracking**: Session history and session detail views show computed uptime (hours/minutes/seconds)
 - **Enhanced `--stats`**: Detailed session history with speed metrics, balance peaks, streaks, uptime
 - **Enhanced `--status`**: Rich one-shot status display with all session metrics
-- **VPS installer**: `install.sh` with systemd service, `stakectl` management CLI, Docker/FlareSolverr setup
+- **server installer**: `install.sh` with systemd service, `stakectl` management CLI, Docker/FlareSolverr setup
 
 ### Changed
 - HTTP client chain: curl_cffi (Chrome TLS) → cloudscraper → plain requests
@@ -23,7 +23,7 @@
 - GraphQL used only for balance query
 
 ### Fixed
-- **403 Forbidden on VPS**: Solved via FlareSolverr cookie extraction + curl_cffi Chrome TLS fingerprinting on same IP
+- **403 Forbidden on server**: Solved via FlareSolverr cookie extraction + curl_cffi Chrome TLS fingerprinting on same IP
 
 ## v1.1.0 (2026-03-10)
 

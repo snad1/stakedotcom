@@ -1,6 +1,6 @@
 # Stake AutoBot v1.2
 
-High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard. Includes Cloudflare bypass for VPS via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
+High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
 ---
 
@@ -55,14 +55,14 @@ python3 stake.py
 python3 stake.py --resume
 ```
 
-### VPS (Ubuntu)
+### Remote Server
 
 ```bash
 # 1. Upload files
-scp stake.py requirements.txt install.sh user@your-vps:~/
+scp stake.py requirements.txt install.sh user@your-server:~/
 
 # 2. Install (sets up venv, systemd, Docker, FlareSolverr)
-ssh user@your-vps
+ssh user@your-server
 chmod +x install.sh && ./install.sh
 
 # 3. Configure
@@ -75,7 +75,7 @@ stakectl monitor
 
 ---
 
-## Cloudflare Bypass (VPS)
+## Cloudflare Bypass (server)
 
 Stake.com uses Cloudflare which blocks datacenter IPs. The bot uses a 3-pass connection strategy:
 
@@ -248,7 +248,7 @@ python3 stake.py --session-bets N  # Full stats + streak distribution for sessio
 
 ---
 
-## stakectl (VPS Management)
+## stakectl (server Management)
 
 After running `install.sh`, the `stakectl` command is available:
 
