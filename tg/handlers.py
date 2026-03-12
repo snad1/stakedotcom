@@ -854,6 +854,8 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     raw = " ".join(context.args)
+    # Telegram replaces " with smart quotes — fix them
+    raw = raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
     try:
         d = json.loads(raw)
         r = StrategyRule.from_dict(d)
