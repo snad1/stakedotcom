@@ -1,6 +1,6 @@
-# Stake AutoBot v1.2
+# Stake AutoBot v1.2 + Telegram Bot v1.0
 
-High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
+High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard **and a Telegram bot**. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
 ---
 
@@ -319,6 +319,92 @@ sqlite3 ~/.stake_autobot.db "SELECT state, COUNT(*), SUM(profit) FROM bets GROUP
 Base URLs: `https://stake.bet/_api/casino` (primary), `https://stake.com/_api/casino` (fallback)
 
 Auth headers: `x-access-token`, `x-lockdown-token` (from browser DevTools)
+
+---
+
+## Telegram Bot
+
+The Telegram bot (`stake/tg/`) provides the same engine via Telegram commands. Multi-tenant: each user gets their own config, database, and session.
+
+### Setup (Server via stakectl)
+
+```bash
+# 1. Create a bot via @BotFather on Telegram, get the token
+
+# 2. Configure and start
+stakectl tg setup       # Enter your bot token
+stakectl tg start       # Start as systemd service
+stakectl tg status      # Check it's running
+stakectl tg logs        # Stream logs
+```
+
+### Setup (Local / Mac)
+
+```bash
+# 1. Set environment variable
+export STAKE_TG_TOKEN='your_telegram_bot_token'
+
+# 2. Run from the stake/ directory
+cd stake && PYTHONPATH=. python3 -m tg.bot
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/settoken <access> <lockdown> [cookie]` | Set Stake auth tokens (message auto-deleted) |
+| `/balance` | Check all balances |
+| `/config` | View current configuration |
+| `/set <param> <value>` | Set a parameter (see `/help` for full list) |
+| `/set game limbo\|dice` | Switch game |
+| `/set multiplier 2.0` | Set target multiplier |
+| `/strategies` | List all strategies |
+| `/bet` | Start betting session |
+| `/stop` | Stop session (also cleans zombie sessions) |
+| `/pause` / `/resume` | Pause/resume betting |
+| `/status` | Live status with refresh button |
+| `/monitor [interval]` | Auto-updating status (3-60s) |
+| `/stats` | Session history (last 10) |
+| `/session <id>` | Full session report with streak distribution |
+| `/lastbets [n]` | Recent bets |
+| `/rules` / `/addrule` / `/clearrules` | Manage rules |
+| `/presets` / `/savepreset` / `/loadpreset` | Manage presets |
+
+### Architecture
+
+```
+stake/
+  core/
+    strategy.py    — Shared strategies, rule engine, rule parser
+    database.py    — Shared DB schema (sessions + bets tables)
+    engine.py      — Pure strategy computation (no state)
+  tg/
+    __init__.py    — Version
+    config.py      — Env vars, constants, CONFIG_KEYS
+    database.py    — Per-user file paths, config/preset persistence
+    engine.py      — BettingEngine (per-user, own thread, batched DB)
+    formatter.py   — Telegram message formatting
+    handlers.py    — All command handlers and callback queries
+    bot.py         — Application entry point
+```
+
+### Key Design Decisions
+
+- **Cross-thread SQLite safety**: Session creation uses a temporary DB connection (main thread), betting loop uses a lazy persistent connection (betting thread)
+- **Batched DB writes**: Bets queued in memory, flushed every 50 via `executemany()` — session stats saved on each flush
+- **Periodic save without ended_at**: `_db_save_session(final=False)` updates stats without marking session as ended
+- **Cloudflare bypass chain**: curl_cffi (Chrome TLS) → cached CF cookies → FlareSolverr headless solve
+- **None-safety**: All config reads use `or` pattern to handle `None` values from presets
+- **Full timestamps**: ISO format with microsecond precision everywhere
+
+### Data Files
+
+| Path | Purpose |
+|---|---|
+| `~/.stakebot_tg/<user_id>/stake.db` | Per-user SQLite database |
+| `~/.stakebot_tg/<user_id>/config.json` | Per-user config |
+| `~/.stakebot_tg/<user_id>/presets.json` | Per-user presets |
+| `~/.stakebot_tg/<user_id>/cf_cookies.json` | Per-user CF cookie cache |
 
 ---
 

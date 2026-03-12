@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.2.1 — Telegram Bot (2026-03-12)
+
+### Added
+
+- **Telegram Bot v1.0** (`stake/tg/`) — Full multi-tenant Telegram bot for Stake auto-betting
+- **Multi-game support** — Limbo + Dice via game registry, switchable with `/set game`
+- **22 commands** — `/settoken`, `/balance`, `/config`, `/set`, `/strategies`, `/bet`, `/stop`, `/pause`, `/resume`, `/status`, `/monitor`, `/stats`, `/session`, `/lastbets`, `/rules`, `/addrule`, `/clearrules`, `/presets`, `/savepreset`, `/loadpreset`, `/help`, `/start`
+- **Live monitor** — Auto-updating status messages with inline buttons (3-60s intervals)
+- **Shared core module** (`stake/core/`) — Strategy, database, and engine logic shared between CLI and TG bot
+- **Cloudflare bypass chain** — 3-pass: direct → cached CF cookies → FlareSolverr headless solve (per-user)
+- **Batched DB writes** — Flush every 50 bets via `executemany()`, session stats saved on each flush
+- **Cross-thread SQLite safety** — Temp connection for session creation (main thread), lazy persistent connection in betting thread
+- **Periodic session save** — Stats saved every 30s without setting `ended_at` (running sessions appear as running)
+- **Zombie session cleanup** — `/stop` cleans up sessions with NULL `ended_at` from prior crashes
+- **Callback-safe replies** — `_reply()` helper handles both `/command` and inline button contexts
+- **None-safety** — All config reads use `or` pattern to handle `None` values from presets
+- **Full ISO timestamps** — Microsecond precision in all DB writes, displays, and calculations
+- **Profit-based base bet increment** — Auto-raise base bet every X profit
+- **Milestone notifications** — Configurable alerts at N bets/wins/losses/profit intervals
+- **BPS/BPM tracking** — Peak and low speed ranges tracked per session
+- **Preset security** — Presets exclude sensitive tokens (access_token, lockdown_token, cookie)
+- **Per-user isolation** — Separate DB, config, presets, and CF cookies per Telegram user
+
 ## v1.2.0 (2026-03-11)
 
 ### Added

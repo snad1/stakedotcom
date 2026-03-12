@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Stake Telegram Bot — entry point and Application wiring."""
+
+import os
+import sys
+
+from telegram import BotCommand
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+
+from .config import BOT_TOKEN, DATA_DIR, logger
+from . import VERSION
+from .handlers import (
+    cmd_start, cmd_help, cmd_settoken, cmd_balance, cmd_config,
+    cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_pause, cmd_resume,
+    cmd_status, cmd_monitor, cmd_stats, cmd_lastbets,
+    cmd_rules, cmd_addrule, cmd_clearrules,
+    cmd_presets, cmd_savepreset, cmd_loadpreset,
+    cmd_session,
+    callback_handler,
+)
+
+
+def main():
+    if not BOT_TOKEN:
+        print("Error: Set STAKE_TG_TOKEN environment variable")
+        print("  export STAKE_TG_TOKEN='your_telegram_bot_token'")
+        sys.exit(1)
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+    logger.info("Stake Telegram Bot v%s starting…", VERSION)
+    logger.info("Data dir: %s", DATA_DIR)
+
+    async def post_init(application):
+        await application.bot.set_my_commands([
+            BotCommand("start",       "Show welcome and quick start guide"),
+            BotCommand("help",        "Full command reference"),
+            BotCommand("settoken",    "Set Stake access tokens"),
+            BotCommand("balance",     "Check balances"),
+            BotCommand("config",      "View current config"),
+            BotCommand("set",         "Set a parameter"),
+            BotCommand("strategies",  "List strategies"),
+            BotCommand("bet",         "Start betting session"),
+            BotCommand("stop",        "Stop session"),
+            BotCommand("pause",       "Pause betting"),
+            BotCommand("resume",      "Resume betting"),
+            BotCommand("status",      "Live status with refresh button"),
+            BotCommand("monitor",     "Auto-updating live status"),
+            BotCommand("stats",       "Session history"),
+            BotCommand("lastbets",    "Recent bets"),
+            BotCommand("session",     "Detailed session report"),
+            BotCommand("rules",       "List current rules"),
+            BotCommand("addrule",     "Add a rule (JSON)"),
+            BotCommand("clearrules",  "Clear all rules"),
+            BotCommand("presets",     "List presets"),
+            BotCommand("savepreset",  "Save current config as preset"),
+            BotCommand("loadpreset",  "Load a preset"),
+        ])
+        logger.info("Bot commands registered with Telegram")
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
+    # Commands
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("settoken", cmd_settoken))
+    app.add_handler(CommandHandler("balance", cmd_balance))
+    app.add_handler(CommandHandler("config", cmd_config))
+    app.add_handler(CommandHandler("set", cmd_set))
+    app.add_handler(CommandHandler("strategies", cmd_strategies))
+    app.add_handler(CommandHandler("bet", cmd_bet))
+    app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_handler(CommandHandler("pause", cmd_pause))
+    app.add_handler(CommandHandler("resume", cmd_resume))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("monitor", cmd_monitor))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("lastbets", cmd_lastbets))
+    app.add_handler(CommandHandler("session", cmd_session))
+    app.add_handler(CommandHandler("rules", cmd_rules))
+    app.add_handler(CommandHandler("addrule", cmd_addrule))
+    app.add_handler(CommandHandler("clearrules", cmd_clearrules))
+    app.add_handler(CommandHandler("presets", cmd_presets))
+    app.add_handler(CommandHandler("savepreset", cmd_savepreset))
+    app.add_handler(CommandHandler("loadpreset", cmd_loadpreset))
+
+    # Inline button callbacks
+    app.add_handler(CallbackQueryHandler(callback_handler))
+
+    logger.info("Bot started. Polling…")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -8,13 +8,15 @@ set -euo pipefail
 
 INSTALL_DIR="$HOME/stake-bot"
 SERVICE_NAME="stake"
+TG_SERVICE_NAME="stake-tg"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 STAKECTL="$HOME/.local/bin/stakectl"
 
 echo ""
-echo "╔══════════════════════════════════════════════╗"
-echo "║   Stake AutoBot — Server Installer v1.2         ║"
-echo "╚══════════════════════════════════════════════╝"
+echo "╔══════════════════════════════════════════════════╗"
+echo "║   Stake AutoBot — Server Installer v1.3            ║"
+echo "║   CLI Bot + Telegram Bot                           ║"
+echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
 # ── 1. System dependencies ─────────────────────────────
@@ -58,21 +60,35 @@ else
 fi
 
 # ── 4. Bot directory ───────────────────────────────────
-echo "[4/8] Setting up bot directory…"
+echo "[4/9] Setting up bot directory…"
 mkdir -p "$INSTALL_DIR"
 cp stake.py         "$INSTALL_DIR/"
 cp requirements.txt "$INSTALL_DIR/"
+# Copy TG bot module
+mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/tg"
+cp core/__init__.py  "$INSTALL_DIR/core/"
+cp core/strategy.py  "$INSTALL_DIR/core/"
+cp core/database.py  "$INSTALL_DIR/core/"
+cp core/engine.py    "$INSTALL_DIR/core/"
+cp tg/__init__.py    "$INSTALL_DIR/tg/"
+cp tg/config.py      "$INSTALL_DIR/tg/"
+cp tg/database.py    "$INSTALL_DIR/tg/"
+cp tg/engine.py      "$INSTALL_DIR/tg/"
+cp tg/formatter.py   "$INSTALL_DIR/tg/"
+cp tg/handlers.py    "$INSTALL_DIR/tg/"
+cp tg/bot.py         "$INSTALL_DIR/tg/"
 
 # ── 5. Python virtual environment ─────────────────────
-echo "[5/8] Creating Python virtual environment…"
+echo "[5/9] Creating Python virtual environment…"
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 
-# ── 6. Systemd user service (runs as your user, no root) ─
-echo "[6/8] Setting up systemd service…"
+# ── 6. Systemd user services (runs as your user, no root) ─
+echo "[6/9] Setting up systemd services…"
 mkdir -p "$SYSTEMD_DIR"
 
+# CLI bot service
 cat > "$SYSTEMD_DIR/${SERVICE_NAME}.service" << SERVICEEOF
 [Unit]
 Description=Stake AutoBot — Multi-Game Auto-Betting Engine
@@ -100,14 +116,44 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=default.target
 SERVICEEOF
 
+# Telegram bot service
+cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}.service" << TGSERVICEEOF
+[Unit]
+Description=Stake Telegram Bot — Multi-Game Auto-Betting via Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/venv/bin/python3 -m tg.bot
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Graceful shutdown
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Environment
+Environment=HOME=${HOME}
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=${INSTALL_DIR}
+EnvironmentFile=-${HOME}/.stake_tg_env
+
+[Install]
+WantedBy=default.target
+TGSERVICEEOF
+
 # Enable lingering so user services run after logout
 sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
 
 systemctl --user daemon-reload
-echo "   Service installed: ${SERVICE_NAME}.service"
+echo "   Services installed: ${SERVICE_NAME}.service, ${TG_SERVICE_NAME}.service"
 
 # ── 7. Management scripts ─────────────────────────────
-echo "[7/8] Creating management commands…"
+echo "[7/9] Creating management commands…"
 mkdir -p "$HOME/.local/bin"
 
 # stakectl — single command to manage everything
@@ -118,8 +164,10 @@ set -euo pipefail
 
 INSTALL_DIR="$HOME/stake-bot"
 SERVICE="stake"
+TG_SERVICE="stake-tg"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/stake.py"
+TG_ENV="$HOME/.stake_tg_env"
 
 usage() {
     echo ""
@@ -148,6 +196,15 @@ usage() {
     echo "    stakectl session ID  Full stats + streak distribution for a session"
     echo "    stakectl presets     List saved presets"
     echo "    stakectl update      Update bot from current directory"
+    echo ""
+    echo "  TELEGRAM BOT:"
+    echo "    stakectl tg setup    Set Telegram bot token"
+    echo "    stakectl tg start    Start Telegram bot service"
+    echo "    stakectl tg stop     Stop Telegram bot service"
+    echo "    stakectl tg restart  Restart Telegram bot service"
+    echo "    stakectl tg status   Show Telegram bot status"
+    echo "    stakectl tg logs     Stream Telegram bot logs"
+    echo "    stakectl tg logs-full Show last 200 TG bot log lines"
     echo ""
     echo "  CLOUDFLARE:"
     echo "    stakectl flaresolverr           Show FlareSolverr status"
@@ -277,7 +334,15 @@ cmd_presets() {
 cmd_update() {
     if [ -f "stake.py" ]; then
         cp stake.py "$INSTALL_DIR/stake.py"
-        echo "Bot updated. Restart with: stakectl restart"
+        # Update TG bot files if present
+        if [ -d "core" ] && [ -d "tg" ]; then
+            mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/tg"
+            cp core/*.py "$INSTALL_DIR/core/"
+            cp tg/*.py   "$INSTALL_DIR/tg/"
+            echo "Bot + TG bot updated. Restart with: stakectl restart && stakectl tg restart"
+        else
+            echo "Bot updated. Restart with: stakectl restart"
+        fi
     else
         echo "No stake.py in current directory."
         exit 1
@@ -322,6 +387,67 @@ cmd_flaresolverr() {
     esac
 }
 
+cmd_tg() {
+    local action="${1:-}"
+    case "$action" in
+        setup)
+            echo "Enter your Telegram bot token (from @BotFather):"
+            read -r token
+            if [ -z "$token" ]; then
+                echo "No token provided."
+                exit 1
+            fi
+            echo "STAKE_TG_TOKEN=$token" > "$TG_ENV"
+            chmod 600 "$TG_ENV"
+            echo "Token saved to $TG_ENV"
+            echo "Start with: stakectl tg start"
+            ;;
+        start)
+            if [ ! -f "$TG_ENV" ]; then
+                echo "No TG token configured. Run 'stakectl tg setup' first."
+                exit 1
+            fi
+            systemctl --user start "$TG_SERVICE"
+            sleep 1
+            if systemctl --user is-active --quiet "$TG_SERVICE"; then
+                echo "Telegram bot started."
+                echo "  Check status:  stakectl tg status"
+                echo "  View logs:     stakectl tg logs"
+            else
+                echo "Failed to start. Check logs: stakectl tg logs-full"
+                exit 1
+            fi
+            ;;
+        stop)
+            systemctl --user stop "$TG_SERVICE"
+            echo "Telegram bot stopped."
+            ;;
+        restart)
+            systemctl --user restart "$TG_SERVICE"
+            sleep 1
+            if systemctl --user is-active --quiet "$TG_SERVICE"; then
+                echo "Telegram bot restarted."
+            else
+                echo "Failed to restart. Check: stakectl tg logs-full"
+            fi
+            ;;
+        status)
+            echo ""
+            echo "── Telegram Bot Status ──"
+            systemctl --user status "$TG_SERVICE" --no-pager 2>/dev/null || echo "  Service not running"
+            ;;
+        logs)
+            journalctl --user -u "$TG_SERVICE" -f --no-pager
+            ;;
+        logs-full)
+            journalctl --user -u "$TG_SERVICE" -n 200 --no-pager
+            ;;
+        *)
+            echo "Usage: stakectl tg [setup|start|stop|restart|status|logs|logs-full]"
+            ;;
+    esac
+}
+
 # ── Dispatch ──────────────────────────────────────────
 case "${1:-}" in
     setup)        cmd_setup ;;
@@ -338,14 +464,23 @@ case "${1:-}" in
     session)      cmd_session "${2:-}" ;;
     presets)      cmd_presets ;;
     update)       cmd_update ;;
+    tg)           cmd_tg "${2:-}" ;;
     flaresolverr) cmd_flaresolverr "${2:-}" ;;
     *)            usage ;;
 esac
 CTLEOF
 chmod +x "$STAKECTL"
 
-# ── 8. Quick-run scripts (kept for compatibility) ─────
-echo "[8/8] Creating helper scripts…"
+# ── 8. TG bot env file placeholder ─────────────────────
+echo "[8/9] Checking Telegram bot config…"
+if [ -f "$HOME/.stake_tg_env" ]; then
+    echo "   Telegram bot token already configured."
+else
+    echo "   No TG token yet. Set with: stakectl tg setup"
+fi
+
+# ── 9. Quick-run scripts (kept for compatibility) ─────
+echo "[9/9] Creating helper scripts…"
 
 cat > "$INSTALL_DIR/run.sh" << 'EOF'
 #!/usr/bin/env bash
@@ -376,7 +511,15 @@ echo "  SHORTCUTS:"
 echo "    stakectl interactive    Start daemon + attach monitor"
 echo "    stakectl tmux           Monitor in detachable tmux session"
 echo ""
-echo "  The bot runs as a systemd user service — it will:"
+echo "  TELEGRAM BOT:"
+echo "    stakectl tg setup       Set bot token"
+echo "    stakectl tg start       Start Telegram bot"
+echo "    stakectl tg stop        Stop Telegram bot"
+echo "    stakectl tg restart     Restart Telegram bot"
+echo "    stakectl tg status      Check Telegram bot status"
+echo "    stakectl tg logs        Stream Telegram bot logs"
+echo ""
+echo "  Both bots run as systemd user services — they will:"
 echo "    - Auto-restart on crashes (after 10s)"
 echo "    - Keep running after you log out (lingering enabled)"
 echo "    - Log to journalctl (stakectl logs)"

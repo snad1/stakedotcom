@@ -1,0 +1,949 @@
+"""Telegram command handlers — all bot commands and callback queries.
+
+Stake-specific differences from wolfbet:
+  - Auth: access_token + lockdown_token + optional cookie (not single API key)
+  - Multi-game: /set game limbo|dice, game-specific params (multiplier, dice target/condition)
+  - No WolfRider strategy
+  - /settoken command instead of /setkey
+  - Session query includes game column (27 cols vs 26)
+  - Bets query includes game + result_display columns
+"""
+
+import os
+import json
+import asyncio
+import sqlite3
+from datetime import datetime
+from typing import Dict
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+
+from . import VERSION
+from .config import (
+    CONFIG_KEYS, TIERS, CURRENCIES, GAME_LABELS,
+    get_user_tier, logger,
+)
+from .database import (
+    user_db_path, load_user_config, save_user_config,
+    load_presets, save_presets,
+)
+from core.strategy import (
+    STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME, StrategyRule,
+    describe_rule, load_rules_from_text,
+)
+from .engine import BettingEngine
+from .formatter import (
+    format_status, format_stop, format_milestone, format_session_row,
+    format_session_detail, format_all_time, format_lastbets,
+)
+
+
+# ── Active engines (one per user) ────────────────────────
+active_engines: Dict[int, BettingEngine] = {}
+
+# ── Active monitors (one per user) ──────────────────────
+active_monitors: Dict[int, asyncio.Task] = {}
+
+
+# ── Helper: reply via message or callback query ──────────
+async def _reply(update: Update, text: str, **kwargs):
+    """Reply via message or callback query, whichever is available."""
+    if update.message:
+        await update.message.reply_text(text, **kwargs)
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(text, **kwargs)
+
+
+# ── /start ───────────────────────────────────────────────
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"\U0001f3b0 *Stake Bot v{VERSION}*\n\n"
+        "Multi-game auto-betting engine for Stake via Telegram.\n"
+        "Supports: Limbo, Dice\n\n"
+        "*Setup:*\n"
+        "/settoken — Set your Stake access tokens\n"
+        "/balance — Check your balances\n"
+        "/config — View current configuration\n\n"
+        "*Configure:*\n"
+        "/set currency usdt\n"
+        "/set game limbo\n"
+        "/set strategy martingale\n"
+        "/set multiplier 2.0\n"
+        "/set basebet 0.0001\n"
+        "/set maxprofit 0.01\n\n"
+        "*Session:*\n"
+        "/bet — Start betting session\n"
+        "/stop — Stop session\n"
+        "/pause / /resume\n"
+        "/status — Live status\n"
+        "/monitor — Auto-updating status\n"
+        "/stats — Session history\n"
+        "/session — Session detail\n\n"
+        "/strategies — List all strategies\n"
+        "/help — Full command reference",
+        parse_mode="Markdown",
+    )
+
+
+# ── /help ────────────────────────────────────────────────
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "*Commands:*\n\n"
+        "*Setup*\n"
+        "/settoken — Access tokens (message auto-deleted)\n"
+        "/balance — Show all balances\n"
+        "/config — Show current config\n"
+        "/set — Set parameter\n"
+        "/strategies — List strategies\n\n"
+        "*Parameters for* /set*:*\n"
+        "`currency` — usdt, btc, eth, ltc, doge, trx, bch, xrp, bnb, ada, matic\n"
+        "`game` — limbo, dice\n"
+        "`strategy` — flat, martingale, antimartingale, dalembert, paroli, delaymartingale, rulebased\n"
+        "`multiplier` — target multiplier (e.g. 2.0)\n"
+        "`basebet` — base bet amount\n"
+        "`dicetarget` — dice target (0-100)\n"
+        "`dicecondition` — above / below\n"
+        "`lossmult` — loss multiplier (default 2.0)\n"
+        "`winmult` — win multiplier (default 1.0)\n"
+        "`delay` — seconds between bets\n"
+        "`maxprofit` — stop at profit\n"
+        "`maxloss` — stop at loss\n"
+        "`maxbets` — stop after N bets\n"
+        "`maxwins` — stop after N wins\n"
+        "`minbalance` — stop below balance\n"
+        "`delaythreshold` — Delay Martingale threshold\n"
+        "`milestonebets` — Notify every N bets (0=off)\n"
+        "`milestonewins` — Notify every N wins (0=off)\n"
+        "`milestonelosses` — Notify every N losses (0=off)\n"
+        "`milestoneprofit` — Notify every X profit (0=off)\n"
+        "`profitthreshold` — Auto-raise base bet every X profit (`off` to disable)\n"
+        "`profitincrement` — Amount to add to base bet (`off` to disable)\n\n"
+        "*Session*\n"
+        "/bet — Start session\n"
+        "/stop — Stop session\n"
+        "/pause — Pause betting\n"
+        "/resume — Resume betting\n"
+        "/status — Live status (with refresh button)\n"
+        "/monitor — Auto-updating status (default 5s)\n"
+        "/stats — Session history\n"
+        "/session — Detailed session report\n"
+        "/lastbets — Recent bets\n\n"
+        "*Rules*\n"
+        "/rules — List current rules\n"
+        "/addrule — Add rule (JSON)\n"
+        "/clearrules — Clear all rules\n\n"
+        "*Presets*\n"
+        "/presets — List presets\n"
+        "/savepreset — Save current config\n"
+        "/loadpreset — Load preset",
+        parse_mode="Markdown",
+    )
+
+
+# ── /settoken ────────────────────────────────────────────
+async def cmd_settoken(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if not context.args or len(context.args) < 2:
+        await update.effective_chat.send_message(
+            "Usage: /settoken <access\\_token> <lockdown\\_token> [cookie]\n\n"
+            "Get these from Stake browser DevTools (Network tab).\n"
+            "Your message is auto-deleted for security.",
+            parse_mode="Markdown")
+        return
+
+    user_id = update.effective_user.id
+    config = load_user_config(user_id)
+    config["access_token"] = context.args[0]
+    config["lockdown_token"] = context.args[1]
+    if len(context.args) > 2:
+        config["cookie"] = " ".join(context.args[2:])
+    save_user_config(user_id, config)
+
+    await update.effective_chat.send_message(
+        "Tokens saved. Your message was deleted for security.\n"
+        "Test with /balance", parse_mode="Markdown")
+
+
+# ── /balance ─────────────────────────────────────────────
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    config = load_user_config(user_id)
+    if not config.get("access_token"):
+        await update.message.reply_text(
+            "Set your tokens first: /settoken <access> <lockdown>",
+            parse_mode="Markdown")
+        return
+
+    await update.message.reply_text("Fetching balances…")
+    try:
+        engine = BettingEngine(user_id, "", config)
+        engine._init_http()
+        engine._api_base = "https://stake.bet/_api/casino"
+        balances = engine.api_get_balances()
+        if not balances:
+            # Try alternate domain
+            engine._api_base = "https://stake.com/_api/casino"
+            balances = engine.api_get_balances()
+        if not balances:
+            await update.message.reply_text("No balances found or tokens invalid.")
+            return
+
+        lines = ["*Balances:*"]
+        for b in balances:
+            cur = b.get("currency", "?").upper()
+            amt = float(b.get("amount", 0))
+            if amt > 0:
+                lines.append(f"`{cur:>6}  {amt:.8f}`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Error: `{e}`", parse_mode="Markdown")
+
+
+# ── /config ──────────────────────────────────────────────
+async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    config = load_user_config(user_id)
+
+    try:
+        strategy_key = config.get("strategy_key") or "2"
+        strategy = config.get("strategy") or STRATEGY_NAMES.get(strategy_key, "Martingale")
+        game = config.get("game") or "limbo"
+        multiplier = float(config.get("multiplier_target") or 2.0)
+        wc = round(99.0 / multiplier, 2) if multiplier > 0 else 0
+
+        lines = [
+            "*Current Configuration:*",
+            f"Currency: `{(config.get('currency') or 'usdt').upper()}`",
+            f"Game: `{GAME_LABELS.get(game, game)}`",
+            f"Strategy: `{strategy}`",
+            f"Multiplier: `{multiplier}x` ({wc}% win chance)",
+            f"Base bet: `{float(config.get('base_bet') or 0.0001):.8f}`",
+        ]
+
+        if game == "dice":
+            lines.append(f"Dice target: `{float(config.get('dice_target') or 50.5)}`")
+            lines.append(f"Dice condition: `{config.get('dice_condition') or 'above'}`")
+
+        lines.extend([
+            f"Loss mult: `{float(config.get('loss_mult') or 2.0)}x`",
+            f"Win mult: `{float(config.get('win_mult') or 1.0)}x`",
+            f"Bet delay: `{float(config.get('bet_delay') or 0)}s`",
+        ])
+
+        stops = []
+        if config.get("max_profit"): stops.append(f"Max profit: {config['max_profit']}")
+        if config.get("max_loss"):   stops.append(f"Max loss: {config['max_loss']}")
+        if config.get("max_bets"):   stops.append(f"Max bets: {config['max_bets']}")
+        if config.get("max_wins"):   stops.append(f"Max wins: {config['max_wins']}")
+        if config.get("stop_on_balance"): stops.append(f"Min balance: {config['stop_on_balance']}")
+        if stops:
+            lines.append(f"Stop: `{', '.join(stops)}`")
+        else:
+            lines.append("Stop conditions: _none_")
+
+        pi = config.get("profit_increment")
+        pt = config.get("profit_threshold")
+        if pi and pt:
+            lines.append(f"Profit increment: `+{float(pi):.8f} every {pt} profit`")
+
+        ms = []
+        mb = config.get("milestone_bets", 100)
+        if mb: ms.append(f"{mb} bets")
+        mw = config.get("milestone_wins", 0)
+        if mw: ms.append(f"{mw} wins")
+        ml = config.get("milestone_losses", 0)
+        if ml: ms.append(f"{ml} losses")
+        mp = config.get("milestone_profit", 0)
+        if mp: ms.append(f"{mp} profit")
+        lines.append(f"Milestones: `{', '.join(ms) if ms else 'off'}`")
+
+        token_set = "Yes" if config.get("access_token") else "No"
+        lines.append(f"Tokens: `{token_set}`")
+        lines.append(f"Tier: `{get_user_tier(user_id)}`")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Config error: `{e}`", parse_mode="Markdown")
+
+
+# ── /set ─────────────────────────────────────────────────
+async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /set <param> <value>\nSee /help for parameters.",
+            parse_mode="Markdown")
+        return
+
+    param = context.args[0].lower()
+    value = " ".join(context.args[1:])
+    config = load_user_config(user_id)
+
+    try:
+        if param == "currency":
+            config["currency"] = value.lower()
+        elif param == "game":
+            g = value.lower()
+            if g not in GAME_LABELS:
+                await update.message.reply_text(
+                    f"Unknown game. Available: {', '.join(GAME_LABELS.keys())}",
+                    parse_mode="Markdown")
+                return
+            config["game"] = g
+        elif param == "strategy":
+            name = value.lower().replace("-", "").replace(" ", "").replace("_", "")
+            key = STRATEGY_BY_NAME.get(name)
+            if not key:
+                if value in STRATEGIES:
+                    key = value
+                else:
+                    await update.message.reply_text(
+                        "Unknown strategy. Use /strategies to see options.",
+                        parse_mode="Markdown")
+                    return
+            config["strategy_key"] = key
+            config["strategy"] = STRATEGY_NAMES[key]
+        elif param == "multiplier":
+            mult = float(value)
+            config["multiplier_target"] = mult
+            # Auto-update dice target for current condition
+            wc = 99.0 / mult
+            cond = config.get("dice_condition", "above")
+            if cond == "above":
+                config["dice_target"] = round(100.0 - wc, 2)
+            else:
+                config["dice_target"] = round(wc, 2)
+        elif param == "basebet":
+            config["base_bet"] = float(value)
+        elif param == "dicetarget":
+            config["dice_target"] = float(value)
+        elif param in ("dicecondition", "condition"):
+            if value.lower() not in ("above", "below"):
+                await update.message.reply_text(
+                    "Condition must be `above` or `below`", parse_mode="Markdown")
+                return
+            config["dice_condition"] = value.lower()
+            # Auto-update dice target
+            mult = config.get("multiplier_target", 2.0)
+            wc = 99.0 / mult
+            if value.lower() == "above":
+                config["dice_target"] = round(100.0 - wc, 2)
+            else:
+                config["dice_target"] = round(wc, 2)
+        elif param == "lossmult":
+            config["loss_mult"] = float(value)
+        elif param == "winmult":
+            config["win_mult"] = float(value)
+        elif param == "delay":
+            config["bet_delay"] = float(value)
+        elif param == "maxprofit":
+            config["max_profit"] = float(value) if value.lower() != "off" else None
+        elif param == "maxloss":
+            config["max_loss"] = float(value) if value.lower() != "off" else None
+        elif param == "maxbets":
+            config["max_bets"] = int(value) if value.lower() != "off" else None
+        elif param == "maxwins":
+            config["max_wins"] = int(value) if value.lower() != "off" else None
+        elif param == "minbalance":
+            config["stop_on_balance"] = float(value) if value.lower() != "off" else None
+        elif param == "delaythreshold":
+            config["delay_martin_threshold"] = int(value)
+        elif param in ("milestonebets", "msbets"):
+            config["milestone_bets"] = int(value)
+        elif param in ("milestonewins", "mswins"):
+            config["milestone_wins"] = int(value)
+        elif param in ("milestonelosses", "mslosses"):
+            config["milestone_losses"] = int(value)
+        elif param in ("milestoneprofit", "msprofit"):
+            config["milestone_profit"] = float(value)
+        elif param in ("profitthreshold", "pt"):
+            config["profit_threshold"] = float(value) if value.lower() != "off" else None
+        elif param in ("profitincrement", "pi"):
+            config["profit_increment"] = float(value) if value.lower() != "off" else None
+        else:
+            await update.message.reply_text(
+                f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
+            return
+
+        save_user_config(user_id, config)
+        await update.message.reply_text(f"Set `{param}` = `{value}`", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text(
+            f"Invalid value for `{param}`: `{value}`", parse_mode="Markdown")
+
+
+# ── /strategies ──────────────────────────────────────────
+async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lines = ["*Available Strategies:*\n"]
+    for k, (name, desc) in STRATEGIES.items():
+        lines.append(f"`{k}` *{name}* — {desc}")
+    lines.append("\nSet with: /set strategy <name>")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ── /bet ─────────────────────────────────────────────────
+async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if user_id in active_engines and active_engines[user_id].running:
+        await update.message.reply_text(
+            "Session already running. /stop first.", parse_mode="Markdown")
+        return
+
+    config = load_user_config(user_id)
+    if not config.get("access_token"):
+        await update.message.reply_text(
+            "Set your tokens first: /settoken <access> <lockdown>",
+            parse_mode="Markdown")
+        return
+
+    # Apply tier rate limit
+    tier = get_user_tier(user_id)
+    min_delay = TIERS.get(tier, 1.0)
+    config_delay = float(config.get("bet_delay") or 0)
+    config["bet_delay"] = max(config_delay, min_delay)
+
+    db_path = user_db_path(user_id)
+    try:
+        engine = BettingEngine(user_id, db_path, config)
+    except Exception as e:
+        await update.message.reply_text(f"Config error: `{e}`", parse_mode="Markdown")
+        return
+
+    # Set up async callbacks from betting thread
+    loop = asyncio.get_event_loop()
+    chat_id = update.effective_chat.id
+    app = context.application
+
+    def on_stop(reason):
+        asyncio.run_coroutine_threadsafe(
+            _notify_stop(chat_id, user_id, reason, app), loop)
+
+    def on_milestone(data):
+        asyncio.run_coroutine_threadsafe(
+            _notify_milestone(chat_id, data, app), loop)
+
+    engine.on_stop = on_stop
+    engine.on_milestone = on_milestone
+
+    game_label = GAME_LABELS.get(engine.game, engine.game)
+    msg = await update.message.reply_text(f"Connecting to Stake ({game_label})…")
+
+    if not engine.start():
+        await msg.edit_text(f"Failed to start: {engine.last_error}")
+        return
+
+    active_engines[user_id] = engine
+
+    wc = round(99.0 / engine.multiplier_target, 2)
+    await msg.edit_text(
+        f"Session #{engine.session_id} started!\n\n"
+        f"Game: `{game_label}`\n"
+        f"Strategy: `{engine.strategy}`\n"
+        f"Multiplier: `{engine.multiplier_target}x` ({wc}%)\n"
+        f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
+        f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`\n\n"
+        f"Use /status to check progress.",
+        parse_mode="Markdown",
+    )
+
+
+async def _notify_stop(chat_id: int, user_id: int, reason: str, app):
+    engine = active_engines.pop(user_id, None)
+    if not engine:
+        return
+    s = engine.get_status()
+    text = format_stop(s, reason)
+    await app.bot.send_message(chat_id, text, parse_mode="Markdown")
+
+
+async def _notify_milestone(chat_id: int, data: dict, app):
+    text = format_milestone(data)
+    await app.bot.send_message(chat_id, text, parse_mode="Markdown")
+
+
+# ── /stop ────────────────────────────────────────────────
+async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    engine = active_engines.get(user_id)
+    if engine and engine.running:
+        engine.stop_reason = "Stopped by user"
+        engine.stop()
+        return
+    # Clean up zombie sessions
+    db_path = user_db_path(user_id)
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL")
+        zombies = cur.fetchone()[0]
+        if zombies:
+            conn.execute(
+                "UPDATE sessions SET ended_at = ? "
+                "WHERE ended_at IS NULL", (datetime.now().isoformat(),))
+            conn.commit()
+            conn.close()
+            await _reply(update, f"Cleaned up {zombies} stale session(s).")
+            return
+        conn.close()
+    await _reply(update, "No session running.")
+
+
+# ── /pause ───────────────────────────────────────────────
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    engine = active_engines.get(user_id)
+    if not engine or not engine.running:
+        await _reply(update, "No session running.")
+        return
+    engine.pause()
+    await _reply(update, "Session paused. /resume to continue.", parse_mode="Markdown")
+
+
+# ── /resume ──────────────────────────────────────────────
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    engine = active_engines.get(user_id)
+    if not engine or not engine.running:
+        await _reply(update, "No session running.")
+        return
+    engine.resume()
+    await _reply(update, "Session resumed.")
+
+
+# ── /status ──────────────────────────────────────────────
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    engine = active_engines.get(user_id)
+    if not engine or not engine.running:
+        await update.message.reply_text(
+            "No session running. Start one with /bet", parse_mode="Markdown")
+        return
+
+    text = format_status(engine.get_status())
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Refresh", callback_data="refresh_status"),
+        InlineKeyboardButton("Stop", callback_data="stop_session"),
+    ]])
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+# ── /monitor ─────────────────────────────────────────────
+async def cmd_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    engine = active_engines.get(user_id)
+    if not engine or not engine.running:
+        await update.message.reply_text(
+            "No session running. Start one with /bet", parse_mode="Markdown")
+        return
+
+    interval = 5
+    if context.args:
+        try:
+            interval = max(3, min(60, int(context.args[0])))
+        except ValueError:
+            pass
+
+    old = active_monitors.pop(user_id, None)
+    if old and not old.done():
+        old.cancel()
+
+    text = format_status(engine.get_status())
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
+        InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
+        InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+    ]])
+    msg = await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    task = asyncio.create_task(
+        _monitor_loop(msg, user_id, interval))
+    active_monitors[user_id] = task
+
+
+async def _monitor_loop(msg, user_id: int, interval: int):
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            engine = active_engines.get(user_id)
+            if not engine or not engine.running:
+                try:
+                    await msg.edit_text(
+                        "Session ended. Monitor stopped.",
+                        reply_markup=None)
+                except Exception:
+                    pass
+                break
+
+            text = format_status(engine.get_status())
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
+                InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
+                InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+            ]])
+            try:
+                await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            except Exception:
+                pass
+    except asyncio.CancelledError:
+        pass
+    finally:
+        active_monitors.pop(user_id, None)
+
+
+# ── Inline button callbacks ─────────────────────────────
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data == "noop":
+        return
+
+    if query.data == "refresh_status":
+        engine = active_engines.get(user_id)
+        if not engine or not engine.running:
+            await query.edit_message_text("Session ended.")
+            return
+        text = format_status(engine.get_status())
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Refresh", callback_data="refresh_status"),
+            InlineKeyboardButton("Stop", callback_data="stop_session"),
+        ]])
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            pass
+
+    elif query.data == "stop_monitor":
+        task = active_monitors.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
+        engine = active_engines.get(user_id)
+        if engine and engine.running:
+            text = format_status(engine.get_status())
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Refresh", callback_data="refresh_status"),
+                InlineKeyboardButton("Monitor", callback_data="start_monitor_5"),
+                InlineKeyboardButton("Stop", callback_data="stop_session"),
+            ]])
+            try:
+                await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            except Exception:
+                pass
+        else:
+            await query.edit_message_text("Monitor stopped. Session ended.")
+
+    elif query.data.startswith("start_monitor_"):
+        interval = int(query.data.split("_")[-1])
+        engine = active_engines.get(user_id)
+        if not engine or not engine.running:
+            await query.edit_message_text("Session ended.")
+            return
+        old = active_monitors.pop(user_id, None)
+        if old and not old.done():
+            old.cancel()
+        text = format_status(engine.get_status())
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
+            InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
+            InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+        ]])
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            pass
+        task = asyncio.create_task(
+            _monitor_loop(query.message, user_id, interval))
+        active_monitors[user_id] = task
+
+    elif query.data == "stop_session":
+        task = active_monitors.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
+        engine = active_engines.get(user_id)
+        if engine and engine.running:
+            engine.stop_reason = "Stopped by user"
+            engine.stop()
+        await query.edit_message_text("Stopping session…")
+
+
+# ── /stats ───────────────────────────────────────────────
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db_path = user_db_path(user_id)
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No session history yet.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("""
+        SELECT id, started_at, ended_at,
+               UPPER(currency), game, strategy, multiplier, base_bet,
+               total_bets, wins, losses, profit, wagered,
+               start_balance, end_balance,
+               max_win_streak, max_loss_streak,
+               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
+        FROM sessions ORDER BY id DESC LIMIT 10
+    """).fetchall()
+
+    totals = conn.execute("""
+        SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
+               COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
+               COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
+               COALESCE(MAX(profit),0), COALESCE(MIN(profit),0),
+               COALESCE(MAX(total_bets),0), COALESCE(AVG(total_bets),0),
+               COALESCE(MAX(highest_balance),0), COALESCE(MAX(highest_win),0),
+               COALESCE(MAX(biggest_loss),0), COALESCE(AVG(bets_per_minute),0),
+               COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
+               COALESCE(AVG(bets_per_second),0)
+        FROM sessions
+    """).fetchone()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("No sessions found.")
+        return
+
+    lines = ["\U0001f4ca *Session History (last 10)*\n"]
+    for row in rows:
+        lines.append(format_session_row(row))
+
+    lines.append(format_all_time(totals))
+    lines.append(f"\n_View session detail:_ /session <id>")
+
+    text = "\n".join(lines)
+    if len(text) <= 4096:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    else:
+        mid = text.rfind("\U0001f4ca *All-Time")
+        await update.message.reply_text(text[:mid], parse_mode="Markdown")
+        await update.message.reply_text(text[mid:], parse_mode="Markdown")
+
+
+# ── /lastbets ────────────────────────────────────────────
+async def cmd_lastbets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    n = int(context.args[0]) if context.args else 10
+    n = min(n, 50)
+
+    db_path = user_db_path(user_id)
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No data.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("""
+        SELECT timestamp, game, amount, result_display, state, profit, balance_after
+        FROM bets ORDER BY id DESC LIMIT ?
+    """, (n,)).fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("No bets found.")
+        return
+
+    await update.message.reply_text(format_lastbets(rows), parse_mode="Markdown")
+
+
+# ── /rules ───────────────────────────────────────────────
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    config = load_user_config(user_id)
+    rules_text = config.get("custom_rules_text", "")
+    rules = load_rules_from_text(rules_text) if rules_text else []
+
+    if not rules:
+        await update.message.reply_text(
+            "No rules configured.\nAdd with /addrule <json>", parse_mode="Markdown")
+        return
+
+    lines = ["*Current Rules:*\n"]
+    for i, r in enumerate(rules, 1):
+        lines.append(f"`{i}.` {r.description}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ── /addrule ─────────────────────────────────────────────
+async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /addrule <json>\n\n"
+            "Example:\n"
+            '/addrule `{"cond_type":"sequence","cond_mode":"every","cond_value":1,"cond_trigger":"loss","action":"increase_amount","action_value":101}`',
+            parse_mode="Markdown",
+        )
+        return
+
+    raw = " ".join(context.args)
+    try:
+        d = json.loads(raw)
+        r = StrategyRule.from_dict(d)
+        r.description = describe_rule(r)
+    except Exception as e:
+        await update.message.reply_text(f"Invalid JSON: `{e}`", parse_mode="Markdown")
+        return
+
+    config = load_user_config(user_id)
+    rules_text = config.get("custom_rules_text", "")
+    rules = load_rules_from_text(rules_text) if rules_text else []
+    rules.append(r)
+
+    config["custom_rules_text"] = json.dumps([rl.to_dict() for rl in rules])
+    save_user_config(user_id, config)
+    await update.message.reply_text(f"Rule added: `{r.description}`", parse_mode="Markdown")
+
+
+# ── /clearrules ──────────────────────────────────────────
+async def cmd_clearrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    config = load_user_config(user_id)
+    config["custom_rules_text"] = ""
+    save_user_config(user_id, config)
+    await update.message.reply_text("All rules cleared.")
+
+
+# ── /presets ─────────────────────────────────────────────
+async def cmd_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    presets = load_presets(user_id)
+    if not presets:
+        await update.message.reply_text("No presets saved.")
+        return
+
+    lines = ["*Presets:*\n"]
+    for name, p in presets.items():
+        game = p.get("game", "limbo")
+        lines.append(f"`{name}` — {p.get('strategy', '?')} {game} {p.get('multiplier_target', '?')}x")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ── /savepreset ──────────────────────────────────────────
+async def cmd_savepreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /savepreset <name>", parse_mode="Markdown")
+        return
+    name = context.args[0]
+    config = load_user_config(user_id)
+
+    presets = load_presets(user_id)
+    presets[name] = {k: config.get(k) for k in CONFIG_KEYS if k not in ("access_token", "lockdown_token", "cookie")}
+    save_presets(user_id, presets)
+    await update.message.reply_text(f"Preset `{name}` saved.", parse_mode="Markdown")
+
+
+# ── /loadpreset ──────────────────────────────────────────
+async def cmd_loadpreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /loadpreset <name>", parse_mode="Markdown")
+        return
+    name = context.args[0]
+
+    presets = load_presets(user_id)
+    if name not in presets:
+        await update.message.reply_text(
+            f"Preset `{name}` not found.", parse_mode="Markdown")
+        return
+
+    config = load_user_config(user_id)
+    for k, v in presets[name].items():
+        config[k] = v
+    save_user_config(user_id, config)
+    await update.message.reply_text(
+        f"Preset `{name}` loaded. Check with /config", parse_mode="Markdown")
+
+
+# ── /session <id> ───────────────────────────────────────
+async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /session <id>\nSee /stats for session IDs.",
+            parse_mode="Markdown")
+        return
+
+    try:
+        session_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Session ID must be a number.")
+        return
+
+    db_path = user_db_path(user_id)
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No data.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    sess = conn.execute("""
+        SELECT id, started_at, ended_at,
+               UPPER(currency), game, strategy, multiplier, base_bet,
+               total_bets, wins, losses, profit, wagered,
+               start_balance, end_balance,
+               max_win_streak, max_loss_streak,
+               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
+        FROM sessions WHERE id = ?
+    """, (session_id,)).fetchone()
+
+    if not sess:
+        conn.close()
+        await update.message.reply_text(f"Session #{session_id} not found.")
+        return
+
+    # streak distribution
+    bet_rows = conn.execute(
+        "SELECT state FROM bets WHERE session_id=? ORDER BY id",
+        (session_id,)
+    ).fetchall()
+
+    dist = {"win": {}, "loss": {}}
+    cur_type = None
+    cur_len = 0
+    for (st,) in bet_rows:
+        kind = "win" if st == "win" else "loss"
+        if kind == cur_type:
+            cur_len += 1
+        else:
+            if cur_type and cur_len > 0:
+                dist[cur_type][cur_len] = dist[cur_type].get(cur_len, 0) + 1
+            cur_type = kind
+            cur_len = 1
+    if cur_type and cur_len > 0:
+        dist[cur_type][cur_len] = dist[cur_type].get(cur_len, 0) + 1
+
+    # recent bets (includes game + result_display)
+    recent = conn.execute("""
+        SELECT timestamp, amount, result_value, result_display, state, profit, balance_after
+        FROM bets WHERE session_id = ? ORDER BY id DESC LIMIT 20
+    """, (session_id,)).fetchall()
+    conn.close()
+
+    text = format_session_detail(sess, dist, recent)
+    if len(text) <= 4096:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    else:
+        marker = "\U0001f4dd *Last"
+        idx = text.find(marker)
+        if idx > 0:
+            await update.message.reply_text(text[:idx], parse_mode="Markdown")
+            await update.message.reply_text(text[idx:], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(text[:4096], parse_mode="Markdown")
