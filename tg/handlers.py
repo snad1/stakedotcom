@@ -21,7 +21,7 @@ from telegram.ext import ContextTypes
 
 from . import VERSION
 from .config import (
-    CONFIG_KEYS, TIERS, CURRENCIES, GAME_LABELS,
+    CONFIG_KEYS, TIERS, CURRENCIES, GAME_LABELS, API_BASES,
     get_user_tier, logger,
 )
 from .database import (
