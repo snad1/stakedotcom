@@ -799,9 +799,43 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
         await update.message.reply_text(
-            "Usage: /addrule <json>\n\n"
-            "Example:\n"
-            '/addrule `{"cond_type":"sequence","cond_mode":"every","cond_value":1,"cond_trigger":"loss","action":"increase_amount","action_value":101}`',
+            "*Usage:* /addrule <json>\n\n"
+            "*Condition types (`cond_type`):*\n"
+            "`sequence` — count-based (streaks, every N)\n"
+            "`profit` — profit/balance threshold\n"
+            "`bet` — bet amount threshold\n\n"
+            "*Sequence modes (`cond_mode`):*\n"
+            "`every` — Every N total (wins/losses/bets)\n"
+            "`every_streak` — Every N in streak (N, 2N, 3N…)\n"
+            "`first_streak` — First streak of N (once, resets)\n"
+            "`streak_above` — Every bet past streak N\n"
+            "`streak_below` — Streak below N\n\n"
+            "*Profit/bet modes (`cond_mode`):*\n"
+            "`gte` >=  `gt` >  `lte` <=  `lt` <\n\n"
+            "*Profit fields (`cond_field`):*\n"
+            "`profit` `balance` `wagered`\n\n"
+            "*Triggers (`cond_trigger`):*\n"
+            "`win` `loss` `bet`\n\n"
+            "*Actions (`action`):*\n"
+            "`reset_amount` — Reset to base bet\n"
+            "`increase_amount` — Increase by % (value=101 → +1%)\n"
+            "`decrease_amount` — Decrease by %\n"
+            "`add_amount` — Add fixed amount\n"
+            "`deduct_amount` — Deduct fixed amount\n"
+            "`set_amount` — Set exact amount\n"
+            "`switch` — Switch dice above/below\n"
+            "`stop` — Stop betting\n"
+            "`set_winchance` — Set win chance\n"
+            "`increase_wc` — Increase win chance by %\n"
+            "`decrease_wc` — Decrease win chance by %\n"
+            "`reset_game` — Full reset\n\n"
+            "*Examples:*\n"
+            '`/addrule {"cond_type":"sequence","cond_mode":"every","cond_value":1,"cond_trigger":"loss","action":"increase_amount","action_value":101}`\n'
+            "_Every loss → increase bet by 1%_\n\n"
+            '`/addrule {"cond_type":"sequence","cond_mode":"first_streak","cond_value":5,"cond_trigger":"loss","action":"stop","action_value":0}`\n'
+            "_Stop after 5 losses in a row_\n\n"
+            '`/addrule {"cond_type":"profit","cond_field":"profit","cond_mode":"gte","cond_value":0.01,"action":"stop","action_value":0}`\n'
+            "_Stop when profit >= 0.01_",
             parse_mode="Markdown",
         )
         return
