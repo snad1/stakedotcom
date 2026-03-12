@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.2.2 — TG Bot Fixes (2026-03-12)
+
+### Fixed
+
+- **`/balance` Cloudflare bypass** — Now runs full 3-pass CF chain (direct → cached cookies → FlareSolverr solve) instead of raw requests that got blocked
+- **Missing `API_BASES` import** — `/balance` crashed with `name 'API_BASES' is not defined`
+- **`/help` profit increment** — Added `(off to disable)` hint for `profitthreshold` and `profitincrement`
+
+### Added
+
+- **`.env.example`** — Environment template with auth tokens, TG token, file paths, and BotFather setup guide
+- **`stakectl tg env`** — Edit `.env` file and sync TG token to systemd
+- **Better error messages** — `/balance` shows which domains were tried on failure
+- **Balance response logging** — Debug logging for GraphQL responses
+
 ## v1.2.1 — Telegram Bot (2026-03-12)
 
 ### Added
