@@ -225,11 +225,15 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     config = load_user_config(user_id)
 
+    def _cv(key, default, typ=float):
+        v = config.get(key)
+        return typ(v) if v is not None else typ(default)
+
     try:
         strategy_key = config.get("strategy_key") or "2"
         strategy = config.get("strategy") or STRATEGY_NAMES.get(strategy_key, "Martingale")
         game = config.get("game") or "limbo"
-        multiplier = float(config.get("multiplier_target") or 2.0)
+        multiplier = _cv("multiplier_target", 2.0)
         wc = round(99.0 / multiplier, 2) if multiplier > 0 else 0
 
         lines = [
@@ -238,17 +242,17 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Game: `{GAME_LABELS.get(game, game)}`",
             f"Strategy: `{strategy}`",
             f"Multiplier: `{multiplier}x` ({wc}% win chance)",
-            f"Base bet: `{float(config.get('base_bet') or 0.0001):.8f}`",
+            f"Base bet: `{_cv('base_bet', 0.0001):.8f}`",
         ]
 
         if game == "dice":
-            lines.append(f"Dice target: `{float(config.get('dice_target') or 50.5)}`")
+            lines.append(f"Dice target: `{_cv('dice_target', 50.5)}`")
             lines.append(f"Dice condition: `{config.get('dice_condition') or 'above'}`")
 
         lines.extend([
-            f"Loss mult: `{float(config.get('loss_mult') or 2.0)}x`",
-            f"Win mult: `{float(config.get('win_mult') or 1.0)}x`",
-            f"Bet delay: `{float(config.get('bet_delay') or 0)}s`",
+            f"Loss mult: `{_cv('loss_mult', 2.0)}x`",
+            f"Win mult: `{_cv('win_mult', 1.0)}x`",
+            f"Bet delay: `{_cv('bet_delay', 0)}s`",
         ])
 
         stops = []

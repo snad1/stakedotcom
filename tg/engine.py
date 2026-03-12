@@ -110,6 +110,12 @@ GAMES = {
 }
 
 
+def _cfg(config: dict, key: str, default, typ=float):
+    """Get config value; treat None as default but allow 0."""
+    v = config.get(key)
+    return typ(v) if v is not None else typ(default)
+
+
 class BettingEngine:
     """Self-contained betting engine for one user. Runs in its own thread."""
 
@@ -127,17 +133,17 @@ class BettingEngine:
         # ── game config ──
         self.game              = config.get("game") or "limbo"
         self.currency          = config.get("currency") or "usdt"
-        self.multiplier_target = float(config.get("multiplier_target") or 2.0)
-        self.dice_target       = float(config.get("dice_target") or 50.5)
+        self.multiplier_target = _cfg(config, "multiplier_target", 2.0)
+        self.dice_target       = _cfg(config, "dice_target", 50.5)
         self.dice_condition    = config.get("dice_condition") or "above"
-        self.base_bet          = float(config.get("base_bet") or 0.0001)
+        self.base_bet          = _cfg(config, "base_bet", 0.0001)
         self.current_bet       = self.base_bet
         self.strategy          = config.get("strategy") or "Martingale"
         self.strategy_key      = config.get("strategy_key") or "2"
-        self.win_mult          = float(config.get("win_mult") or 1.0)
-        self.loss_mult         = float(config.get("loss_mult") or 2.0)
-        self.bet_delay         = float(config.get("bet_delay") or 0)
-        self.delay_martin_threshold = int(config.get("delay_martin_threshold") or 3)
+        self.win_mult          = _cfg(config, "win_mult", 1.0)
+        self.loss_mult         = _cfg(config, "loss_mult", 2.0)
+        self.bet_delay         = _cfg(config, "bet_delay", 0)
+        self.delay_martin_threshold = _cfg(config, "delay_martin_threshold", 3, int)
 
         # ── rules ──
         self.custom_rules: List[StrategyRule] = []
@@ -203,10 +209,10 @@ class BettingEngine:
         self.next_profit_milestone = float(self.profit_threshold) if self.profit_threshold else 0.0
 
         # ── milestone config ──
-        self.milestone_bets   = int(config.get("milestone_bets") or 100)
-        self.milestone_wins   = int(config.get("milestone_wins") or 0)
-        self.milestone_losses = int(config.get("milestone_losses") or 0)
-        self.milestone_profit = float(config.get("milestone_profit") or 0)
+        self.milestone_bets   = _cfg(config, "milestone_bets", 100, int)
+        self.milestone_wins   = _cfg(config, "milestone_wins", 0, int)
+        self.milestone_losses = _cfg(config, "milestone_losses", 0, int)
+        self.milestone_profit = _cfg(config, "milestone_profit", 0)
         self._last_profit_milestone = 0.0
 
         # ── callbacks ──
