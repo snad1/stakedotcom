@@ -253,6 +253,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Loss mult: `{_cv('loss_mult', 2.0)}x`",
             f"Win mult: `{_cv('win_mult', 1.0)}x`",
             f"Bet delay: `{_cv('bet_delay', 0)}s`",
+            f"Delay threshold: `{_cv('delay_martin_threshold', 3, int)}`",
         ])
 
         stops = []
