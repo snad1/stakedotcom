@@ -23,7 +23,7 @@ from collections import deque
 from typing import Optional, List
 
 from .config import API_BASES, FLARESOLVERR_URL, CF_CACHE_TTL, MIN_BET, logger
-from core.database import init_db, migrate_db, db_connect
+from core.database import init_db, db_connect
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, apply_action, evaluate_rules
 
@@ -704,7 +704,6 @@ class BettingEngine:
             return False
 
         init_db(self.db_path)
-        migrate_db(self.db_path)
         self.start_balance   = bal
         self.current_balance = bal
         self.highest_balance = bal
