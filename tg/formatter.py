@@ -4,6 +4,7 @@ Multi-game aware: shows game name (Limbo/Dice) and result_display
 instead of wolfbet's roll value.
 """
 
+import json
 from datetime import datetime
 
 
@@ -145,10 +146,17 @@ def format_milestone(data: dict) -> str:
 
 # ── Single session row for /stats list ───────────────────
 def format_session_row(row) -> str:
-    (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
-     profit, wagered, start_bal, end_bal, mws, mls,
-     hi_bal, lo_bal, hi_win, big_loss,
-     bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = row
+    if len(row) >= 28:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
+         profit, wagered, start_bal, end_bal, mws, mls,
+         hi_bal, lo_bal, hi_win, big_loss,
+         bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm, config_snap) = row
+    else:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
+         profit, wagered, start_bal, end_bal, mws, mls,
+         hi_bal, lo_bal, hi_win, big_loss,
+         bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = row
+        config_snap = ""
 
     bets = bets or 0; wins = wins or 0; losses = losses or 0
     profit = profit or 0; wagered = wagered or 0
@@ -167,6 +175,23 @@ def format_session_row(row) -> str:
     uptime = _calc_uptime(started, ended)
     game_label = (game or "limbo").capitalize()
 
+    # Build brief config tags from snapshot
+    tags = []
+    if config_snap:
+        try:
+            snap = json.loads(config_snap)
+            stops = snap.get("stops", {})
+            if stops:
+                tags.extend(f"{k}:{v}" for k, v in stops.items())
+            rules = snap.get("rules", [])
+            if rules:
+                tags.append(f"{len(rules)} rules")
+            if snap.get("profit_threshold"):
+                tags.append(f"pi:{snap['profit_increment']}")
+        except Exception:
+            pass
+    tag_line = f"  `{' | '.join(tags)}`\n" if tags else ""
+
     return (
         f"{pe} *#{sid}* `{(strat or '?')}` {game_label} {(mult or 0)}x {(cur or '?')}\n"
         f"  {_fmt_ts(started)} \u2192 {_fmt_ts(ended, 'running')}\n"
@@ -177,16 +202,25 @@ def format_session_row(row) -> str:
         f"  Streaks: `W+{mws}` / `L-{mls}`\n"
         f"  Best: `+{hi_win:.8f}` Worst: `-{big_loss:.8f}`\n"
         f"  Avg: `{avg_s}{avg:.8f}` | Speed: `{bps:.1f}`/s\n"
+        f"{tag_line}"
         f"  \u23f1 {uptime}\n"
     )
 
 
 # ── Detailed session view for /session <id> ──────────────
 def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
-    (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
-     profit, wagered, start_bal, end_bal, mws, mls,
-     hi_bal, lo_bal, hi_win, big_loss,
-     bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = sess
+    # 28 columns: 27 original + config_snapshot
+    if len(sess) >= 28:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
+         profit, wagered, start_bal, end_bal, mws, mls,
+         hi_bal, lo_bal, hi_win, big_loss,
+         bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm, config_snap) = sess
+    else:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
+         profit, wagered, start_bal, end_bal, mws, mls,
+         hi_bal, lo_bal, hi_win, big_loss,
+         bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = sess
+        config_snap = ""
 
     bets = bets or 0; wins = wins or 0; losses = losses or 0
     profit = profit or 0; wagered = wagered or 0
@@ -224,6 +258,38 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
         f"  Currency: `{cur or '?'}`",
         f"  Game: `{game_label}`  Strategy: `{strat or '?'}`  Mult: `{mult}x`",
         f"  Base bet: `{base:.8f}`",
+    ]
+
+    # Parse and display config snapshot
+    if config_snap:
+        try:
+            snap = json.loads(config_snap)
+            sk = snap.get("strategy_key", "")
+            if sk in ("2", "6"):
+                lines.append(f"  Loss mult: `{snap.get('loss_mult', 2.0)}x`")
+            if sk in ("3", "5"):
+                lines.append(f"  Win mult: `{snap.get('win_mult', 1.0)}x`")
+            if sk == "6":
+                lines.append(f"  Delay threshold: `{snap.get('delay_threshold', 3)}`")
+            if "dice_condition" in snap:
+                lines.append(f"  Dice: `{snap['dice_condition']}` target `{snap.get('dice_target', '?')}`")
+            stops = snap.get("stops", {})
+            if stops:
+                parts = [f"{k}: {v}" for k, v in stops.items()]
+                lines.append(f"  Stops: `{', '.join(parts)}`")
+            if snap.get("profit_threshold"):
+                lines.append(f"  Profit incr: `+{snap['profit_increment']:.8f} every {snap['profit_threshold']}`")
+            rules = snap.get("rules", [])
+            if rules:
+                from core.strategy import StrategyRule, describe_rule
+                lines.append(f"  *Rules ({len(rules)}):*")
+                for i, rd in enumerate(rules, 1):
+                    r = StrategyRule.from_dict(rd)
+                    lines.append(f"    `{i}.` {r.description or describe_rule(r)}")
+        except (json.JSONDecodeError, Exception):
+            pass
+
+    lines += [
         f"",
         f"\U0001f4ca *Performance*",
         f"  Bets: `{bets}`  W: `{wins}`  L: `{losses}`",

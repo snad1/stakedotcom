@@ -249,13 +249,17 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"Dice target: `{_cv('dice_target', 50.5)}`")
             lines.append(f"Dice condition: `{config.get('dice_condition') or 'above'}`")
 
-        lines.extend([
-            f"Loss mult: `{_cv('loss_mult', 2.0)}x`",
-            f"Win mult: `{_cv('win_mult', 1.0)}x`",
-            f"Bet delay: `{_cv('bet_delay', 0)}s`",
-            f"Delay threshold: `{_cv('delay_martin_threshold', 3, int)}`",
-        ])
+        # Strategy-specific fields
+        if strategy_key in ("2", "6"):  # Martingale, Delay Martingale
+            lines.append(f"Loss mult: `{_cv('loss_mult', 2.0)}x`")
+        if strategy_key in ("3", "5"):  # Anti-Martingale, Paroli
+            lines.append(f"Win mult: `{_cv('win_mult', 1.0)}x`")
+        if strategy_key == "6":  # Delay Martingale
+            lines.append(f"Delay threshold: `{_cv('delay_martin_threshold', 3, int)}`")
 
+        lines.append(f"Bet delay: `{_cv('bet_delay', 0)}s`")
+
+        # Stop conditions
         stops = []
         if config.get("max_profit"): stops.append(f"Max profit: {config['max_profit']}")
         if config.get("max_loss"):   stops.append(f"Max loss: {config['max_loss']}")
@@ -267,11 +271,13 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines.append("Stop conditions: _none_")
 
+        # Profit increment
         pi = config.get("profit_increment")
         pt = config.get("profit_threshold")
         if pi and pt:
             lines.append(f"Profit increment: `+{float(pi):.8f} every {pt} profit`")
 
+        # Milestones
         ms = []
         mb = config.get("milestone_bets", 100)
         if mb: ms.append(f"{mb} bets")
@@ -282,6 +288,17 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mp = config.get("milestone_profit", 0)
         if mp: ms.append(f"{mp} profit")
         lines.append(f"Milestones: `{', '.join(ms) if ms else 'off'}`")
+
+        # Rules (for rule-based strategy)
+        if strategy_key == "7":
+            rules_text = config.get("custom_rules_text", "")
+            rules = load_rules_from_text(rules_text) if rules_text else []
+            if rules:
+                lines.append(f"\n*Rules ({len(rules)}):*")
+                for i, r in enumerate(rules, 1):
+                    lines.append(f"  `{i}.` {r.description}")
+            else:
+                lines.append("Rules: _none configured_")
 
         token_set = "Yes" if config.get("access_token") else "No"
         lines.append(f"Tokens: `{token_set}`")
@@ -713,7 +730,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
                COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
                COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
-               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
+               COALESCE(config_snapshot, '')
         FROM sessions ORDER BY id DESC LIMIT 10
     """).fetchall()
 
@@ -968,7 +986,8 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
                COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
                COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
                COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
-               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
+               COALESCE(config_snapshot, '')
         FROM sessions WHERE id = ?
     """, (session_id,)).fetchone()
 

@@ -60,12 +60,13 @@ def init_db(db_path: str):
         )
     """)
     # Migrate: add columns if missing
-    for col, defn in [
-        ("game", "TEXT DEFAULT 'limbo'"),
-        ("result_display", "TEXT DEFAULT ''"),
+    for tbl, col, defn in [
+        ("bets", "game", "TEXT DEFAULT 'limbo'"),
+        ("bets", "result_display", "TEXT DEFAULT ''"),
+        ("sessions", "config_snapshot", "TEXT DEFAULT ''"),
     ]:
         try:
-            c.execute(f"ALTER TABLE bets ADD COLUMN {col} {defn}")
+            c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {defn}")
         except sqlite3.OperationalError:
             pass
     conn.commit()
