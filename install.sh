@@ -340,10 +340,17 @@ cmd_presets() {
 }
 
 cmd_update() {
+    # Pull latest from git if inside a repo
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        echo "Pulling latest from git…"
+        git pull --ff-only || { echo "Git pull failed. Resolve manually."; exit 1; }
+    fi
     if [ -f "stake.py" ]; then
         cp stake.py "$INSTALL_DIR/stake.py"
         cp requirements.txt "$INSTALL_DIR/" 2>/dev/null
         [ -f ".env.example" ] && cp .env.example "$INSTALL_DIR/"
+        # Update deps if requirements changed
+        "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt" 2>/dev/null || true
         # Update TG bot files if present
         if [ -d "core" ] && [ -d "tg" ]; then
             mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/tg"
