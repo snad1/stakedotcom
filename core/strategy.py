@@ -77,7 +77,13 @@ class StrategyRule:
         self.cond_field   = cond_field
         self.cond_mode    = cond_mode
         self.cond_value   = cond_value
-        self.cond_trigger = cond_trigger
+        # Normalize common typos: "lose" → "loss", "wins" → "win"
+        t = cond_trigger
+        if t == "lose":  t = "loss"
+        if t == "wins":  t = "win"
+        if t == "losses": t = "loss"
+        if t == "bets":  t = "bet"
+        self.cond_trigger = t
         self.action       = action
         self.action_value = action_value
         self.description  = description
