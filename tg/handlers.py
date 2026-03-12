@@ -185,22 +185,25 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_path = user_db_path(user_id)
         engine = BettingEngine(user_id, db_path, config)
         engine._init_http()
-        # Load cached CF cookies (needed to pass Cloudflare)
+        # Try CF bypass chain: cached cookies → FlareSolverr solve
         engine._cf_cache_load()
-        errors = []
         balances = []
         for base in API_BASES:
             engine._api_base = base
+            # Pass 1: try with cached CF cookies (or none)
             balances = engine.api_get_balances()
             if balances:
                 break
-            errors.append(base)
+            # Pass 2: solve Cloudflare and retry
+            site_url = base.split("/_api")[0]
+            if engine._solve_cloudflare(site_url):
+                balances = engine.api_get_balances()
+                if balances:
+                    break
         if not balances:
-            msg = "No balances found or tokens invalid."
-            if errors:
-                msg += f"\nTried: {', '.join(errors)}"
-            msg += "\n\nCheck your tokens with /settoken"
-            await update.message.reply_text(msg)
+            await update.message.reply_text(
+                "No balances found or tokens invalid.\n"
+                "Check your tokens with /settoken")
             return
 
         lines = ["*Balances:*"]
