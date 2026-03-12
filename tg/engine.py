@@ -333,15 +333,21 @@ class BettingEngine:
         payload = {"operationName": "UserBalances", "query": query, "variables": {}}
         try:
             r = self._http.post(gql_url, headers=self._headers(), json=payload, timeout=15)
+            logger.debug("Balance response %d: %s", r.status_code, r.text[:500])
             if r.status_code == 200:
                 data = r.json()
-                user = data.get("data", {}).get("user", {})
+                user = data.get("data", {}).get("user")
+                if not user:
+                    logger.warning("Balance: no user in response: %s", str(data)[:300])
+                    return []
                 balances = user.get("balances", [])
                 return [{"currency": b["available"]["currency"],
                          "amount": float(b["available"]["amount"])}
                         for b in balances if float(b["available"]["amount"]) > 0]
+            else:
+                logger.warning("Balance HTTP %d: %s", r.status_code, r.text[:300])
         except Exception as e:
-            logger.debug("Balance fetch failed: %s", e)
+            logger.warning("Balance fetch failed: %s", e)
         return []
 
     def _api_test_connection(self) -> bool:

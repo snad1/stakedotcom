@@ -182,16 +182,25 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Fetching balances…")
     try:
-        engine = BettingEngine(user_id, "", config)
+        db_path = user_db_path(user_id)
+        engine = BettingEngine(user_id, db_path, config)
         engine._init_http()
-        engine._api_base = "https://stake.bet/_api/casino"
-        balances = engine.api_get_balances()
-        if not balances:
-            # Try alternate domain
-            engine._api_base = "https://stake.com/_api/casino"
+        # Load cached CF cookies (needed to pass Cloudflare)
+        engine._cf_cache_load()
+        errors = []
+        balances = []
+        for base in API_BASES:
+            engine._api_base = base
             balances = engine.api_get_balances()
+            if balances:
+                break
+            errors.append(base)
         if not balances:
-            await update.message.reply_text("No balances found or tokens invalid.")
+            msg = "No balances found or tokens invalid."
+            if errors:
+                msg += f"\nTried: {', '.join(errors)}"
+            msg += "\n\nCheck your tokens with /settoken"
+            await update.message.reply_text(msg)
             return
 
         lines = ["*Balances:*"]
@@ -200,6 +209,8 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amt = float(b.get("amount", 0))
             if amt > 0:
                 lines.append(f"`{cur:>6}  {amt:.8f}`")
+        if len(lines) == 1:
+            lines.append("_All balances are zero_")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"Error: `{e}`", parse_mode="Markdown")
