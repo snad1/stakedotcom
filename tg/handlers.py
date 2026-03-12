@@ -162,7 +162,8 @@ async def cmd_settoken(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config["access_token"] = context.args[0]
     config["lockdown_token"] = context.args[1]
     if len(context.args) > 2:
-        config["cookie"] = " ".join(context.args[2:])
+        raw_cookie = " ".join(context.args[2:])
+        config["cookie"] = "" if raw_cookie.lower() == "none" else raw_cookie
     save_user_config(user_id, config)
 
     await update.effective_chat.send_message(

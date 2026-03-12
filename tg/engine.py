@@ -121,7 +121,8 @@ class BettingEngine:
         # ── auth (use `or` to handle None from presets) ──
         self.access_token   = config.get("access_token") or ""
         self.lockdown_token = config.get("lockdown_token") or ""
-        self.cookie         = config.get("cookie") or ""
+        _cookie = config.get("cookie") or ""
+        self.cookie         = "" if _cookie.lower() == "none" else _cookie
 
         # ── game config ──
         self.game              = config.get("game") or "limbo"
@@ -340,10 +341,20 @@ class BettingEngine:
                 if not user:
                     logger.warning("Balance: no user in response: %s", str(data)[:300])
                     return []
-                balances = user.get("balances", [])
-                return [{"currency": b["available"]["currency"],
-                         "amount": float(b["available"]["amount"])}
-                        for b in balances if float(b["available"]["amount"]) > 0]
+                balances_obj = user.get("balances", {})
+                # Stake returns { balances: { available: [{amount, currency}, ...] } }
+                available = []
+                if isinstance(balances_obj, dict):
+                    available = balances_obj.get("available", [])
+                elif isinstance(balances_obj, list):
+                    # fallback: list of {available: {amount, currency}}
+                    for b in balances_obj:
+                        av = b.get("available")
+                        if av:
+                            available.append(av)
+                return [{"currency": b.get("currency", ""),
+                         "amount": float(b.get("amount", 0))}
+                        for b in available if float(b.get("amount", 0)) > 0]
             else:
                 logger.warning("Balance HTTP %d: %s", r.status_code, r.text[:300])
         except Exception as e:
