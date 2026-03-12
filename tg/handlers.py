@@ -28,6 +28,7 @@ from .database import (
     user_db_path, load_user_config, save_user_config,
     load_presets, save_presets,
 )
+from core.database import migrate_db
 from core.strategy import (
     STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME, StrategyRule,
     describe_rule, load_rules_from_text,
@@ -719,6 +720,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No session history yet.")
         return
 
+    migrate_db(db_path)
     conn = sqlite3.connect(db_path)
     rows = conn.execute("""
         SELECT id, started_at, ended_at,
@@ -975,6 +977,7 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No data.")
         return
 
+    migrate_db(db_path)
     conn = sqlite3.connect(db_path)
     sess = conn.execute("""
         SELECT id, started_at, ended_at,
