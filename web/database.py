@@ -74,16 +74,11 @@ def init_db():
     conn = get_db()
     conn.executescript(_SCHEMA)
 
-    # Seed default admin if not exists
-    row = conn.execute(
-        "SELECT id FROM admin_users WHERE username = ?",
-        (settings.admin_user,),
-    ).fetchone()
-    if not row:
-        conn.execute(
-            "INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)",
-            (settings.admin_user, _hash_password(settings.admin_pass), "admin"),
-        )
+    # Seed default admin if not exists (OR IGNORE handles multi-worker race)
+    conn.execute(
+        "INSERT OR IGNORE INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)",
+        (settings.admin_user, _hash_password(settings.admin_pass), "admin"),
+    )
     conn.commit()
     conn.close()
 

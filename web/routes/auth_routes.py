@@ -39,11 +39,12 @@ async def login(request: Request, username: str = Form(...), password: str = For
 
     audit(f"admin:{username}", "login", "Admin login")
     response = RedirectResponse("/admin/", status_code=302)
+    is_https = request.url.scheme == "https"
     response.set_cookie(
         COOKIE_NAME,
         token,
         httponly=True,
-        secure=not settings.debug,
+        secure=is_https,
         samesite="lax",
         max_age=settings.jwt_expire_hours * 3600,
     )
@@ -88,11 +89,12 @@ async def telegram_auth(request: Request, token: str = ""):
 
     audit(f"tg:{user_id}", "login", "Telegram user login via deep link")
     response = RedirectResponse("/dashboard/", status_code=302)
+    is_https = request.url.scheme == "https"
     response.set_cookie(
         COOKIE_NAME,
         session_token,
         httponly=True,
-        secure=not settings.debug,
+        secure=is_https,
         samesite="lax",
         max_age=7 * 86400,
     )

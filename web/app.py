@@ -4,7 +4,8 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.exceptions import HTTPException
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -48,6 +49,16 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Make format_bytes available in templates
 templates.env.globals["format_bytes"] = format_bytes
 templates.env.globals["app_name"] = settings.app_name
+
+
+@app.exception_handler(HTTPException)
+async def auth_exception_handler(request: Request, exc: HTTPException):
+    """Redirect browsers to login on 401/403; return JSON for API calls."""
+    if exc.status_code in (401, 403):
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept:
+            return RedirectResponse("/login", status_code=302)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.get("/")
