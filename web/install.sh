@@ -37,7 +37,11 @@ mkdir -p "$INSTALL_DIR"
 
 # Copy web app files
 if [ -d "$REPO_DIR/web" ]; then
-    cp -r "$REPO_DIR/web/"* "$INSTALL_DIR/"
+    # Copy as 'web' package so "from web.x import y" works
+    mkdir -p "$INSTALL_DIR/web"
+    cp -r "$REPO_DIR/web/"* "$INSTALL_DIR/web/"
+    # Keep requirements.txt at top level for pip
+    [ -f "$INSTALL_DIR/web/requirements.txt" ] && cp "$INSTALL_DIR/web/requirements.txt" "$INSTALL_DIR/requirements.txt"
     echo "  ✓ Files copied from $REPO_DIR/web/"
 else
     echo "  ✗ $REPO_DIR/web/ not found. Run from the repo directory."
@@ -128,7 +132,7 @@ server {
     }
 
     location /static/ {
-        alias $INSTALL_DIR/static/;
+        alias $INSTALL_DIR/web/static/;
         expires 7d;
         add_header Cache-Control "public, immutable";
     }

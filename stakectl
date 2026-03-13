@@ -224,7 +224,9 @@ cmd_update() {
 
     # Update web app if installed
     if [ -d "$WEB_DIR" ] && [ -d "web" ]; then
-        cp -r web/* "$WEB_DIR/" 2>/dev/null || true
+        mkdir -p "$WEB_DIR/web"
+        cp -r web/* "$WEB_DIR/web/" 2>/dev/null || true
+        [ -f "web/requirements.txt" ] && cp web/requirements.txt "$WEB_DIR/requirements.txt"
         "$WEB_DIR/venv/bin/pip" install --quiet -r "$WEB_DIR/requirements.txt" 2>/dev/null || true
         if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
             systemctl --user restart "$WEB_SERVICE"
@@ -414,7 +416,9 @@ cmd_web() {
         update)
             if [ -d "web" ]; then
                 echo "Updating web app files…"
-                cp -r web/* "$WEB_DIR/" 2>/dev/null || true
+                mkdir -p "$WEB_DIR/web"
+                cp -r web/* "$WEB_DIR/web/" 2>/dev/null || true
+                [ -f "web/requirements.txt" ] && cp web/requirements.txt "$WEB_DIR/requirements.txt"
                 # Don't overwrite .env
                 [ -f "$WEB_DIR/.env" ] || cp "$WEB_DIR/.env.example" "$WEB_DIR/.env" 2>/dev/null || true
                 "$WEB_DIR/venv/bin/pip" install --quiet -r "$WEB_DIR/requirements.txt" 2>/dev/null || true
