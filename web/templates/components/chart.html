@@ -1,0 +1,49 @@
+{#
+  Trading-style balance chart — Jinja2 include.
+
+  Required context variables when including:
+    session        — session dict (session.ended_at is None → live mode)
+    user_id        — integer user id
+    chart_height   — optional, defaults to 300 (pixels)
+#}
+{% set _height = chart_height if chart_height is defined else 300 %}
+{% set _is_live = not session.ended_at %}
+
+<div class="card p-0 overflow-hidden mb-6">
+    <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between flex-wrap gap-3">
+        <div class="flex items-center gap-3">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Balance Chart</h2>
+            {% if _is_live %}
+            <span class="flex items-center gap-1.5 text-xs text-green-500 dark:text-green-400 font-medium">
+                <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>Live
+            </span>
+            {% endif %}
+        </div>
+        <!-- Time range buttons -->
+        <div class="flex items-center gap-1" id="chart-range-btns">
+            <button onclick="chartSetRange('10m')"  class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">10m</button>
+            <button onclick="chartSetRange('30m')"  class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">30m</button>
+            <button onclick="chartSetRange('1h')"   class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">1h</button>
+            <button onclick="chartSetRange('all')"  class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-brand-600 text-white transition-colors" id="range-btn-all">All</button>
+        </div>
+    </div>
+
+    <!-- Chart container -->
+    <div id="balance-chart" style="height:{{ _height }}px; width:100%;"></div>
+
+    <!-- Tooltip -->
+    <div id="chart-tooltip"
+         class="pointer-events-none absolute z-50 hidden rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-xl px-3 py-2 text-xs font-mono leading-relaxed"
+         style="min-width:180px;">
+    </div>
+</div>
+
+<!-- Pass data to JS via data attributes on the chart div -->
+<script>
+    (function() {
+        const chartEl = document.getElementById('balance-chart');
+        chartEl.dataset.userId    = "{{ user_id }}";
+        chartEl.dataset.sessionId = "{{ session.id }}";
+        chartEl.dataset.isLive    = "{{ 'true' if _is_live else 'false' }}";
+    })();
+</script>

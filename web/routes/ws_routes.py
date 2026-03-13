@@ -70,14 +70,55 @@ async def ws_session(ws: WebSocket, user_id: int, session_id: int):
 
     channel = f"session:{user_id}:{session_id}"
     await manager.connect(ws, channel)
+
+    # Track the last bet id we've already sent so we only push new bets
+    last_bet_id: int = 0
+
     try:
-        # Keep connection alive — actual updates pushed via broadcast from background task
+        # Keep connection alive — send session stats + any new bets every 2 s
         while True:
-            # Periodically send session data from DB
-            from ..bot_db import get_session
+            from ..bot_db import get_session, _connect_ro
             session = get_session(user_id, session_id)
             if session:
                 await manager.send_to(ws, "session_update", session)
+
+            # Fetch bets that arrived since last poll
+            try:
+                conn = _connect_ro(user_id)
+                rows = conn.execute(
+                    """SELECT id, timestamp, amount, multiplier_target, result_value,
+                              result_display, state, profit, balance_after
+                       FROM bets
+                       WHERE session_id = ? AND id > ?
+                       ORDER BY id ASC""",
+                    (session_id, last_bet_id),
+                ).fetchall()
+                conn.close()
+            except Exception:
+                rows = []
+
+            for r in rows:
+                row = dict(r)
+                last_bet_id = row["id"]
+                ts = row.get("timestamp") or ""
+                try:
+                    from datetime import datetime as _dt
+                    unix_ts = int(_dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                except Exception:
+                    import time
+                    unix_ts = int(time.time())
+                chart_point = {
+                    "time": unix_ts,
+                    "value": round(row.get("balance_after") or 0.0, 8),
+                    "bet_num": row["id"],
+                    "amount": round(row.get("amount") or 0.0, 8),
+                    "profit": round(row.get("profit") or 0.0, 8),
+                    "state": row.get("state") or "loss",
+                    "target": round(row.get("multiplier_target") or 0.0, 4),
+                    "result": row.get("result_display") or str(round(row.get("result_value") or 0.0, 4)),
+                }
+                await manager.send_to(ws, "new_bet", chart_point)
+
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         pass

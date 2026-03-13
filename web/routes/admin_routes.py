@@ -1,13 +1,15 @@
 """Admin panel routes — dashboard, users, services, logs."""
 
-from fastapi import APIRouter, Request, Depends, Form
+from math import ceil
+
+from fastapi import APIRouter, Request, Depends, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..config import settings, TEMPLATES_DIR
 from ..auth import get_current_admin
 from ..database import get_tg_users, get_tg_user, update_tg_user, get_audit_log, audit
-from ..bot_db import get_platform_stats, get_sessions, get_session_stats, get_user_config
+from ..bot_db import get_platform_stats, get_sessions, get_session, get_session_stats, get_user_config, get_session_count, get_bets, get_bet_count
 from ..services import all_service_statuses, system_metrics, format_bytes
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -44,11 +46,16 @@ async def users_list(request: Request, admin: dict = Depends(get_current_admin))
 
 
 @router.get("/users/{user_id}", response_class=HTMLResponse)
-async def user_detail(request: Request, user_id: int, admin: dict = Depends(get_current_admin)):
+async def user_detail(request: Request, user_id: int, page: int = Query(1, ge=1), admin: dict = Depends(get_current_admin)):
     user = get_tg_user(user_id)
     if not user:
         return RedirectResponse("/admin/users", status_code=302)
-    sessions = get_sessions(user_id, limit=50)
+    per_page = 20
+    total_sessions = get_session_count(user_id)
+    total_pages = max(1, ceil(total_sessions / per_page))
+    page = min(page, total_pages)
+    offset = (page - 1) * per_page
+    sessions = get_sessions(user_id, limit=per_page, offset=offset)
     stats = get_session_stats(user_id)
     config = get_user_config(user_id)
     return templates.TemplateResponse("admin/user_detail.html", {
@@ -58,6 +65,40 @@ async def user_detail(request: Request, user_id: int, admin: dict = Depends(get_
         "sessions": sessions,
         "stats": stats,
         "config": config,
+        "page": page,
+        "total_pages": total_pages,
+        "total_sessions": total_sessions,
+        "per_page": per_page,
+    })
+
+
+@router.get("/users/{user_id}/sessions/{session_id}", response_class=HTMLResponse)
+async def admin_session_detail(
+    request: Request,
+    user_id: int,
+    session_id: int,
+    page: int = Query(1, ge=1),
+    admin: dict = Depends(get_current_admin),
+):
+    session = get_session(user_id, session_id)
+    if not session:
+        return RedirectResponse(f"/admin/users/{user_id}", status_code=302)
+    per_page = 50
+    bet_count = get_bet_count(user_id, session_id)
+    total_pages = max(1, ceil(bet_count / per_page))
+    page = min(page, total_pages)
+    offset = (page - 1) * per_page
+    bets = get_bets(user_id, session_id, limit=per_page, offset=offset)
+    return templates.TemplateResponse("admin/session_detail.html", {
+        "request": request,
+        "admin": admin,
+        "user_id": user_id,
+        "session": session,
+        "bets": bets,
+        "bet_count": bet_count,
+        "page": page,
+        "total_pages": total_pages,
+        "per_page": per_page,
     })
 
 

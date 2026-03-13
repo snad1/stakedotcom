@@ -3,16 +3,16 @@
 
 {% block content %}
 <div class="mb-6">
-    <h1 class="text-2xl font-bold text-gray-900">Live Logs</h1>
-    <p class="text-sm text-gray-500 mt-1">Stream service logs in real-time</p>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Live Logs</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Stream service logs in real-time</p>
 </div>
 
 <!-- Service Selector -->
 <div class="flex gap-2 mb-4">
     {% for svc in services %}
-    <button class="btn btn-secondary text-sm log-tab {% if loop.first %}!bg-brand-50 !text-brand-700 !border-brand-200{% endif %}"
+    <button type="button" class="btn btn-secondary text-sm log-tab {% if loop.first %}!bg-brand-50 dark:!bg-brand-900/30 !text-brand-700 dark:!text-brand-400 !border-brand-200 dark:!border-brand-800{% endif %}"
             data-service="{{ svc.label }}" onclick="switchLog('{{ svc.label }}', this)">
-        <span class="w-2 h-2 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
+        <span class="w-2 h-2 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300 dark:bg-gray-600{% endif %}"></span>
         {{ svc.label | capitalize }}
     </button>
     {% endfor %}
@@ -20,12 +20,12 @@
 
 <!-- Log Output -->
 <div class="card p-0">
-    <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 rounded-t-xl">
+    <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 rounded-t-xl">
         <div class="flex items-center gap-2">
             <span class="ws-indicator ws-disconnected" id="log-ws-status"></span>
-            <span class="text-xs text-gray-500" id="log-ws-label">Connecting...</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400" id="log-ws-label">Connecting...</span>
         </div>
-        <button class="text-xs text-gray-400 hover:text-gray-600" onclick="clearLogs()">Clear</button>
+        <button type="button" class="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300" onclick="clearLogs()">Clear</button>
     </div>
     <div id="log-output" class="bg-gray-900 text-green-400 font-mono text-xs p-4 rounded-b-xl overflow-auto" style="height: 500px; white-space: pre-wrap;">
         Connecting to log stream...
@@ -68,9 +68,9 @@ function connectLog(service) {
 
 function switchLog(service, btn) {
     document.querySelectorAll('.log-tab').forEach(t => {
-        t.classList.remove('!bg-brand-50', '!text-brand-700', '!border-brand-200');
+        t.classList.remove('!bg-brand-50', 'dark:!bg-brand-900/30', '!text-brand-700', 'dark:!text-brand-400', '!border-brand-200', 'dark:!border-brand-800');
     });
-    btn.classList.add('!bg-brand-50', '!text-brand-700', '!border-brand-200');
+    btn.classList.add('!bg-brand-50', 'dark:!bg-brand-900/30', '!text-brand-700', 'dark:!text-brand-400', '!border-brand-200', 'dark:!border-brand-800');
     clearLogs();
     connectLog(service);
 }

@@ -3,8 +3,8 @@
 
 {% block content %}
 <div class="mb-6">
-    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
-    <p class="text-sm text-gray-500 mt-1">Platform overview and system health</p>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Platform overview and system health</p>
 </div>
 
 <!-- Stats Grid -->
@@ -41,14 +41,14 @@
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <!-- Services Status -->
     <div class="card">
-        <h2 class="text-lg font-semibold mb-4">Services</h2>
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Services</h2>
         <div class="space-y-3">
             {% for svc in services %}
-            <div class="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50">
+            <div class="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50 dark:bg-gray-700/50">
                 <div class="flex items-center gap-3">
-                    <span class="w-2.5 h-2.5 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
-                    <span class="font-medium text-sm capitalize">{{ svc.label }}</span>
-                    <span class="text-xs text-gray-400">{{ svc.name }}</span>
+                    <span class="w-2.5 h-2.5 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300 dark:bg-gray-600{% endif %}"></span>
+                    <span class="font-medium text-sm capitalize text-gray-900 dark:text-gray-100">{{ svc.label }}</span>
+                    <span class="text-xs text-gray-400 dark:text-gray-500">{{ svc.name }}</span>
                 </div>
                 <span class="badge {% if svc.active %}badge-green{% else %}badge-gray{% endif %}">
                     {{ svc.status }}
@@ -57,7 +57,7 @@
             {% endfor %}
         </div>
         <div class="mt-4">
-            <a href="/admin/services" class="text-sm text-brand-600 hover:text-brand-700 font-medium">
+            <a href="/admin/services" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 font-medium">
                 Manage services &rarr;
             </a>
         </div>
@@ -65,42 +65,42 @@
 
     <!-- System Metrics -->
     <div class="card" id="metrics-card">
-        <h2 class="text-lg font-semibold mb-4">System</h2>
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">System</h2>
         <div class="space-y-4">
             <!-- CPU -->
             <div>
                 <div class="flex justify-between text-sm mb-1">
-                    <span class="text-gray-600">CPU</span>
-                    <span class="font-medium" id="cpu-val">{{ "%.1f"|format(metrics.cpu_percent) }}%</span>
+                    <span class="text-gray-600 dark:text-gray-400">CPU</span>
+                    <span class="font-medium text-gray-900 dark:text-gray-100" id="cpu-val">{{ "%.1f"|format(metrics.cpu_percent) }}%</span>
                 </div>
-                <div class="w-full bg-gray-200 rounded-full h-2">
+                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                     <div class="bg-brand-500 h-2 rounded-full transition-all duration-500" id="cpu-bar" style="width: {{ metrics.cpu_percent }}%"></div>
                 </div>
             </div>
             <!-- Memory -->
             <div>
                 <div class="flex justify-between text-sm mb-1">
-                    <span class="text-gray-600">Memory</span>
-                    <span class="font-medium" id="mem-val">{{ "%.1f"|format(metrics.memory_percent) }}% ({{ format_bytes(metrics.memory_used) }} / {{ format_bytes(metrics.memory_total) }})</span>
+                    <span class="text-gray-600 dark:text-gray-400">Memory</span>
+                    <span class="font-medium text-gray-900 dark:text-gray-100" id="mem-val">{{ "%.1f"|format(metrics.memory_percent) }}% ({{ format_bytes(metrics.memory_used) }} / {{ format_bytes(metrics.memory_total) }})</span>
                 </div>
-                <div class="w-full bg-gray-200 rounded-full h-2">
+                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                     <div class="bg-blue-500 h-2 rounded-full transition-all duration-500" id="mem-bar" style="width: {{ metrics.memory_percent }}%"></div>
                 </div>
             </div>
             <!-- Disk -->
             <div>
                 <div class="flex justify-between text-sm mb-1">
-                    <span class="text-gray-600">Disk</span>
-                    <span class="font-medium" id="disk-val">{{ "%.1f"|format(metrics.disk_percent) }}% ({{ format_bytes(metrics.disk_used) }} / {{ format_bytes(metrics.disk_total) }})</span>
+                    <span class="text-gray-600 dark:text-gray-400">Disk</span>
+                    <span class="font-medium text-gray-900 dark:text-gray-100" id="disk-val">{{ "%.1f"|format(metrics.disk_percent) }}% ({{ format_bytes(metrics.disk_used) }} / {{ format_bytes(metrics.disk_total) }})</span>
                 </div>
-                <div class="w-full bg-gray-200 rounded-full h-2">
+                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                     <div class="bg-amber-500 h-2 rounded-full transition-all duration-500" id="disk-bar" style="width: {{ metrics.disk_percent }}%"></div>
                 </div>
             </div>
             <!-- Load -->
-            <div class="flex justify-between text-sm text-gray-600 pt-2 border-t border-gray-100">
+            <div class="flex justify-between text-sm text-gray-600 dark:text-gray-400 pt-2 border-t border-gray-100 dark:border-gray-700">
                 <span>Load Average</span>
-                <span class="font-mono text-gray-900" id="load-val">{{ "%.2f"|format(metrics.load_1m) }} / {{ "%.2f"|format(metrics.load_5m) }} / {{ "%.2f"|format(metrics.load_15m) }}</span>
+                <span class="font-mono text-gray-900 dark:text-gray-100" id="load-val">{{ "%.2f"|format(metrics.load_1m) }} / {{ "%.2f"|format(metrics.load_5m) }} / {{ "%.2f"|format(metrics.load_15m) }}</span>
             </div>
         </div>
     </div>
@@ -108,7 +108,7 @@
 
 <!-- Quick Actions -->
 <div class="mt-6 card">
-    <h2 class="text-lg font-semibold mb-4">Quick Actions</h2>
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Quick Actions</h2>
     <div class="flex flex-wrap gap-3">
         <button class="btn btn-primary" hx-post="/api/services/update" hx-swap="none"
                 hx-confirm="Pull latest code and restart TG bot?" hx-indicator="#update-spinner">

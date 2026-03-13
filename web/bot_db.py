@@ -66,16 +66,26 @@ def save_user_config(user_id: int, config: dict):
 
 # ── Sessions ──
 
-def get_sessions(user_id: int, limit: int = 50) -> list[dict]:
+def get_sessions(user_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
     try:
         conn = _connect_ro(user_id)
     except FileNotFoundError:
         return []
     rows = conn.execute(
-        "SELECT * FROM sessions ORDER BY id DESC LIMIT ?", (limit,)
+        "SELECT * FROM sessions ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_session_count(user_id: int) -> int:
+    try:
+        conn = _connect_ro(user_id)
+    except FileNotFoundError:
+        return 0
+    row = conn.execute("SELECT COUNT(*) as cnt FROM sessions").fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
 
 
 def get_session(user_id: int, session_id: int) -> Optional[dict]:
@@ -138,6 +148,42 @@ def get_bet_count(user_id: int, session_id: int) -> int:
     ).fetchone()
     conn.close()
     return row["cnt"] if row else 0
+
+
+def get_bets_for_chart(user_id: int, session_id: int) -> list[dict]:
+    """Return all bets for a session ordered ASC, shaped for chart rendering."""
+    try:
+        conn = _connect_ro(user_id)
+    except FileNotFoundError:
+        return []
+    rows = conn.execute(
+        """SELECT id, timestamp, amount, multiplier_target, result_value,
+                  result_display, state, profit, balance_after
+           FROM bets WHERE session_id = ? ORDER BY id ASC""",
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    result = []
+    for i, r in enumerate(rows):
+        row = dict(r)
+        # Convert ISO timestamp to unix seconds for Lightweight Charts
+        ts = row.get("timestamp") or ""
+        try:
+            from datetime import datetime as _dt
+            unix_ts = int(_dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+        except Exception:
+            unix_ts = i  # fallback: use ordinal index
+        result.append({
+            "time": unix_ts,
+            "value": round(row.get("balance_after") or 0.0, 8),
+            "bet_num": i + 1,
+            "amount": round(row.get("amount") or 0.0, 8),
+            "profit": round(row.get("profit") or 0.0, 8),
+            "state": row.get("state") or "loss",
+            "target": round(row.get("multiplier_target") or 0.0, 4),
+            "result": row.get("result_display") or str(round(row.get("result_value") or 0.0, 4)),
+        })
+    return result
 
 
 # ── Aggregate stats across all users ──

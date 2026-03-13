@@ -4,8 +4,8 @@
 {% block content %}
 <div class="max-w-3xl mx-auto">
     <div class="mb-6">
-        <h1 class="text-2xl font-bold text-gray-900">Bot Settings</h1>
-        <p class="text-sm text-gray-500 mt-1">Your current bot configuration (read-only, change via Telegram)</p>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Bot Settings</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Your current bot configuration (read-only, change via Telegram)</p>
     </div>
 
     <div class="card">
@@ -13,58 +13,58 @@
         <div class="space-y-4">
             <!-- Game Config -->
             <div>
-                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">Game</h3>
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-3">Game</h3>
                 <div class="grid grid-cols-2 gap-x-8 gap-y-2">
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Game</span>
-                        <span class="text-sm font-mono capitalize">{{ config.get('game', '—') }}</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Game</span>
+                        <span class="text-sm font-mono capitalize text-gray-900 dark:text-gray-100">{{ config.get('game', '—') }}</span>
                     </div>
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Currency</span>
-                        <span class="text-sm font-mono uppercase">{{ config.get('currency', '—') }}</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Currency</span>
+                        <span class="text-sm font-mono uppercase text-gray-900 dark:text-gray-100">{{ config.get('currency', '—') }}</span>
                     </div>
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Multiplier</span>
-                        <span class="text-sm font-mono">{{ config.get('multiplier_target', '—') }}x</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Multiplier</span>
+                        <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get('multiplier_target', '—') }}x</span>
                     </div>
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Base Bet</span>
-                        <span class="text-sm font-mono">{{ config.get('base_bet', '—') }}</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Base Bet</span>
+                        <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get('base_bet', '—') }}</span>
                     </div>
                 </div>
             </div>
 
             <!-- Strategy -->
             <div>
-                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">Strategy</h3>
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-3">Strategy</h3>
                 <div class="grid grid-cols-2 gap-x-8 gap-y-2">
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Strategy</span>
-                        <span class="text-sm font-mono">{{ config.get('strategy', '—') }}</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Strategy</span>
+                        <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get('strategy', '—') }}</span>
                     </div>
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Win Mult</span>
-                        <span class="text-sm font-mono">{{ config.get('win_mult', '—') }}x</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Win Mult</span>
+                        <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get('win_mult', '—') }}x</span>
                     </div>
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Loss Mult</span>
-                        <span class="text-sm font-mono">{{ config.get('loss_mult', '—') }}x</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Loss Mult</span>
+                        <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get('loss_mult', '—') }}x</span>
                     </div>
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">Bet Delay</span>
-                        <span class="text-sm font-mono">{{ config.get('bet_delay', '—') }}s</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Bet Delay</span>
+                        <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get('bet_delay', '—') }}s</span>
                     </div>
                 </div>
             </div>
 
             <!-- Stop Conditions -->
             <div>
-                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">Stop Conditions</h3>
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-3">Stop Conditions</h3>
                 <div class="grid grid-cols-2 gap-x-8 gap-y-2">
                     {% for key in ['max_profit', 'max_loss', 'max_bets', 'max_wins', 'stop_on_balance'] %}
-                    <div class="flex justify-between py-2 border-b border-gray-100">
-                        <span class="text-sm text-gray-500">{{ key }}</span>
-                        <span class="text-sm font-mono">{{ config.get(key, '—') or '—' }}</span>
+                    <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">{{ key }}</span>
+                        <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get(key, '—') or '—' }}</span>
                     </div>
                     {% endfor %}
                 </div>
@@ -72,13 +72,13 @@
 
             {% if config.get('custom_rules_text') %}
             <div>
-                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">Custom Rules</h3>
-                <pre class="bg-gray-50 p-4 rounded-lg text-xs font-mono text-gray-700 overflow-x-auto">{{ config.get('custom_rules_text') }}</pre>
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-3">Custom Rules</h3>
+                <pre class="bg-gray-50 dark:bg-gray-900 p-4 rounded-lg text-xs font-mono text-gray-700 dark:text-gray-300 overflow-x-auto">{{ config.get('custom_rules_text') }}</pre>
             </div>
             {% endif %}
         </div>
         {% else %}
-        <p class="text-gray-400">No configuration found. Set up your bot via Telegram first.</p>
+        <p class="text-gray-400 dark:text-gray-500">No configuration found. Set up your bot via Telegram first.</p>
         {% endif %}
     </div>
 </div>

@@ -4,15 +4,15 @@
 {% block content %}
 <div class="mb-6 flex items-center justify-between">
     <div>
-        <h1 class="text-2xl font-bold text-gray-900">Users</h1>
-        <p class="text-sm text-gray-500 mt-1">{{ users|length }} registered Telegram users</p>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Users</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{ users|length }} registered Telegram users</p>
     </div>
 </div>
 
 <div class="card overflow-hidden p-0">
     <table class="w-full">
         <thead>
-            <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <tr class="bg-gray-50 dark:bg-gray-700/50 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                 <th class="px-6 py-3">User ID</th>
                 <th class="px-6 py-3">Username</th>
                 <th class="px-6 py-3">Tier</th>
@@ -23,7 +23,7 @@
                 <th class="px-6 py-3">Status</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-gray-100">
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
             {% for u in users %}
             <tr class="table-row cursor-pointer" onclick="window.location='/admin/users/{{ u.user_id }}'">
                 <td class="px-6 py-4 text-sm font-mono">{{ u.user_id }}</td>
@@ -42,7 +42,7 @@
                 <td class="px-6 py-4 text-sm font-mono {% if u.stats.total_profit >= 0 %}text-green-600{% else %}text-red-600{% endif %}">
                     {{ "%.8f"|format(u.stats.total_profit) }}
                 </td>
-                <td class="px-6 py-4 text-sm text-gray-500">{{ u.last_active[:16] if u.last_active else '—' }}</td>
+                <td class="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">{{ u.last_active[:16] if u.last_active else '—' }}</td>
                 <td class="px-6 py-4">
                     {% if u.is_blocked %}
                     <span class="badge badge-red">Blocked</span>
@@ -54,7 +54,7 @@
             {% endfor %}
             {% if not users %}
             <tr>
-                <td colspan="8" class="px-6 py-12 text-center text-gray-400">
+                <td colspan="8" class="px-6 py-12 text-center text-gray-400 dark:text-gray-500">
                     No users found. Users appear here when they start using the Telegram bot.
                 </td>
             </tr>

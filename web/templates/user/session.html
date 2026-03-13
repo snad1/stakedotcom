@@ -1,14 +1,19 @@
 {% extends "base.html" %}
+{% from "components/pagination.html" import render as pagination %}
 {% block title %}Session #{{ session.id }} — {{ app_name }}{% endblock %}
+
+{% block head %}
+<script id="lw-charts-script" src="https://cdn.jsdelivr.net/npm/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
 
 {% block content %}
 <div class="max-w-5xl mx-auto">
-    <a href="/dashboard/sessions" class="text-sm text-gray-500 hover:text-gray-700 mb-2 inline-block">&larr; Back to Sessions</a>
+    <a href="/dashboard/sessions" class="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 mb-2 inline-block">&larr; Back to Sessions</a>
 
     <div class="mb-6 flex items-center justify-between">
         <div>
-            <h1 class="text-2xl font-bold text-gray-900">Session #{{ session.id }}</h1>
-            <p class="text-sm text-gray-500 mt-1">
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Session #{{ session.id }}</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
                 {{ session.game | capitalize if session.game else '—' }} &middot;
                 {{ session.strategy or '—' }} &middot;
                 {{ session.started_at[:16] if session.started_at else '' }}
@@ -49,16 +54,25 @@
         </div>
     </div>
 
+    <!-- Balance Chart -->
+    {% include "components/chart.html" %}
+
     <!-- Bet History -->
     <div class="card p-0 overflow-hidden">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-            <h2 class="text-lg font-semibold">Bet History</h2>
-            <span class="text-sm text-gray-400">{{ bet_count }} total bets (showing latest {{ bets|length }})</span>
+        <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Bet History</h2>
+                <span class="text-sm text-gray-400 dark:text-gray-500">{{ bet_count }} total bets</span>
+            </div>
+            <a href="/api/users/{{ user_id }}/sessions/{{ session.id }}/bets/csv" download class="btn btn-secondary text-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                Download CSV
+            </a>
         </div>
         <div class="overflow-x-auto">
             <table class="w-full">
                 <thead>
-                    <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <tr class="bg-gray-50 dark:bg-gray-700/50 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                         <th class="px-4 py-3">#</th>
                         <th class="px-4 py-3">Time</th>
                         <th class="px-4 py-3">Amount</th>
@@ -69,11 +83,11 @@
                         <th class="px-4 py-3">Balance</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-gray-100">
+                <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
                     {% for b in bets %}
                     <tr class="table-row">
-                        <td class="px-4 py-2 text-xs font-mono text-gray-400">{{ b.id }}</td>
-                        <td class="px-4 py-2 text-xs text-gray-500">{{ b.timestamp[:19] if b.timestamp else '—' }}</td>
+                        <td class="px-4 py-2 text-xs font-mono text-gray-400 dark:text-gray-500">{{ b.id }}</td>
+                        <td class="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">{{ b.timestamp[:19] if b.timestamp else '—' }}</td>
                         <td class="px-4 py-2 text-xs font-mono">{{ "%.8f"|format(b.amount) }}</td>
                         <td class="px-4 py-2 text-xs font-mono">{{ "%.2f"|format(b.multiplier_target or 0) }}x</td>
                         <td class="px-4 py-2 text-xs font-mono">{{ b.result_display or ("%.2f"|format(b.result_value or 0)) }}</td>
@@ -93,6 +107,11 @@
                 </tbody>
             </table>
         </div>
+        {{ pagination(page, total_pages, bet_count, per_page, base_url="/dashboard/sessions/" ~ session.id) }}
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chart.js"></script>
 {% endblock %}

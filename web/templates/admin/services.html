@@ -3,8 +3,8 @@
 
 {% block content %}
 <div class="mb-6">
-    <h1 class="text-2xl font-bold text-gray-900">Services</h1>
-    <p class="text-sm text-gray-500 mt-1">Manage bot services and system updates</p>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Services</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Manage bot services and system updates</p>
 </div>
 
 <!-- Service Cards -->
@@ -13,12 +13,12 @@
     <div class="card">
         <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-3">
-                <span class="w-3 h-3 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
-                <h3 class="font-semibold capitalize">{{ svc.label }}</h3>
+                <span class="w-3 h-3 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300 dark:bg-gray-600{% endif %}"></span>
+                <h3 class="font-semibold capitalize text-gray-900 dark:text-gray-100">{{ svc.label }}</h3>
             </div>
             <span class="badge {% if svc.active %}badge-green{% else %}badge-gray{% endif %}">{{ svc.status }}</span>
         </div>
-        <p class="text-xs text-gray-400 font-mono mb-4">{{ svc.name }}</p>
+        <p class="text-xs text-gray-400 dark:text-gray-500 font-mono mb-4">{{ svc.name }}</p>
         <div class="flex gap-2">
             <button class="btn btn-primary text-xs flex-1"
                     hx-post="/api/services/{{ svc.label }}/restart" hx-swap="none"
@@ -41,45 +41,45 @@
 
 <!-- Update -->
 <div class="card mb-8">
-    <h2 class="text-lg font-semibold mb-2">Update Bot</h2>
-    <p class="text-sm text-gray-500 mb-4">Pull latest code from Git and restart the Telegram bot service.</p>
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Update Bot</h2>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">Pull latest code from Git and restart the Telegram bot service.</p>
     <button id="update-btn" class="btn btn-primary"
             hx-post="/api/services/update" hx-target="#update-result" hx-swap="innerHTML">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
         Pull &amp; Update
     </button>
-    <div id="update-result" class="mt-4 text-sm"></div>
+    <div id="update-result" class="mt-4 text-sm text-gray-900 dark:text-gray-100"></div>
 </div>
 
 <!-- System Metrics -->
 <div class="card">
-    <h2 class="text-lg font-semibold mb-4">System Metrics</h2>
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">System Metrics</h2>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-6">
         <div>
-            <div class="text-sm text-gray-500 mb-1">CPU</div>
-            <div class="text-xl font-bold" id="cpu-val">{{ "%.1f"|format(metrics.cpu_percent) }}%</div>
-            <div class="w-full bg-gray-200 rounded-full h-2 mt-2">
+            <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">CPU</div>
+            <div class="text-xl font-bold text-gray-900 dark:text-gray-100" id="cpu-val">{{ "%.1f"|format(metrics.cpu_percent) }}%</div>
+            <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2">
                 <div class="bg-brand-500 h-2 rounded-full" id="cpu-bar" style="width: {{ metrics.cpu_percent }}%"></div>
             </div>
         </div>
         <div>
-            <div class="text-sm text-gray-500 mb-1">Memory</div>
-            <div class="text-xl font-bold" id="mem-val">{{ "%.1f"|format(metrics.memory_percent) }}%</div>
-            <div class="w-full bg-gray-200 rounded-full h-2 mt-2">
+            <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">Memory</div>
+            <div class="text-xl font-bold text-gray-900 dark:text-gray-100" id="mem-val">{{ "%.1f"|format(metrics.memory_percent) }}%</div>
+            <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2">
                 <div class="bg-blue-500 h-2 rounded-full" id="mem-bar" style="width: {{ metrics.memory_percent }}%"></div>
             </div>
         </div>
         <div>
-            <div class="text-sm text-gray-500 mb-1">Disk</div>
-            <div class="text-xl font-bold" id="disk-val">{{ "%.1f"|format(metrics.disk_percent) }}%</div>
-            <div class="w-full bg-gray-200 rounded-full h-2 mt-2">
+            <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">Disk</div>
+            <div class="text-xl font-bold text-gray-900 dark:text-gray-100" id="disk-val">{{ "%.1f"|format(metrics.disk_percent) }}%</div>
+            <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2">
                 <div class="bg-amber-500 h-2 rounded-full" id="disk-bar" style="width: {{ metrics.disk_percent }}%"></div>
             </div>
         </div>
         <div>
-            <div class="text-sm text-gray-500 mb-1">Load Average</div>
-            <div class="text-xl font-bold font-mono" id="load-val">{{ "%.2f"|format(metrics.load_1m) }}</div>
-            <div class="text-xs text-gray-400 mt-2">
+            <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">Load Average</div>
+            <div class="text-xl font-bold font-mono text-gray-900 dark:text-gray-100" id="load-val">{{ "%.2f"|format(metrics.load_1m) }}</div>
+            <div class="text-xs text-gray-400 dark:text-gray-500 mt-2">
                 {{ "%.2f"|format(metrics.load_5m) }} / {{ "%.2f"|format(metrics.load_15m) }}
             </div>
         </div>

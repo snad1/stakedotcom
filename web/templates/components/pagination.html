@@ -1,0 +1,40 @@
+{% macro render(page, total_pages, total_items, per_page, base_url="") %}
+{% if total_pages > 1 %}
+{% set start_item = (page - 1) * per_page + 1 %}
+{% set end_item = [page * per_page, total_items] | min %}
+<nav class="flex items-center justify-between px-6 py-4 border-t border-gray-200 dark:border-gray-700">
+    <div class="text-sm text-gray-500 dark:text-gray-400">
+        Showing {{ start_item }}-{{ end_item }} of {{ "{:,}".format(total_items) }}
+    </div>
+    <div class="flex items-center gap-1">
+        {% if page > 1 %}
+        <a href="{{ base_url }}?page={{ page - 1 }}" class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">&laquo; Prev</a>
+        {% else %}
+        <span class="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-600 cursor-not-allowed">&laquo; Prev</span>
+        {% endif %}
+
+        {% set window = 2 %}
+        {% set ns = namespace(last_shown=0) %}
+        {% for p in range(1, total_pages + 1) %}
+            {% if p == 1 or p == total_pages or (p >= page - window and p <= page + window) %}
+                {% if ns.last_shown and p > ns.last_shown + 1 %}
+                <span class="px-2 py-1.5 text-sm text-gray-400 dark:text-gray-500">...</span>
+                {% endif %}
+                {% if p == page %}
+                <span class="px-3 py-1.5 text-sm rounded-md bg-brand-600 text-white font-medium">{{ p }}</span>
+                {% else %}
+                <a href="{{ base_url }}?page={{ p }}" class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">{{ p }}</a>
+                {% endif %}
+                {% set ns.last_shown = p %}
+            {% endif %}
+        {% endfor %}
+
+        {% if page < total_pages %}
+        <a href="{{ base_url }}?page={{ page + 1 }}" class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">Next &raquo;</a>
+        {% else %}
+        <span class="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-600 cursor-not-allowed">Next &raquo;</span>
+        {% endif %}
+    </div>
+</nav>
+{% endif %}
+{% endmacro %}

@@ -19,22 +19,31 @@
             }
         }
     </script>
+    <script>
+        // Load dark mode preference before render to prevent flash
+        (function() {
+            const pref = localStorage.getItem('theme');
+            if (pref === 'dark') {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
     <style>
         body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
-        .card { @apply bg-white rounded-xl shadow-sm border border-gray-200 p-6; }
+        .card { @apply bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6; }
         .btn { @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150; }
         .btn-primary { @apply bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-800; }
         .btn-danger { @apply bg-red-600 text-white hover:bg-red-700; }
-        .btn-secondary { @apply bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300; }
-        .stat-value { @apply text-2xl font-bold text-gray-900; }
-        .stat-label { @apply text-sm text-gray-500 mt-1; }
+        .btn-secondary { @apply bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600; }
+        .stat-value { @apply text-2xl font-bold text-gray-900 dark:text-gray-100; }
+        .stat-label { @apply text-sm text-gray-500 dark:text-gray-400 mt-1; }
         .badge { @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium; }
-        .badge-green { @apply bg-green-100 text-green-800; }
-        .badge-red { @apply bg-red-100 text-red-800; }
-        .badge-yellow { @apply bg-yellow-100 text-yellow-800; }
-        .badge-blue { @apply bg-blue-100 text-blue-800; }
-        .badge-gray { @apply bg-gray-100 text-gray-600; }
-        .table-row { @apply border-b border-gray-100 hover:bg-gray-50 transition-colors; }
+        .badge-green { @apply bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-400; }
+        .badge-red { @apply bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-400; }
+        .badge-yellow { @apply bg-yellow-100 dark:bg-yellow-900/40 text-yellow-800 dark:text-yellow-400; }
+        .badge-blue { @apply bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-400; }
+        .badge-gray { @apply bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300; }
+        .table-row { @apply border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors; }
         .ws-indicator { @apply w-2 h-2 rounded-full; }
         .ws-connected { @apply bg-green-500 animate-pulse; }
         .ws-disconnected { @apply bg-red-500; }
@@ -45,11 +54,11 @@
     </style>
     {% block head %}{% endblock %}
 </head>
-<body class="h-full bg-gray-50 text-gray-900">
+<body class="h-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
 
 {% block nav %}
 {% if admin is defined and admin %}
-<nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+<nav class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex items-center justify-between h-14">
             <div class="flex items-center gap-6">
@@ -59,14 +68,14 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                         </svg>
                     </div>
-                    <span class="font-semibold text-gray-900">{{ app_name }}</span>
+                    <span class="font-semibold text-gray-900 dark:text-gray-100">{{ app_name }}</span>
                 </a>
                 <div class="hidden md:flex items-center gap-1">
-                    <a href="/admin/" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/' == request.url.path %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-100{% endif %}">Dashboard</a>
-                    <a href="/admin/users" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/users' in request.url.path %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-100{% endif %}">Users</a>
-                    <a href="/admin/services" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/services' in request.url.path %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-100{% endif %}">Services</a>
-                    <a href="/admin/logs" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/logs' in request.url.path %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-100{% endif %}">Logs</a>
-                    <a href="/admin/audit" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/audit' in request.url.path %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-100{% endif %}">Audit</a>
+                    <a href="/admin/" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/' == request.url.path %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Dashboard</a>
+                    <a href="/admin/users" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/users' in request.url.path %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Users</a>
+                    <a href="/admin/services" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/services' in request.url.path %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Services</a>
+                    <a href="/admin/logs" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/logs' in request.url.path %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Logs</a>
+                    <a href="/admin/audit" class="px-3 py-1.5 rounded-md text-sm font-medium {% if '/admin/audit' in request.url.path %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Audit</a>
                 </div>
             </div>
             <div class="flex items-center gap-3">
@@ -74,13 +83,23 @@
                     <span class="ws-indicator ws-disconnected" id="ws-status"></span>
                     <span class="text-xs text-gray-400" id="ws-label">offline</span>
                 </div>
+                <button onclick="toggleDarkMode()" class="p-2 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Toggle dark mode">
+                    <!-- Sun icon (shown in dark mode) -->
+                    <svg class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                    </svg>
+                    <!-- Moon icon (shown in light mode) -->
+                    <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                    </svg>
+                </button>
                 <a href="/logout" class="btn btn-secondary text-xs">Logout</a>
             </div>
         </div>
     </div>
 </nav>
 {% elif user is defined and user %}
-<nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+<nav class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-50">
     <div class="max-w-5xl mx-auto px-4 sm:px-6">
         <div class="flex items-center justify-between h-14">
             <div class="flex items-center gap-6">
@@ -90,15 +109,25 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                         </svg>
                     </div>
-                    <span class="font-semibold text-gray-900">{{ app_name }}</span>
+                    <span class="font-semibold text-gray-900 dark:text-gray-100">{{ app_name }}</span>
                 </a>
                 <div class="hidden md:flex items-center gap-1">
-                    <a href="/dashboard/" class="px-3 py-1.5 rounded-md text-sm font-medium {% if request.url.path == '/dashboard/' %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">Dashboard</a>
-                    <a href="/dashboard/sessions" class="px-3 py-1.5 rounded-md text-sm font-medium {% if 'sessions' in request.url.path %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">Sessions</a>
-                    <a href="/dashboard/settings" class="px-3 py-1.5 rounded-md text-sm font-medium {% if 'settings' in request.url.path %}bg-brand-50 text-brand-700{% else %}text-gray-600 hover:text-gray-900{% endif %}">Settings</a>
+                    <a href="/dashboard/" class="px-3 py-1.5 rounded-md text-sm font-medium {% if request.url.path == '/dashboard/' %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{% endif %}">Dashboard</a>
+                    <a href="/dashboard/sessions" class="px-3 py-1.5 rounded-md text-sm font-medium {% if 'sessions' in request.url.path %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{% endif %}">Sessions</a>
+                    <a href="/dashboard/settings" class="px-3 py-1.5 rounded-md text-sm font-medium {% if 'settings' in request.url.path %}bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{% endif %}">Settings</a>
                 </div>
             </div>
-            <a href="/logout" class="btn btn-secondary text-xs">Logout</a>
+            <div class="flex items-center gap-3">
+                <button onclick="toggleDarkMode()" class="p-2 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Toggle dark mode">
+                    <svg class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                    </svg>
+                    <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                    </svg>
+                </button>
+                <a href="/logout" class="btn btn-secondary text-xs">Logout</a>
+            </div>
         </div>
     </div>
 </nav>
@@ -110,6 +139,13 @@
 </main>
 
 <script src="/static/app.js"></script>
+<script>
+    function toggleDarkMode() {
+        const html = document.documentElement;
+        html.classList.toggle('dark');
+        localStorage.setItem('theme', html.classList.contains('dark') ? 'dark' : 'light');
+    }
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
