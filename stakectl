@@ -370,7 +370,7 @@ cmd_web() {
     case "$action" in
         install)
             if [ -f "web/install.sh" ]; then
-                bash web/install.sh "${@:2}"
+                bash web/install.sh --repo "$(pwd)" "${@:2}"
             else
                 echo "web/install.sh not found. Run from the repo directory."
                 exit 1
