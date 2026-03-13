@@ -3,7 +3,8 @@
 import sqlite3
 import uuid
 from datetime import datetime
-from passlib.hash import bcrypt
+import hashlib
+import hmac
 
 from .config import settings
 
@@ -46,6 +47,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
 """
 
 
+def _hash_password(password: str) -> str:
+    salt = uuid.uuid4().hex
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
+    return f"pbkdf2:{salt}:{h.hex()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        _, salt, hash_hex = stored.split(":", 2)
+        h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
+        return hmac.compare_digest(h.hex(), hash_hex)
+    except (ValueError, AttributeError):
+        return False
+
+
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(settings.db_path, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -66,7 +82,7 @@ def init_db():
     if not row:
         conn.execute(
             "INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)",
-            (settings.admin_user, bcrypt.hash(settings.admin_pass), "admin"),
+            (settings.admin_user, _hash_password(settings.admin_pass), "admin"),
         )
     conn.commit()
     conn.close()
@@ -79,7 +95,7 @@ def verify_admin(username: str, password: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM admin_users WHERE username = ?", (username,)
     ).fetchone()
-    if row and bcrypt.verify(password, row["password_hash"]):
+    if row and _verify_password(password, row["password_hash"]):
         conn.execute(
             "UPDATE admin_users SET last_login = ? WHERE id = ?",
             (datetime.utcnow().isoformat(), row["id"]),
