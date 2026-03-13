@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.1 — Number Formatting + Input Parsing (2026-03-13)
+
+### TG Bot v1.1.1
+
+#### Improved
+
+- **Comma-formatted number input** — `/set maxwins 36,000,000` now works. Commas are stripped from all numeric `/set` values.
+- **Readable number output** — All integer stats (bets, wins, losses, streaks, session counts) now display with comma separators (e.g. `276,000` instead of `276000`).
+
 ## v1.1.0 — TG Bot: Multi-Session + Fixes (2026-03-13)
 
 ### TG Bot v1.1.0

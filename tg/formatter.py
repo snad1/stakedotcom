@@ -27,6 +27,11 @@ def _streak_emoji(s: int) -> str:
     return "\u2796"
 
 
+def _fmti(n) -> str:
+    """Format integer with comma separators for readability."""
+    return f"{int(n):,}"
+
+
 def _bar(value: float, total: float, width: int = 10) -> str:
     if total <= 0:
         return "\u2591" * width
@@ -65,7 +70,7 @@ def format_status(s: dict) -> str:
         f"  {bc_e} Change: `{bc_s}{bal_change:.8f}`\n"
         f"\n"
         f"\U0001f4ca *Stats*\n"
-        f"  Bets: `{s['bets']}`  W: `{s['wins']}`  L: `{s['losses']}`\n"
+        f"  Bets: `{_fmti(s['bets'])}`  W: `{_fmti(s['wins'])}`  L: `{_fmti(s['losses'])}`\n"
         f"  Win Rate: `{s['win_rate']}`\n"
         f"  {avg_e} Avg P/L: `{avg_s}{avg:.8f}`\n"
         f"\n"
@@ -77,7 +82,7 @@ def format_status(s: dict) -> str:
         f"\n"
         f"{se} *Streaks*\n"
         f"  Current: `{streak_s}`\n"
-        f"  Best: `W+{s['max_win_streak']}` / `L-{s['max_loss_streak']}`\n"
+        f"  Best: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`\n"
         f"\n"
         f"\u2699\ufe0f *Config*\n"
         f"  Strategy: `{s['strategy']}` {s['multiplier']}x\n"
@@ -114,7 +119,7 @@ def format_stop(s: dict, reason: str) -> str:
         f"  Wagered: `{s['wagered']:.8f}`\n"
         f"\n"
         f"\U0001f4ca *Stats*\n"
-        f"  Bets: `{s['bets']}`  W: `{s['wins']}`  L: `{s['losses']}`\n"
+        f"  Bets: `{_fmti(s['bets'])}`  W: `{_fmti(s['wins'])}`  L: `{_fmti(s['losses'])}`\n"
         f"  Win Rate: `{s['win_rate']}`\n"
         f"  Avg P/L: `{avg_s}{avg:.8f}`\n"
         f"\n"
@@ -122,7 +127,7 @@ def format_stop(s: dict, reason: str) -> str:
         f"  Peak: `{s['highest_balance']:.8f}`  Low: `{s['lowest_balance']:.8f}`\n"
         f"  Best Win: `+{s['highest_win']:.8f}`\n"
         f"  Worst Loss: `-{s['biggest_loss']:.8f}`\n"
-        f"  Streaks: `W+{s['max_win_streak']}` / `L-{s['max_loss_streak']}`\n"
+        f"  Streaks: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`\n"
         f"\n"
         f"\u23f1 Uptime: `{s['uptime']}`\n"
         f"Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm"
@@ -139,7 +144,7 @@ def format_milestone(data: dict) -> str:
         f"\U0001f3af *Milestone: {reason}*\n"
         f"  {pe} P/L: `{ps}{p:.8f}`\n"
         f"  Bal: `{data['balance']:.8f} {data['currency']}`\n"
-        f"  Bets: `{data['bets']}` W: `{data['wins']}` L: `{data['losses']}`\n"
+        f"  Bets: `{_fmti(data['bets'])}` W: `{_fmti(data['wins'])}` L: `{_fmti(data['losses'])}`\n"
         f"  WR: `{data['win_rate']}` | {data['uptime']}"
     )
 
@@ -195,11 +200,11 @@ def format_session_row(row) -> str:
     return (
         f"{pe} *#{sid}* `{(strat or '?')}` {game_label} {(mult or 0)}x {(cur or '?')}\n"
         f"  {_fmt_ts(started)} \u2192 {_fmt_ts(ended, 'running')}\n"
-        f"  Bets: `{bets}` W: `{wins}` L: `{losses}` WR: `{wr}`\n"
+        f"  Bets: `{_fmti(bets)}` W: `{_fmti(wins)}` L: `{_fmti(losses)}` WR: `{wr}`\n"
         f"  P/L: `{ps}{profit:.8f}`  Wag: `{wagered:.8f}`\n"
         f"  Bal: `{start_bal:.8f}` \u2192 `{end_bal:.8f}`\n"
         f"  Peak: `{hi_bal:.8f}` Low: `{lo_bal:.8f}`\n"
-        f"  Streaks: `W+{mws}` / `L-{mls}`\n"
+        f"  Streaks: `W+{_fmti(mws)}` / `L-{_fmti(mls)}`\n"
         f"  Best: `+{hi_win:.8f}` Worst: `-{big_loss:.8f}`\n"
         f"  Avg: `{avg_s}{avg:.8f}` | Speed: `{bps:.1f}`/s\n"
         f"{tag_line}"
@@ -292,7 +297,7 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
     lines += [
         f"",
         f"\U0001f4ca *Performance*",
-        f"  Bets: `{bets}`  W: `{wins}`  L: `{losses}`",
+        f"  Bets: `{_fmti(bets)}`  W: `{_fmti(wins)}`  L: `{_fmti(losses)}`",
         f"  Win Rate: `{wr}`  {_bar(wins, bets, 12)}",
         f"  {pe} P/L: `{ps}{profit:.8f}`",
         f"  Wagered: `{wagered:.8f}`",
@@ -307,8 +312,8 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
         f"\U0001f3c6 *Extremes*",
         f"  Best Win: `+{hi_win:.8f}`",
         f"  Worst Loss: `-{big_loss:.8f}`",
-        f"  Win Streak: `W+{mws}`",
-        f"  Loss Streak: `L-{mls}`",
+        f"  Win Streak: `W+{_fmti(mws)}`",
+        f"  Loss Streak: `L-{_fmti(mls)}`",
         f"",
         f"\u26a1 *Speed*",
         f"  Avg: `{bps:.1f}`/s  `{bpm:.0f}`/m",
@@ -328,7 +333,7 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
             for length in sorted(loss_d.keys()):
                 count = loss_d[length]
                 bar = "\u2588" * int(count / max_c * 8)
-                lines.append(f"    L-{length}: `{count}` {bar}")
+                lines.append(f"    L-{length}: `{_fmti(count)}` {bar}")
 
         win_d = streak_dist.get("win", {})
         if win_d:
@@ -337,7 +342,7 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
             for length in sorted(win_d.keys()):
                 count = win_d[length]
                 bar = "\u2588" * int(count / max_c * 8)
-                lines.append(f"    W+{length}: `{count}` {bar}")
+                lines.append(f"    W+{length}: `{_fmti(count)}` {bar}")
 
     # recent bets
     if recent_bets:
@@ -375,9 +380,9 @@ def format_all_time(totals) -> str:
     wp_s = "+" if (worst_profit or 0) >= 0 else ""
 
     return (
-        f"\U0001f4ca *All-Time Totals ({sessions} sessions)*\n"
+        f"\U0001f4ca *All-Time Totals ({_fmti(sessions)} sessions)*\n"
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        f"  Bets: `{tot_bets}`  W: `{tot_wins}`  L: `{tot_losses}`\n"
+        f"  Bets: `{_fmti(tot_bets)}`  W: `{_fmti(tot_wins)}`  L: `{_fmti(tot_losses)}`\n"
         f"  Win Rate: `{wr}`  {_bar(tot_wins, tot_bets, 12)}\n"
         f"  {pe} Profit: `{ps}{tot_profit:.8f}`\n"
         f"  Wagered: `{tot_wagered:.8f}`\n"
@@ -388,10 +393,10 @@ def format_all_time(totals) -> str:
         f"  Peak Balance: `{all_hi_bal:.8f}`\n"
         f"  Best Win: `+{all_hi_win:.8f}`\n"
         f"  Worst Loss: `-{all_big_loss:.8f}`\n"
-        f"  Best Streaks: `W+{best_ws}` / `L-{best_ls}`\n"
+        f"  Best Streaks: `W+{_fmti(best_ws)}` / `L-{_fmti(best_ls)}`\n"
         f"\n"
-        f"  Speed: `{avg_bps:.1f}` avg/s  Peak: `{int(all_pk_bps)}`/s `{int(all_pk_bpm)}`/m\n"
-        f"  Bets/Session: max `{max_bets}` avg `{avg_bets:.0f}`"
+        f"  Speed: `{avg_bps:.1f}` avg/s  Peak: `{_fmti(all_pk_bps)}`/s `{_fmti(all_pk_bpm)}`/m\n"
+        f"  Bets/Session: max `{_fmti(max_bets)}` avg `{_fmti(avg_bets)}`"
     )
 
 
@@ -417,7 +422,7 @@ def format_lastbets(rows: list) -> str:
     pnl_e = _pnl_emoji(total_pnl)
     wr = f"{wins/total*100:.1f}%" if total > 0 else "\u2014"
 
-    lines.append(f"\n{pnl_e} W: `{wins}` L: `{losses}` WR: `{wr}` P/L: `{pnl_s}{total_pnl:.8f}`")
+    lines.append(f"\n{pnl_e} W: `{_fmti(wins)}` L: `{_fmti(losses)}` WR: `{wr}` P/L: `{pnl_s}{total_pnl:.8f}`")
     return "\n".join(lines)
 
 

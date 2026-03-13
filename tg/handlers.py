@@ -368,7 +368,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     param = context.args[0].lower()
-    value = " ".join(context.args[1:])
+    value = " ".join(context.args[1:]).replace(",", "")
     config = load_user_config(user_id)
 
     try:
