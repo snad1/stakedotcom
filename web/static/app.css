@@ -1,0 +1,16 @@
+/* Stake Admin — Custom styles (Tailwind handles most) */
+
+/* Smooth transitions for progress bars */
+.transition-all { transition: all 0.5s ease; }
+
+/* Scrollbar styling for log viewer */
+#log-output::-webkit-scrollbar { width: 8px; }
+#log-output::-webkit-scrollbar-track { background: #1a1a2e; }
+#log-output::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+#log-output::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* Table hover effect */
+.table-row:hover { background-color: #f9fafb; }
+
+/* Focus ring override */
+*:focus-visible { outline: 2px solid #22c55e; outline-offset: 2px; }

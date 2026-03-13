@@ -6,6 +6,8 @@ import logging
 # ── Environment ──────────────────────────────────────────
 BOT_TOKEN = os.environ.get("STAKE_TG_TOKEN", "")
 DATA_DIR  = os.environ.get("STAKE_TG_DATA", os.path.expanduser("~/.stakebot_tg"))
+WEB_URL   = os.environ.get("STAKE_WEB_URL", "")          # e.g. http://IP:8001
+WEB_SECRET = os.environ.get("STAKE_WEB_SECRET_KEY", "")   # must match web app
 
 # ── API bases (stake.bet has lighter Cloudflare) ─────────
 API_BASES = [

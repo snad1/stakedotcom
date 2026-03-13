@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Logs — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Live Logs</h1>
+    <p class="text-sm text-gray-500 mt-1">Stream service logs in real-time</p>
+</div>
+
+<!-- Service Selector -->
+<div class="flex gap-2 mb-4">
+    {% for svc in services %}
+    <button class="btn btn-secondary text-sm log-tab {% if loop.first %}!bg-brand-50 !text-brand-700 !border-brand-200{% endif %}"
+            data-service="{{ svc.label }}" onclick="switchLog('{{ svc.label }}', this)">
+        <span class="w-2 h-2 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
+        {{ svc.label | capitalize }}
+    </button>
+    {% endfor %}
+</div>
+
+<!-- Log Output -->
+<div class="card p-0">
+    <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 rounded-t-xl">
+        <div class="flex items-center gap-2">
+            <span class="ws-indicator ws-disconnected" id="log-ws-status"></span>
+            <span class="text-xs text-gray-500" id="log-ws-label">Connecting...</span>
+        </div>
+        <button class="text-xs text-gray-400 hover:text-gray-600" onclick="clearLogs()">Clear</button>
+    </div>
+    <div id="log-output" class="bg-gray-900 text-green-400 font-mono text-xs p-4 rounded-b-xl overflow-auto" style="height: 500px; white-space: pre-wrap;">
+        Connecting to log stream...
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let logWs = null;
+
+function getCookie(name) {
+    const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return m ? m.pop() : '';
+}
+
+function connectLog(service) {
+    if (logWs) { logWs.close(); logWs = null; }
+    const token = getCookie('stake_admin_token');
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    logWs = new WebSocket(`${proto}//${location.host}/ws/logs/${service}?token=${token}`);
+
+    logWs.onopen = () => {
+        document.getElementById('log-ws-status').className = 'ws-indicator ws-connected';
+        document.getElementById('log-ws-label').textContent = 'Live';
+    };
+    logWs.onclose = () => {
+        document.getElementById('log-ws-status').className = 'ws-indicator ws-disconnected';
+        document.getElementById('log-ws-label').textContent = 'Disconnected';
+    };
+    logWs.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'log') {
+            const el = document.getElementById('log-output');
+            el.textContent += msg.data.line + '\n';
+            el.scrollTop = el.scrollHeight;
+        }
+    };
+}
+
+function switchLog(service, btn) {
+    document.querySelectorAll('.log-tab').forEach(t => {
+        t.classList.remove('!bg-brand-50', '!text-brand-700', '!border-brand-200');
+    });
+    btn.classList.add('!bg-brand-50', '!text-brand-700', '!border-brand-200');
+    clearLogs();
+    connectLog(service);
+}
+
+function clearLogs() {
+    document.getElementById('log-output').textContent = '';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const first = document.querySelector('.log-tab');
+    if (first) connectLog(first.dataset.service);
+});
+</script>
+{% endblock %}

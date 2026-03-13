@@ -3,8 +3,10 @@
 set -euo pipefail
 
 INSTALL_DIR="$HOME/stake-bot"
+WEB_DIR="$HOME/stake-web"
 SERVICE="stake"
 TG_SERVICE="stake-tg"
+WEB_SERVICE="stake-web"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/stake.py"
 TG_ENV="$HOME/.stake_tg_env"
@@ -46,6 +48,15 @@ usage() {
     echo "    stakectl tg status   Show Telegram bot status"
     echo "    stakectl tg logs     Stream Telegram bot logs"
     echo "    stakectl tg logs-full Show last 200 TG bot log lines"
+    echo ""
+    echo "  WEB ADMIN:"
+    echo "    stakectl web install  Install web admin dashboard"
+    echo "    stakectl web start    Start web app"
+    echo "    stakectl web stop     Stop web app"
+    echo "    stakectl web restart  Restart web app"
+    echo "    stakectl web status   Show web app status"
+    echo "    stakectl web logs     Stream web app logs"
+    echo "    stakectl web update   Update web app files"
     echo ""
     echo "  CLOUDFLARE:"
     echo "    stakectl flaresolverr           Show FlareSolverr status"
@@ -211,6 +222,16 @@ cmd_update() {
         fi
     fi
 
+    # Update web app if installed
+    if [ -d "$WEB_DIR" ] && [ -d "web" ]; then
+        cp -r web/* "$WEB_DIR/" 2>/dev/null || true
+        "$WEB_DIR/venv/bin/pip" install --quiet -r "$WEB_DIR/requirements.txt" 2>/dev/null || true
+        if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
+            systemctl --user restart "$WEB_SERVICE"
+            echo "Web admin updated + restarted."
+        fi
+    fi
+
     # Auto-restart TG bot if running
     if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
         systemctl --user restart "$TG_SERVICE"
@@ -344,6 +365,77 @@ cmd_tg() {
     esac
 }
 
+cmd_web() {
+    local action="${1:-status}"
+    case "$action" in
+        install)
+            if [ -f "web/install.sh" ]; then
+                bash web/install.sh "${@:2}"
+            else
+                echo "web/install.sh not found. Run from the repo directory."
+                exit 1
+            fi
+            ;;
+        start)
+            systemctl --user start "$WEB_SERVICE"
+            sleep 1
+            if systemctl --user is-active --quiet "$WEB_SERVICE"; then
+                echo "Web admin started."
+            else
+                echo "Failed to start. Check: stakectl web logs"
+                exit 1
+            fi
+            ;;
+        stop)
+            systemctl --user stop "$WEB_SERVICE"
+            echo "Web admin stopped."
+            ;;
+        restart)
+            systemctl --user restart "$WEB_SERVICE"
+            sleep 1
+            if systemctl --user is-active --quiet "$WEB_SERVICE"; then
+                echo "Web admin restarted."
+            else
+                echo "Failed to restart. Check: stakectl web logs"
+                exit 1
+            fi
+            ;;
+        status)
+            echo ""
+            echo "── Web Admin Status ──"
+            systemctl --user status "$WEB_SERVICE" --no-pager 2>/dev/null || echo "  Service not running"
+            ;;
+        logs)
+            journalctl --user -u "$WEB_SERVICE" -f --no-pager
+            ;;
+        logs-full)
+            journalctl --user -u "$WEB_SERVICE" -n 200 --no-pager
+            ;;
+        update)
+            if [ -d "web" ]; then
+                echo "Updating web app files…"
+                cp -r web/* "$WEB_DIR/" 2>/dev/null || true
+                # Don't overwrite .env
+                [ -f "$WEB_DIR/.env" ] || cp "$WEB_DIR/.env.example" "$WEB_DIR/.env" 2>/dev/null || true
+                "$WEB_DIR/venv/bin/pip" install --quiet -r "$WEB_DIR/requirements.txt" 2>/dev/null || true
+                if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
+                    systemctl --user restart "$WEB_SERVICE"
+                    sleep 1
+                    echo "Web admin updated + restarted."
+                else
+                    echo "Web admin updated. Start with: stakectl web start"
+                fi
+            else
+                echo "No web/ directory found."
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Usage: stakectl web [install|start|stop|restart|status|logs|logs-full|update]"
+            ;;
+    esac
+}
+
 # ── Dispatch ──────────────────────────────────────────
 case "${1:-}" in
     setup)        cmd_setup ;;
@@ -361,6 +453,7 @@ case "${1:-}" in
     presets)      cmd_presets ;;
     update)       cmd_update ;;
     tg)           cmd_tg "${2:-}" ;;
+    web)          cmd_web "${@:2}" ;;
     flaresolverr) cmd_flaresolverr "${2:-}" ;;
     *)            usage ;;
 esac

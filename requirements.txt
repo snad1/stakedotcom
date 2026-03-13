@@ -3,3 +3,4 @@ rich
 curl_cffi
 cloudscraper
 python-telegram-bot>=20.0
+python-jose[cryptography]>=3.3.0

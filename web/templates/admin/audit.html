@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Audit Log</h1>
+    <p class="text-sm text-gray-500 mt-1">All admin actions and user events</p>
+</div>
+
+<div class="card p-0 overflow-hidden">
+    <table class="w-full">
+        <thead>
+            <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th class="px-6 py-3">Time</th>
+                <th class="px-6 py-3">Actor</th>
+                <th class="px-6 py-3">Action</th>
+                <th class="px-6 py-3">Detail</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+            {% for log in logs %}
+            <tr class="table-row">
+                <td class="px-6 py-3 text-sm text-gray-500 font-mono">{{ log.timestamp[:19] }}</td>
+                <td class="px-6 py-3 text-sm">
+                    {% if log.actor.startswith('admin:') %}
+                    <span class="badge badge-blue">{{ log.actor }}</span>
+                    {% else %}
+                    <span class="badge badge-gray">{{ log.actor }}</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-3 text-sm font-medium">{{ log.action }}</td>
+                <td class="px-6 py-3 text-sm text-gray-500">{{ log.detail }}</td>
+            </tr>
+            {% endfor %}
+            {% if not logs %}
+            <tr><td colspan="4" class="px-6 py-12 text-center text-gray-400">No audit entries yet.</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

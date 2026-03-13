@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Users — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-center justify-between">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900">Users</h1>
+        <p class="text-sm text-gray-500 mt-1">{{ users|length }} registered Telegram users</p>
+    </div>
+</div>
+
+<div class="card overflow-hidden p-0">
+    <table class="w-full">
+        <thead>
+            <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th class="px-6 py-3">User ID</th>
+                <th class="px-6 py-3">Username</th>
+                <th class="px-6 py-3">Tier</th>
+                <th class="px-6 py-3">Sessions</th>
+                <th class="px-6 py-3">Total Bets</th>
+                <th class="px-6 py-3">Profit</th>
+                <th class="px-6 py-3">Last Active</th>
+                <th class="px-6 py-3">Status</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+            {% for u in users %}
+            <tr class="table-row cursor-pointer" onclick="window.location='/admin/users/{{ u.user_id }}'">
+                <td class="px-6 py-4 text-sm font-mono">{{ u.user_id }}</td>
+                <td class="px-6 py-4 text-sm">{{ u.username or '—' }}</td>
+                <td class="px-6 py-4">
+                    {% if u.tier == 'premium' %}
+                    <span class="badge badge-green">Premium</span>
+                    {% elif u.tier == 'trial' %}
+                    <span class="badge badge-blue">Trial</span>
+                    {% else %}
+                    <span class="badge badge-gray">Free</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4 text-sm">{{ u.stats.total_sessions }}</td>
+                <td class="px-6 py-4 text-sm font-mono">{{ "{:,}".format(u.stats.total_bets) }}</td>
+                <td class="px-6 py-4 text-sm font-mono {% if u.stats.total_profit >= 0 %}text-green-600{% else %}text-red-600{% endif %}">
+                    {{ "%.8f"|format(u.stats.total_profit) }}
+                </td>
+                <td class="px-6 py-4 text-sm text-gray-500">{{ u.last_active[:16] if u.last_active else '—' }}</td>
+                <td class="px-6 py-4">
+                    {% if u.is_blocked %}
+                    <span class="badge badge-red">Blocked</span>
+                    {% else %}
+                    <span class="badge badge-green">Active</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not users %}
+            <tr>
+                <td colspan="8" class="px-6 py-12 text-center text-gray-400">
+                    No users found. Users appear here when they start using the Telegram bot.
+                </td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

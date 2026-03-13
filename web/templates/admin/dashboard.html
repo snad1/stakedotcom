@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <p class="text-sm text-gray-500 mt-1">Platform overview and system health</p>
+</div>
+
+<!-- Stats Grid -->
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+    <div class="card">
+        <div class="stat-value">{{ stats.total_users }}</div>
+        <div class="stat-label">Total Users</div>
+    </div>
+    <div class="card">
+        <div class="stat-value">{{ stats.active_users }}</div>
+        <div class="stat-label">Active Users</div>
+    </div>
+    <div class="card">
+        <div class="stat-value">{{ "{:,}".format(stats.total_sessions) }}</div>
+        <div class="stat-label">Sessions</div>
+    </div>
+    <div class="card">
+        <div class="stat-value">{{ "{:,}".format(stats.total_bets) }}</div>
+        <div class="stat-label">Total Bets</div>
+    </div>
+    <div class="card">
+        <div class="stat-value {% if stats.total_profit >= 0 %}text-green-600{% else %}text-red-600{% endif %}">
+            {{ "%.8f"|format(stats.total_profit) }}
+        </div>
+        <div class="stat-label">Total Profit</div>
+    </div>
+    <div class="card">
+        <div class="stat-value">{{ "%.4f"|format(stats.total_wagered) }}</div>
+        <div class="stat-label">Total Wagered</div>
+    </div>
+</div>
+
+<!-- Services + System -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Services Status -->
+    <div class="card">
+        <h2 class="text-lg font-semibold mb-4">Services</h2>
+        <div class="space-y-3">
+            {% for svc in services %}
+            <div class="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50">
+                <div class="flex items-center gap-3">
+                    <span class="w-2.5 h-2.5 rounded-full {% if svc.active %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
+                    <span class="font-medium text-sm capitalize">{{ svc.label }}</span>
+                    <span class="text-xs text-gray-400">{{ svc.name }}</span>
+                </div>
+                <span class="badge {% if svc.active %}badge-green{% else %}badge-gray{% endif %}">
+                    {{ svc.status }}
+                </span>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="mt-4">
+            <a href="/admin/services" class="text-sm text-brand-600 hover:text-brand-700 font-medium">
+                Manage services &rarr;
+            </a>
+        </div>
+    </div>
+
+    <!-- System Metrics -->
+    <div class="card" id="metrics-card">
+        <h2 class="text-lg font-semibold mb-4">System</h2>
+        <div class="space-y-4">
+            <!-- CPU -->
+            <div>
+                <div class="flex justify-between text-sm mb-1">
+                    <span class="text-gray-600">CPU</span>
+                    <span class="font-medium" id="cpu-val">{{ "%.1f"|format(metrics.cpu_percent) }}%</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div class="bg-brand-500 h-2 rounded-full transition-all duration-500" id="cpu-bar" style="width: {{ metrics.cpu_percent }}%"></div>
+                </div>
+            </div>
+            <!-- Memory -->
+            <div>
+                <div class="flex justify-between text-sm mb-1">
+                    <span class="text-gray-600">Memory</span>
+                    <span class="font-medium" id="mem-val">{{ "%.1f"|format(metrics.memory_percent) }}% ({{ format_bytes(metrics.memory_used) }} / {{ format_bytes(metrics.memory_total) }})</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div class="bg-blue-500 h-2 rounded-full transition-all duration-500" id="mem-bar" style="width: {{ metrics.memory_percent }}%"></div>
+                </div>
+            </div>
+            <!-- Disk -->
+            <div>
+                <div class="flex justify-between text-sm mb-1">
+                    <span class="text-gray-600">Disk</span>
+                    <span class="font-medium" id="disk-val">{{ "%.1f"|format(metrics.disk_percent) }}% ({{ format_bytes(metrics.disk_used) }} / {{ format_bytes(metrics.disk_total) }})</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div class="bg-amber-500 h-2 rounded-full transition-all duration-500" id="disk-bar" style="width: {{ metrics.disk_percent }}%"></div>
+                </div>
+            </div>
+            <!-- Load -->
+            <div class="flex justify-between text-sm text-gray-600 pt-2 border-t border-gray-100">
+                <span>Load Average</span>
+                <span class="font-mono text-gray-900" id="load-val">{{ "%.2f"|format(metrics.load_1m) }} / {{ "%.2f"|format(metrics.load_5m) }} / {{ "%.2f"|format(metrics.load_15m) }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="mt-6 card">
+    <h2 class="text-lg font-semibold mb-4">Quick Actions</h2>
+    <div class="flex flex-wrap gap-3">
+        <button class="btn btn-primary" hx-post="/api/services/update" hx-swap="none"
+                hx-confirm="Pull latest code and restart TG bot?" hx-indicator="#update-spinner">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Update &amp; Restart
+            <span class="htmx-indicator" id="update-spinner">
+                <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+            </span>
+        </button>
+        <a href="/admin/users" class="btn btn-secondary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+            View Users
+        </a>
+        <a href="/admin/logs" class="btn btn-secondary">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            View Logs
+        </a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Auto-refresh metrics via HTMX polling
+    document.addEventListener('DOMContentLoaded', () => {
+        setInterval(async () => {
+            try {
+                const r = await fetch('/api/metrics');
+                if (!r.ok) return;
+                const m = await r.json();
+                document.getElementById('cpu-val').textContent = m.cpu_percent.toFixed(1) + '%';
+                document.getElementById('cpu-bar').style.width = m.cpu_percent + '%';
+                document.getElementById('mem-val').textContent = m.memory_percent.toFixed(1) + '%';
+                document.getElementById('mem-bar').style.width = m.memory_percent + '%';
+                document.getElementById('disk-val').textContent = m.disk_percent.toFixed(1) + '%';
+                document.getElementById('disk-bar').style.width = m.disk_percent + '%';
+                document.getElementById('load-val').textContent = `${m.load_1m.toFixed(2)} / ${m.load_5m.toFixed(2)} / ${m.load_15m.toFixed(2)}`;
+            } catch(e) {}
+        }, 5000);
+    });
+</script>
+{% endblock %}

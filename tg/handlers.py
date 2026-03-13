@@ -186,7 +186,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Presets*\n"
         "/presets — List presets\n"
         "/savepreset — Save current config\n"
-        "/loadpreset — Load preset",
+        "/loadpreset — Load preset\n\n"
+        "*Web*\n"
+        "/web — Open web dashboard",
         parse_mode="Markdown",
     )
 
@@ -761,6 +763,50 @@ def _parse_callback_slot(data: str) -> tuple:
         except ValueError:
             pass
     return data, None
+
+
+# ── /web — generate dashboard login link ─────────────────
+async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from .config import WEB_URL, WEB_SECRET
+    if not WEB_URL or not WEB_SECRET:
+        await update.message.reply_text(
+            "Web dashboard not configured.\n"
+            "Set `STAKE_WEB_URL` and `STAKE_WEB_SECRET_KEY` in the bot environment.",
+            parse_mode="Markdown")
+        return
+
+    user_id = update.effective_user.id
+    username = update.effective_user.username or ""
+
+    # Generate a one-time JWT token (5 min expiry)
+    try:
+        import uuid
+        from datetime import datetime, timedelta, timezone
+        from jose import jwt as jose_jwt
+
+        expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+        jti = str(uuid.uuid4())
+        token = jose_jwt.encode(
+            {"sub": f"tg:{user_id}", "role": "tg_user", "jti": jti, "username": username, "exp": expire},
+            WEB_SECRET,
+            algorithm="HS256",
+        )
+        link = f"{WEB_URL.rstrip('/')}/auth/telegram?token={token}"
+        await update.message.reply_text(
+            f"🌐 *Web Dashboard*\n\n"
+            f"[Open Dashboard]({link})\n\n"
+            f"_Link expires in 5 minutes._",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+    except ImportError:
+        await update.message.reply_text(
+            "python-jose not installed. Install it in the bot venv:\n"
+            "`pip install python-jose[cryptography]`",
+            parse_mode="Markdown")
+    except Exception as e:
+        logger.error("cmd_web error: %s", e)
+        await update.message.reply_text(f"Error generating link: {e}")
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
