@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.1.0 — TG Bot: Multi-Session + Fixes (2026-03-13)
+
+### TG Bot v1.1.0
+
+#### Added
+
+- **Multi-session support** — Run up to 5 concurrent betting sessions per user. Each session gets its own slot number. Use `/bet` multiple times to start additional sessions.
+- **Slot-based commands** — `/stop 2`, `/status 2`, `/pause 2`, `/resume 2` to target specific sessions. Single session auto-resolves (no slot needed).
+- **Bulk control** — `/stop all`, `/pause all`, `/resume all` to control all sessions at once.
+- **Multi-session status summary** — `/status` shows compact overview when multiple sessions are running.
+- **`/editrule <N> <json>`** — Edit an existing rule by number with a JSON patch (merge into current fields).
+- **Config snapshot in session history** — `/session <id>` shows the exact strategy, rules, stops, and config used at session start.
+- **Strategy-aware `/config`** — Only shows relevant fields per strategy (e.g. loss_mult for Martingale, delay_threshold for Delay Martingale, rules for Rule-Based).
+- **21 rule actions** — Added all missing actions from Stake's autobet UI: reset/set/increase/decrease/add/deduct for win chance and payout, reset_game.
+- **Zero-downtime updates** — `stakectl update` now auto-restarts TG bot with session auto-resume. Active sessions pause, save state, and resume after restart.
+
+#### Fixed
+
+- **`/delrule`** — Now correctly deletes rules by number.
+- **`migrate_db` import error** — Fixed `ImportError: cannot import name 'migrate_db'` that crashed the TG bot on startup.
+- **Milestone notifications** — Fixed silent error swallowing that prevented milestone callbacks from firing.
+- **Smart quotes in `/addrule`** — Telegram auto-replaces `"` with curly quotes, breaking JSON. Now sanitized automatically.
+- **Rule trigger normalization** — "lose" → "loss", "wins" → "win", "losses" → "loss", "bets" → "bet" — rules now match regardless of how the trigger is typed.
+- **`/set basebet 0`** — Fixed falsy value override (`0` was treated as missing and defaulted to `0.0001`).
+- **Insufficient balance** — Bot now stops session cleanly when API returns insufficient balance error instead of looping.
+
 ## v1.2.2 — TG Bot Fixes (2026-03-12)
 
 ### Fixed

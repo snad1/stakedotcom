@@ -1,4 +1,4 @@
-# Stake AutoBot v1.2 + Telegram Bot v1.0
+# Stake AutoBot v1.2 + Telegram Bot v1.1
 
 High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard **and a Telegram bot**. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
@@ -181,15 +181,21 @@ Build custom rules interactively using the wizard. Each rule is an **IF conditio
 | Action | Description |
 |---|---|
 | Reset bet amount | Reset to base bet |
-| Increase amount by % | Multiply current bet (e.g. 101% = ×2.01) |
+| Increase amount by % | Multiply current bet (e.g. value=101 → ×2.01) |
 | Decrease amount by % | Reduce current bet by percentage |
 | Add to amount | Add a fixed value to bet |
 | Deduct from amount | Subtract a fixed value from bet |
 | Set amount | Set bet to an exact value |
 | Switch over/under | Toggle bet direction (Dice only) |
 | Stop betting | Stop the bot |
+| Reset win chance | Reset to initial win chance |
 | Set win chance | Set exact win chance (recalculates multiplier) |
 | Increase/Decrease win chance by % | Adjust win chance relatively |
+| Add/Deduct win chance | Add or subtract fixed amount to/from win chance |
+| Reset payout | Reset to initial payout multiplier |
+| Set payout | Set exact payout multiplier |
+| Increase/Decrease payout by % | Adjust payout relatively |
+| Add/Deduct payout | Add or subtract fixed amount to/from payout |
 | Reset game | Full reset (bet + streak counters) |
 
 ### Example
@@ -359,15 +365,15 @@ cd stake && PYTHONPATH=. python3 -m tg.bot
 | `/set game limbo\|dice` | Switch game |
 | `/set multiplier 2.0` | Set target multiplier |
 | `/strategies` | List all strategies |
-| `/bet` | Start betting session |
-| `/stop` | Stop session (also cleans zombie sessions) |
-| `/pause` / `/resume` | Pause/resume betting |
-| `/status` | Live status with refresh button |
-| `/monitor [interval]` | Auto-updating status (3-60s) |
+| `/bet` | Start betting session (up to 5 concurrent) |
+| `/stop [slot\|all]` | Stop session — `/stop 2` or `/stop all` |
+| `/pause [slot\|all]` / `/resume [slot\|all]` | Pause/resume betting |
+| `/status [slot]` | Live status — summary when multiple sessions |
+| `/monitor [slot] [interval]` | Auto-updating status (3-60s) |
 | `/stats` | Session history (last 10) |
-| `/session <id>` | Full session report with streak distribution |
+| `/session <id>` | Full session report with config snapshot + streaks |
 | `/lastbets [n]` | Recent bets |
-| `/rules` / `/addrule` / `/clearrules` | Manage rules |
+| `/rules` / `/addrule` / `/delrule` / `/editrule` / `/clearrules` | Manage rules |
 | `/presets` / `/savepreset` / `/loadpreset` | Manage presets |
 
 ### Architecture
