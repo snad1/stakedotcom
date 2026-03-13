@@ -11,6 +11,7 @@ Stake-specific differences from wolfbet:
 
 import os
 import json
+import time
 import asyncio
 import sqlite3
 from datetime import datetime
@@ -22,7 +23,7 @@ from telegram.ext import ContextTypes
 from . import VERSION
 from .config import (
     CONFIG_KEYS, TIERS, CURRENCIES, GAME_LABELS, API_BASES,
-    get_user_tier, logger,
+    DATA_DIR, get_user_tier, logger,
 )
 from .database import (
     user_db_path, load_user_config, save_user_config,
@@ -42,6 +43,7 @@ from .formatter import (
 
 # ── Active engines (one per user) ────────────────────────
 active_engines: Dict[int, BettingEngine] = {}
+_engine_chat_ids: Dict[int, int] = {}  # user_id → chat_id for resume
 
 # ── Active monitors (one per user) ──────────────────────
 active_monitors: Dict[int, asyncio.Task] = {}
@@ -480,6 +482,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     active_engines[user_id] = engine
+    _engine_chat_ids[user_id] = chat_id
 
     wc = round(99.0 / engine.multiplier_target, 2)
     await msg.edit_text(
@@ -496,6 +499,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _notify_stop(chat_id: int, user_id: int, reason: str, app):
     engine = active_engines.pop(user_id, None)
+    _engine_chat_ids.pop(user_id, None)
     if not engine:
         return
     s = engine.get_status()
@@ -1118,3 +1122,104 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(text[idx:], parse_mode="Markdown")
         else:
             await update.message.reply_text(text[:4096], parse_mode="Markdown")
+
+
+# ── GRACEFUL SHUTDOWN / RESUME ─────────────────────────
+RESUME_FILE = os.path.join(DATA_DIR, "_resume.json")
+
+
+def save_resume_state():
+    """Called on graceful shutdown. Pause all engines, flush DB, save state."""
+    if not active_engines:
+        if os.path.exists(RESUME_FILE):
+            os.remove(RESUME_FILE)
+        return
+
+    # Pause all engines immediately
+    for engine in active_engines.values():
+        engine.paused = True
+    time.sleep(1)  # let in-flight bets finish
+
+    snapshots = []
+    for user_id, engine in list(active_engines.items()):
+        try:
+            engine._flush_bets()
+            engine._db_save_session()
+            snap = engine.snapshot_state()
+            snap["chat_id"] = _engine_chat_ids.get(user_id)
+            snapshots.append(snap)
+            engine.running = False
+            engine._close_conn()
+        except Exception as e:
+            logger.error("Failed to snapshot user %d: %s", user_id, e)
+
+    if snapshots:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(RESUME_FILE, "w") as f:
+            json.dump(snapshots, f)
+        os.chmod(RESUME_FILE, 0o600)
+        logger.info("Saved %d engine(s) for resume", len(snapshots))
+
+
+async def load_resume_state(application):
+    """Called on startup. Restore engines from resume file."""
+    if not os.path.exists(RESUME_FILE):
+        return
+
+    try:
+        with open(RESUME_FILE) as f:
+            snapshots = json.load(f)
+    except Exception as e:
+        logger.error("Failed to load resume file: %s", e)
+        return
+    finally:
+        os.remove(RESUME_FILE)  # consume it — don't re-resume on crash
+
+    loop = asyncio.get_event_loop()
+    resumed = 0
+
+    for snap in snapshots:
+        user_id = snap["user_id"]
+        chat_id = snap.get("chat_id")
+        config = snap["config"]
+        db_path = snap["db_path"]
+
+        if not chat_id:
+            logger.warning("No chat_id for user %d, skipping resume", user_id)
+            continue
+
+        try:
+            engine = BettingEngine(user_id, db_path, config)
+            engine.restore_state(snap)
+
+            def _make_on_stop(cid, uid):
+                def on_stop(reason):
+                    asyncio.run_coroutine_threadsafe(
+                        _notify_stop(cid, uid, reason, application), loop)
+                return on_stop
+
+            def _make_on_milestone(cid):
+                def on_milestone(data):
+                    asyncio.run_coroutine_threadsafe(
+                        _notify_milestone(cid, data, application), loop)
+                return on_milestone
+
+            engine.on_stop = _make_on_stop(chat_id, user_id)
+            engine.on_milestone = _make_on_milestone(chat_id)
+
+            if engine.start_resumed():
+                active_engines[user_id] = engine
+                _engine_chat_ids[user_id] = chat_id
+                resumed += 1
+                await application.bot.send_message(
+                    chat_id,
+                    f"Bot updated — session #{engine.session_id} resumed automatically.\n"
+                    f"Use /status to check progress.",
+                )
+            else:
+                logger.error("Resume failed for user %d: %s", user_id, engine.last_error)
+        except Exception as e:
+            logger.error("Resume failed for user %d: %s", user_id, e)
+
+    if resumed:
+        logger.info("Resumed %d/%d engines", resumed, len(snapshots))

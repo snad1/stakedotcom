@@ -729,6 +729,107 @@ class BettingEngine:
         self._thread.start()
         return True
 
+    # ── RESUME SUPPORT ────────────────────────────────────
+    def snapshot_state(self) -> dict:
+        """Capture full engine state for resume after restart."""
+        rules_ser = json.dumps([r.to_dict() for r in self.custom_rules]) if self.custom_rules else ""
+        config = {
+            "access_token": self.access_token,
+            "lockdown_token": self.lockdown_token,
+            "cookie": self.cookie,
+            "game": self.game,
+            "currency": self.currency,
+            "multiplier_target": self.multiplier_target,
+            "dice_target": self.dice_target,
+            "dice_condition": self.dice_condition,
+            "base_bet": self.base_bet,
+            "strategy": self.strategy,
+            "strategy_key": self.strategy_key,
+            "win_mult": self.win_mult,
+            "loss_mult": self.loss_mult,
+            "bet_delay": self.bet_delay,
+            "delay_martin_threshold": self.delay_martin_threshold,
+            "custom_rules_text": rules_ser,
+            "max_profit": self.max_profit,
+            "max_loss": self.max_loss,
+            "max_bets": self.max_bets,
+            "max_wins": self.max_wins,
+            "stop_on_balance": self.stop_on_balance,
+            "profit_increment": self.profit_increment,
+            "profit_threshold": self.profit_threshold,
+            "milestone_bets": self.milestone_bets,
+            "milestone_wins": self.milestone_wins,
+            "milestone_losses": self.milestone_losses,
+            "milestone_profit": self.milestone_profit,
+        }
+        return {
+            "user_id": self.user_id,
+            "db_path": self.db_path,
+            "config": config,
+            "session_id": self.session_id,
+            "session_start": self.session_start,
+            "initial_multiplier": self.initial_multiplier,
+            "current_bet": self.current_bet,
+            "total_bets": self.total_bets,
+            "wins": self.wins,
+            "losses": self.losses,
+            "profit": self.profit,
+            "wagered": self.wagered,
+            "start_balance": self.start_balance,
+            "current_balance": self.current_balance,
+            "current_streak": self.current_streak,
+            "max_win_streak": self.max_win_streak,
+            "max_loss_streak": self.max_loss_streak,
+            "highest_bet": self.highest_bet,
+            "highest_win": self.highest_win,
+            "biggest_loss": self.biggest_loss,
+            "highest_balance": self.highest_balance,
+            "lowest_balance": self.lowest_balance if self.lowest_balance != float("inf") else self.current_balance,
+            "dalembert_unit": self.dalembert_unit,
+            "paroli_count": self.paroli_count,
+            "next_profit_milestone": self.next_profit_milestone,
+            "_last_profit_milestone": self._last_profit_milestone,
+        }
+
+    def restore_state(self, snap: dict):
+        """Restore runtime state from a snapshot dict."""
+        self.session_id        = snap["session_id"]
+        self.session_start     = snap["session_start"]
+        self.initial_multiplier = snap.get("initial_multiplier", self.multiplier_target)
+        self.current_bet       = snap["current_bet"]
+        self.total_bets        = snap["total_bets"]
+        self.wins              = snap["wins"]
+        self.losses            = snap["losses"]
+        self.profit            = snap["profit"]
+        self.wagered           = snap["wagered"]
+        self.start_balance     = snap["start_balance"]
+        self.current_balance   = snap["current_balance"]
+        self.current_streak    = snap["current_streak"]
+        self.max_win_streak    = snap["max_win_streak"]
+        self.max_loss_streak   = snap["max_loss_streak"]
+        self.highest_bet       = snap["highest_bet"]
+        self.highest_win       = snap["highest_win"]
+        self.biggest_loss      = snap["biggest_loss"]
+        self.highest_balance   = snap["highest_balance"]
+        self.lowest_balance    = snap.get("lowest_balance", float("inf"))
+        self.dalembert_unit    = snap.get("dalembert_unit", 0)
+        self.paroli_count      = snap.get("paroli_count", 0)
+        self.next_profit_milestone  = snap.get("next_profit_milestone", 0.0)
+        self._last_profit_milestone = snap.get("_last_profit_milestone", 0.0)
+
+    def start_resumed(self) -> bool:
+        """Resume a saved session. No API test, no balance fetch, no new DB session."""
+        self._init_http()
+        init_db(self.db_path)
+        self.running = True
+        self.paused = False
+        self.status = "Resumed"
+        self._last_session_save = time.time()
+        self._thread = threading.Thread(target=self._betting_loop, daemon=True)
+        self._thread.start()
+        logger.info("User %d: Resumed session #%d", self.user_id, self.session_id)
+        return True
+
     def stop(self):
         self.running = False
         if self._thread and self._thread.is_alive():

@@ -356,7 +356,22 @@ cmd_update() {
             mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/tg"
             cp core/*.py "$INSTALL_DIR/core/"
             cp tg/*.py   "$INSTALL_DIR/tg/"
-            echo "Bot + TG bot updated. Restart with: stakectl restart && stakectl tg restart"
+            echo "Bot + TG bot files updated."
+            # Auto-restart TG bot gracefully (sessions auto-resume)
+            if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
+                echo "Restarting Telegram bot (sessions will auto-resume)…"
+                systemctl --user restart "$TG_SERVICE"
+                sleep 2
+                if systemctl --user is-active --quiet "$TG_SERVICE"; then
+                    echo "Telegram bot restarted. Active sessions resumed."
+                else
+                    echo "WARNING: TG bot failed to restart. Check: stakectl tg logs-full"
+                fi
+            fi
+            # CLI bot still needs manual restart
+            if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+                echo "CLI bot still running. Restart with: stakectl restart"
+            fi
         else
             echo "Bot updated. Restart with: stakectl restart"
         fi

@@ -17,6 +17,7 @@ from .handlers import (
     cmd_presets, cmd_savepreset, cmd_loadpreset,
     cmd_session,
     callback_handler,
+    save_resume_state, load_resume_state,
 )
 
 
@@ -50,17 +51,25 @@ def main():
             BotCommand("session",     "Detailed session report"),
             BotCommand("rules",       "List current rules"),
             BotCommand("addrule",     "Add a rule (JSON)"),
+            BotCommand("delrule",     "Delete a rule by number"),
+            BotCommand("editrule",    "Edit a rule by number"),
             BotCommand("clearrules",  "Clear all rules"),
             BotCommand("presets",     "List presets"),
             BotCommand("savepreset",  "Save current config as preset"),
             BotCommand("loadpreset",  "Load a preset"),
         ])
         logger.info("Bot commands registered with Telegram")
+        # Resume any engines saved from graceful shutdown
+        await load_resume_state(application)
+
+    async def post_shutdown(application):
+        save_resume_state()
 
     app = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 
