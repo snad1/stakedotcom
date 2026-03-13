@@ -1249,10 +1249,9 @@ def betting_loop():
         if state.strategy_key == "7" and state.custom_rules:
             apply_rules(bet_state)
 
-        # calculate next bet — cap at 99% of balance
+        # calculate next bet — no cap, API rejects if insufficient balance
         raw_next  = compute_next_bet(bet_state)
-        max_safe  = state.current_balance * 0.99 if state.current_balance > 0 else state.base_bet
-        next_bet  = max(state.base_bet, min(raw_next, max_safe))
+        next_bet  = max(state.base_bet, raw_next)
         if next_bet > 0 and next_bet < MIN_BET:
             next_bet = MIN_BET
         state.current_bet = next_bet
