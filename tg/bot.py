@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Stake Telegram Bot — entry point and Application wiring."""
 
+import atexit
 import os
+import signal
 import sys
 
 from telegram import BotCommand
@@ -20,6 +22,23 @@ from .handlers import (
     save_resume_state, load_resume_state,
 )
 
+_resume_saved = False
+
+def _save_once():
+    """Ensure resume state is saved exactly once on shutdown."""
+    global _resume_saved
+    if _resume_saved:
+        return
+    _resume_saved = True
+    logger.info("Saving resume state…")
+    save_resume_state()
+
+def _signal_handler(signum, frame):
+    """Handle SIGTERM/SIGINT — save resume state before exit."""
+    logger.info("Received signal %d, saving state…", signum)
+    _save_once()
+    sys.exit(0)
+
 
 def main():
     if not BOT_TOKEN:
@@ -28,6 +47,9 @@ def main():
         sys.exit(1)
 
     os.makedirs(DATA_DIR, exist_ok=True)
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    atexit.register(_save_once)
     logger.info("Stake Telegram Bot v%s starting…", VERSION)
     logger.info("Data dir: %s", DATA_DIR)
 
@@ -63,7 +85,7 @@ def main():
         await load_resume_state(application)
 
     async def post_shutdown(application):
-        save_resume_state()
+        _save_once()
 
     app = (
         Application.builder()
