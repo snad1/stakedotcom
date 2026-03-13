@@ -845,6 +845,11 @@ class BettingEngine:
         self.paused = False
         self.status = "Resumed"
         self._last_session_save = time.time()
+        # Recalculate speed from restored totals so status isn't 0 after resume
+        elapsed = time.time() - self.session_start if self.session_start else 0
+        if elapsed > 0 and self.total_bets > 0:
+            self.bets_per_second = self.total_bets / elapsed
+            self.bets_per_minute = self.bets_per_second * 60
         self._thread = threading.Thread(target=self._betting_loop, daemon=True)
         self._thread.start()
         logger.info("User %d: Resumed session #%d", self.user_id, self.session_id)

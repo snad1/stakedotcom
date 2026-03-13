@@ -78,7 +78,7 @@ def format_status(s: dict) -> str:
         f"  Peak Bal: `{s['highest_balance']:.8f}`\n"
         f"  Low Bal: `{s['lowest_balance']:.8f}`\n"
         f"  Best Win: `+{s['highest_win']:.8f}`\n"
-        f"  Worst Loss: `-{s['biggest_loss']:.8f}`\n"
+        f"  Worst Loss: `{'-' if s['biggest_loss'] > 0 else ''}{s['biggest_loss']:.8f}`\n"
         f"\n"
         f"{se} *Streaks*\n"
         f"  Current: `{streak_s}`\n"
@@ -126,7 +126,7 @@ def format_stop(s: dict, reason: str) -> str:
         f"\U0001f4c8 *Extremes*\n"
         f"  Peak: `{s['highest_balance']:.8f}`  Low: `{s['lowest_balance']:.8f}`\n"
         f"  Best Win: `+{s['highest_win']:.8f}`\n"
-        f"  Worst Loss: `-{s['biggest_loss']:.8f}`\n"
+        f"  Worst Loss: `{'-' if s['biggest_loss'] > 0 else ''}{s['biggest_loss']:.8f}`\n"
         f"  Streaks: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`\n"
         f"\n"
         f"\u23f1 Uptime: `{s['uptime']}`\n"
@@ -311,7 +311,7 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
         f"",
         f"\U0001f3c6 *Extremes*",
         f"  Best Win: `+{hi_win:.8f}`",
-        f"  Worst Loss: `-{big_loss:.8f}`",
+        f"  Worst Loss: `{'-' if big_loss > 0 else ''}{big_loss:.8f}`",
         f"  Win Streak: `W+{_fmti(mws)}`",
         f"  Loss Streak: `L-{_fmti(mls)}`",
         f"",
@@ -392,7 +392,7 @@ def format_all_time(totals) -> str:
         f"  Worst Session: `{wp_s}{worst_profit:.8f}`\n"
         f"  Peak Balance: `{all_hi_bal:.8f}`\n"
         f"  Best Win: `+{all_hi_win:.8f}`\n"
-        f"  Worst Loss: `-{all_big_loss:.8f}`\n"
+        f"  Worst Loss: `{'-' if all_big_loss > 0 else ''}{all_big_loss:.8f}`\n"
         f"  Best Streaks: `W+{_fmti(best_ws)}` / `L-{_fmti(best_ls)}`\n"
         f"\n"
         f"  Speed: `{avg_bps:.1f}` avg/s  Peak: `{_fmti(all_pk_bps)}`/s `{_fmti(all_pk_bpm)}`/m\n"

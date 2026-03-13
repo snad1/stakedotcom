@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.4 — Resume Display Fixes (2026-03-13)
+
+### TG Bot v1.1.4
+
+#### Fixed
+
+- **Worst Loss negative zero** — "Worst Loss: -0.00000000" no longer shows a spurious minus sign when loss is zero.
+- **Speed 0 after resume** — BPS/BPM are now recalculated from session totals on resume instead of showing 0.
+
 ## v1.1.3 — Request Timeouts + Session Recovery (2026-03-13)
 
 ### TG Bot v1.1.3
