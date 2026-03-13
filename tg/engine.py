@@ -1052,7 +1052,9 @@ class BettingEngine:
                 self._apply_rules(bet_state)
 
             raw_next = self._compute_next_bet(bet_state)
-            max_safe = self.current_balance * 0.20
+            # Cap at 99% of balance to prevent API rejection, but never
+            # shrink below the strategy-computed amount unless forced to.
+            max_safe = self.current_balance * 0.99
             self.current_bet = max(self.base_bet, min(raw_next, max_safe))
             last_result = bet_state
 
