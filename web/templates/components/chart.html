@@ -19,12 +19,12 @@
             </span>
             {% endif %}
         </div>
-        <!-- Time range buttons -->
+        <!-- Range buttons (show last N bets) -->
         <div class="flex items-center gap-1" id="chart-range-btns">
-            <button onclick="chartSetRange('10m')"  class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">10m</button>
-            <button onclick="chartSetRange('30m')"  class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">30m</button>
-            <button onclick="chartSetRange('1h')"   class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">1h</button>
-            <button onclick="chartSetRange('all')"  class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-brand-600 text-white transition-colors" id="range-btn-all">All</button>
+            <button onclick="chartSetRange('10m')"  id="range-btn-10m" class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">200</button>
+            <button onclick="chartSetRange('30m')"  id="range-btn-30m" class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">500</button>
+            <button onclick="chartSetRange('1h')"   id="range-btn-1h"  class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-brand-100 dark:hover:bg-brand-900/30 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">1K</button>
+            <button onclick="chartSetRange('all')"  id="range-btn-all" class="chart-range-btn px-3 py-1 text-xs rounded-md font-medium bg-brand-600 text-white transition-colors">All</button>
         </div>
     </div>
 

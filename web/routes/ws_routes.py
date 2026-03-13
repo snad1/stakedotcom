@@ -100,15 +100,14 @@ async def ws_session(ws: WebSocket, user_id: int, session_id: int):
             for r in rows:
                 row = dict(r)
                 last_bet_id = row["id"]
-                ts = row.get("timestamp") or ""
+                ts_str = row.get("timestamp") or ""
                 try:
                     from datetime import datetime as _dt
-                    unix_ts = int(_dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                    ts_display = _dt.fromisoformat(ts_str.replace("Z", "+00:00")).strftime("%H:%M:%S")
                 except Exception:
-                    import time
-                    unix_ts = int(time.time())
+                    ts_display = ts_str
                 chart_point = {
-                    "time": unix_ts,
+                    "time": row["id"],
                     "value": round(row.get("balance_after") or 0.0, 8),
                     "bet_num": row["id"],
                     "amount": round(row.get("amount") or 0.0, 8),
@@ -116,6 +115,7 @@ async def ws_session(ws: WebSocket, user_id: int, session_id: int):
                     "state": row.get("state") or "loss",
                     "target": round(row.get("multiplier_target") or 0.0, 4),
                     "result": row.get("result_display") or str(round(row.get("result_value") or 0.0, 4)),
+                    "ts": ts_display,
                 }
                 await manager.send_to(ws, "new_bet", chart_point)
 

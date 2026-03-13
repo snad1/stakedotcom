@@ -150,38 +150,66 @@ def get_bet_count(user_id: int, session_id: int) -> int:
     return row["cnt"] if row else 0
 
 
-def get_bets_for_chart(user_id: int, session_id: int) -> list[dict]:
-    """Return all bets for a session ordered ASC, shaped for chart rendering."""
+def get_bets_for_chart(user_id: int, session_id: int, max_points: int = 2000) -> list[dict]:
+    """Return bets for a session shaped for chart rendering.
+
+    For large sessions, downsamples to *max_points* evenly-spaced rows
+    (always keeping the first and last bet).  Uses the bet ``id`` as
+    the Lightweight-Charts ``time`` value so every point is unique and
+    strictly ascending — no duplicate-timestamp issues.
+    """
+    from datetime import datetime as _dt
+
     try:
         conn = _connect_ro(user_id)
     except FileNotFoundError:
         return []
-    rows = conn.execute(
-        """SELECT id, timestamp, amount, multiplier_target, result_value,
-                  result_display, state, profit, balance_after
-           FROM bets WHERE session_id = ? ORDER BY id ASC""",
-        (session_id,),
-    ).fetchall()
+
+    total = conn.execute(
+        "SELECT COUNT(*) FROM bets WHERE session_id = ?", (session_id,)
+    ).fetchone()[0]
+
+    if total <= max_points:
+        rows = conn.execute(
+            """SELECT id, timestamp, amount, multiplier_target, result_value,
+                      result_display, state, profit, balance_after
+               FROM bets WHERE session_id = ? ORDER BY id ASC""",
+            (session_id,),
+        ).fetchall()
+    else:
+        step = total // max_points
+        rows = conn.execute(
+            """SELECT id, timestamp, amount, multiplier_target, result_value,
+                      result_display, state, profit, balance_after
+               FROM (
+                   SELECT *, ROW_NUMBER() OVER (ORDER BY id ASC) AS rn
+                   FROM bets WHERE session_id = ?
+               )
+               WHERE rn = 1 OR rn = ? OR (rn % ?) = 0
+               ORDER BY id ASC""",
+            (session_id, total, step),
+        ).fetchall()
     conn.close()
+
     result = []
     for i, r in enumerate(rows):
         row = dict(r)
-        # Convert ISO timestamp to unix seconds for Lightweight Charts
-        ts = row.get("timestamp") or ""
+        ts_str = row.get("timestamp") or ""
         try:
-            from datetime import datetime as _dt
-            unix_ts = int(_dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+            ts_display = _dt.fromisoformat(ts_str.replace("Z", "+00:00")).strftime("%H:%M:%S")
         except Exception:
-            unix_ts = i  # fallback: use ordinal index
+            ts_display = ts_str
+
         result.append({
-            "time": unix_ts,
+            "time": row["id"],
             "value": round(row.get("balance_after") or 0.0, 8),
-            "bet_num": i + 1,
+            "bet_num": row["id"],
             "amount": round(row.get("amount") or 0.0, 8),
             "profit": round(row.get("profit") or 0.0, 8),
             "state": row.get("state") or "loss",
             "target": round(row.get("multiplier_target") or 0.0, 4),
             "result": row.get("result_display") or str(round(row.get("result_value") or 0.0, 4)),
+            "ts": ts_display,
         })
     return result
 
