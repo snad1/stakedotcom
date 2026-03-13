@@ -1348,7 +1348,17 @@ async def load_resume_state(application):
             engine.on_stop = _make_on_stop(chat_id, user_id, slot)
             engine.on_milestone = _make_on_milestone(chat_id)
 
-            if engine.start_resumed():
+            # Retry connection up to 3 times (API may not be ready immediately)
+            started = False
+            for attempt in range(3):
+                if engine.start_resumed():
+                    started = True
+                    break
+                logger.warning("Resume attempt %d/3 failed for user %d slot %d: %s",
+                               attempt + 1, user_id, slot, engine.last_error)
+                await asyncio.sleep(5)
+
+            if started:
                 active_engines.setdefault(user_id, {})[slot] = engine
                 _engine_chat_ids[user_id] = chat_id
                 resumed += 1
@@ -1359,6 +1369,13 @@ async def load_resume_state(application):
                 )
             else:
                 logger.error("Resume failed for user %d slot %d: %s", user_id, slot, engine.last_error)
+                await application.bot.send_message(
+                    chat_id,
+                    f"Resume failed for session #{snap.get('session_id', '?')} (slot {slot}):\n"
+                    f"`{engine.last_error}`\n"
+                    f"Use /bet to start a new session.",
+                    parse_mode="Markdown",
+                )
         except Exception as e:
             logger.error("Resume failed for user %d: %s", user_id, e)
 

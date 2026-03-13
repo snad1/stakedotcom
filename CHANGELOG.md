@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.5 — Reliable Resume (2026-03-13)
+
+### TG Bot v1.1.5
+
+#### Fixed
+
+- **Resume now tests API connection** — `start_resumed()` runs the full Cloudflare bypass chain before starting the betting loop, preventing silent 403 failures.
+- **Resume retries** — Connection is retried up to 3 times (5s apart) on startup, handling cases where the API isn't ready immediately.
+- **Resume failure notification** — If resume fails after retries, the user is notified via Telegram instead of silent failure.
+
 ## v1.1.4 — Resume Display Fixes (2026-03-13)
 
 ### TG Bot v1.1.4

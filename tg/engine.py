@@ -838,9 +838,15 @@ class BettingEngine:
         self._last_profit_milestone = snap.get("_last_profit_milestone", 0.0)
 
     def start_resumed(self) -> bool:
-        """Resume a saved session. No API test, no balance fetch, no new DB session."""
+        """Resume a saved session. Re-tests connection (with CF bypass) but skips balance fetch / new DB session."""
         self._init_http()
         init_db(self.db_path)
+
+        # Must pass the same CF bypass chain as start() so bets don't 403
+        if not self._api_test_connection():
+            self.last_error = f"Resume connection failed: {self.last_error}"
+            return False
+
         self.running = True
         self.paused = False
         self.status = "Resumed"
