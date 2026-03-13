@@ -69,7 +69,8 @@ async def telegram_auth(request: Request, token: str = ""):
     if not token:
         return RedirectResponse("/login", status_code=302)
 
-    payload = decode_token(token)
+    # Skip session check — this is a one-time token from the TG bot, not a web session
+    payload = decode_token(token, check_session=False)
     if not payload or payload.get("role") != "tg_user":
         return templates.TemplateResponse("login.html", {
             "request": request,

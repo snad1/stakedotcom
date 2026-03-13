@@ -23,12 +23,13 @@ def create_token(subject: str, role: str, jti: str, expires_delta: timedelta | N
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
-def decode_token(token: str) -> dict | None:
+def decode_token(token: str, check_session: bool = True) -> dict | None:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
-        jti = payload.get("jti")
-        if jti and not is_session_valid(jti):
-            return None
+        if check_session:
+            jti = payload.get("jti")
+            if jti and not is_session_valid(jti):
+                return None
         return payload
     except JWTError:
         return None
