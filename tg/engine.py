@@ -39,6 +39,8 @@ import requests
 # ── Batching / periodic save constants ──────────────────
 BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
 SESSION_SAVE_SECS  = 30      # fallback: save session stats every N seconds
+REQUEST_TIMEOUT    = (5, 15) # (connect, read) in seconds
+MAX_TIMEOUT_STREAK = 3       # recreate HTTP session after this many consecutive timeouts
 
 
 def _gen_identifier() -> str:
@@ -198,6 +200,7 @@ class BettingEngine:
 
         # ── error backoff ──
         self.consecutive_errors = 0
+        self._consecutive_timeouts = 0
         self.backoff_delay   = 1.0
         self._insufficient_balance = False
 
@@ -242,6 +245,16 @@ class BettingEngine:
             self._http = cffi_requests.Session(impersonate="chrome")
         else:
             self._http = requests.Session()
+
+    def _recreate_http(self):
+        """Close and recreate the HTTP session to recover from stale connections."""
+        try:
+            if self._http:
+                self._http.close()
+        except Exception:
+            pass
+        self._init_http()
+        logger.info("User %d: HTTP session recreated", self.user_id)
 
     def _headers(self) -> dict:
         ua = self._cf_user_agent or (
@@ -319,7 +332,7 @@ class BettingEngine:
         return False
 
     def _api_post(self, url: str, payload: dict) -> Optional[dict]:
-        r = self._http.post(url, headers=self._headers(), json=payload, timeout=15)
+        r = self._http.post(url, headers=self._headers(), json=payload, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             body = r.text[:300] if r.text else "(empty)"
             raise ConnectionError(f"HTTP {r.status_code} from {url}: {body}")
@@ -341,7 +354,7 @@ class BettingEngine:
 }"""
         payload = {"operationName": "UserBalances", "query": query, "variables": {}}
         try:
-            r = self._http.post(gql_url, headers=self._headers(), json=payload, timeout=15)
+            r = self._http.post(gql_url, headers=self._headers(), json=payload, timeout=REQUEST_TIMEOUT)
             logger.debug("Balance response %d: %s", r.status_code, r.text[:500])
             if r.status_code == 200:
                 data = r.json()
@@ -452,6 +465,7 @@ class BettingEngine:
         url = self._api_base + endpoint
         try:
             data = self._api_post(url, payload)
+            self._consecutive_timeouts = 0  # success — reset
             if data is None:
                 self.last_error = "Empty response"
                 return None
@@ -476,8 +490,14 @@ class BettingEngine:
                 self.last_error = "Rate limit 429"
             else:
                 self.last_error = err[:120]
-        except requests.exceptions.Timeout:
-            self.last_error = "Request timeout"
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            self._consecutive_timeouts += 1
+            self.last_error = f"Request timeout (#{self._consecutive_timeouts})"
+            if self._consecutive_timeouts >= MAX_TIMEOUT_STREAK:
+                logger.warning("User %d: %d consecutive timeouts — recreating HTTP session",
+                               self.user_id, self._consecutive_timeouts)
+                self._recreate_http()
+                self._consecutive_timeouts = 0
         except Exception as e:
             self.last_error = str(e)[:120]
         return None

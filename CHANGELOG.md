@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.1.3 — Request Timeouts + Session Recovery (2026-03-13)
+
+### TG Bot v1.1.3
+
+#### Fixed
+
+- **Request timeouts** — All API calls now use `(5s connect, 15s read)` timeout tuple to prevent indefinite hangs.
+- **Automatic HTTP session recovery** — After 3 consecutive timeouts, the HTTP session is closed and recreated to recover from stale/dead connections.
+- **Connection error handling** — `ConnectionError` exceptions are now caught alongside `Timeout`, preventing silent freezes from dropped TCP connections.
+
+## v1.1.2 — Reliable Session Resume (2026-03-13)
+
+### TG Bot v1.1.2
+
+#### Fixed
+
+- **Session resume on SIGTERM** — Added signal handler and atexit hook so sessions are reliably saved when the bot is stopped via `systemctl restart`. Previously `post_shutdown` wasn't always reached.
+
 ## v1.1.1 — Number Formatting + Input Parsing (2026-03-13)
 
 ### TG Bot v1.1.1
