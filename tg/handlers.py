@@ -41,12 +41,56 @@ from .formatter import (
 )
 
 
-# ── Active engines (one per user) ────────────────────────
-active_engines: Dict[int, BettingEngine] = {}
+# ── Active engines (multiple per user) ───────────────────
+# user_id → {slot: BettingEngine}
+active_engines: Dict[int, Dict[int, BettingEngine]] = {}
 _engine_chat_ids: Dict[int, int] = {}  # user_id → chat_id for resume
+_next_slot: Dict[int, int] = {}  # user_id → next slot number
 
-# ── Active monitors (one per user) ──────────────────────
-active_monitors: Dict[int, asyncio.Task] = {}
+MAX_SESSIONS = 5  # max concurrent sessions per user
+
+# ── Active monitors ─────────────────────────────────────
+# user_id → {slot: asyncio.Task}
+active_monitors: Dict[int, Dict[int, asyncio.Task]] = {}
+
+
+def _get_running(user_id: int) -> Dict[int, BettingEngine]:
+    """Return {slot: engine} for running engines only."""
+    return {s: e for s, e in active_engines.get(user_id, {}).items() if e.running}
+
+
+def _resolve_engine(user_id: int, args: list) -> tuple:
+    """Resolve which engine a command targets.
+    Returns (slot, engine, error_message).
+    Single session auto-resolves. Multiple requires slot arg.
+    """
+    running = _get_running(user_id)
+    if not running:
+        return None, None, "No session running."
+    if len(running) == 1:
+        slot, engine = next(iter(running.items()))
+        return slot, engine, None
+    # Multiple — check if slot specified
+    if args:
+        try:
+            slot = int(args[0])
+            if slot in running:
+                return slot, running[slot], None
+            return None, None, f"No session in slot {slot}. Active: {', '.join(f'#{s}' for s in sorted(running))}"
+        except ValueError:
+            pass
+    slots = ", ".join(f"#{s}" for s in sorted(running))
+    return None, None, f"Multiple sessions running ({slots}). Specify slot number."
+
+
+def _alloc_slot(user_id: int) -> int:
+    """Allocate the next available slot for a user."""
+    slot = _next_slot.get(user_id, 1)
+    existing = active_engines.get(user_id, {})
+    while slot in existing:
+        slot += 1
+    _next_slot[user_id] = slot + 1
+    return slot
 
 
 # ── Helper: reply via message or callback query ──────────
@@ -77,10 +121,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set basebet 0.0001\n"
         "/set maxprofit 0.01\n\n"
         "*Session:*\n"
-        "/bet — Start betting session\n"
-        "/stop — Stop session\n"
-        "/pause / /resume\n"
-        "/status — Live status\n"
+        "/bet — Start betting session (up to 5 concurrent)\n"
+        "/stop — Stop session (`/stop all` for all)\n"
+        "/pause / /resume (add slot# for multi-session)\n"
+        "/status — Live status (`/status 2` for slot)\n"
         "/monitor — Auto-updating status\n"
         "/stats — Session history\n"
         "/session — Session detail\n\n"
@@ -123,12 +167,12 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`milestoneprofit` — Notify every X profit (0=off)\n"
         "`profitthreshold` — Auto-raise base bet every X profit (`off` to disable)\n"
         "`profitincrement` — Amount to add to base bet (`off` to disable)\n\n"
-        "*Session*\n"
+        "*Session* _(up to 5 concurrent)_\n"
         "/bet — Start session\n"
-        "/stop — Stop session\n"
-        "/pause — Pause betting\n"
-        "/resume — Resume betting\n"
-        "/status — Live status (with refresh button)\n"
+        "/stop — Stop session (`/stop all` or `/stop 2`)\n"
+        "/pause — Pause (`/pause all` or `/pause 2`)\n"
+        "/resume — Resume (`/resume all` or `/resume 2`)\n"
+        "/status — Live status (`/status 2` for specific slot)\n"
         "/monitor — Auto-updating status (default 5s)\n"
         "/stats — Session history\n"
         "/session — Detailed session report\n"
@@ -432,10 +476,11 @@ async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /bet ─────────────────────────────────────────────────
 async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    running = _get_running(user_id)
 
-    if user_id in active_engines and active_engines[user_id].running:
+    if len(running) >= MAX_SESSIONS:
         await update.message.reply_text(
-            "Session already running. /stop first.", parse_mode="Markdown")
+            f"Max {MAX_SESSIONS} concurrent sessions. /stop a session first.")
         return
 
     config = load_user_config(user_id)
@@ -458,21 +503,27 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Config error: `{e}`", parse_mode="Markdown")
         return
 
+    slot = _alloc_slot(user_id)
+
     # Set up async callbacks from betting thread
     loop = asyncio.get_event_loop()
     chat_id = update.effective_chat.id
     app = context.application
 
-    def on_stop(reason):
-        asyncio.run_coroutine_threadsafe(
-            _notify_stop(chat_id, user_id, reason, app), loop)
+    def _make_on_stop(cid, uid, s):
+        def on_stop(reason):
+            asyncio.run_coroutine_threadsafe(
+                _notify_stop(cid, uid, s, reason, app), loop)
+        return on_stop
 
-    def on_milestone(data):
-        asyncio.run_coroutine_threadsafe(
-            _notify_milestone(chat_id, data, app), loop)
+    def _make_on_milestone(cid):
+        def on_milestone(data):
+            asyncio.run_coroutine_threadsafe(
+                _notify_milestone(cid, data, app), loop)
+        return on_milestone
 
-    engine.on_stop = on_stop
-    engine.on_milestone = on_milestone
+    engine.on_stop = _make_on_stop(chat_id, user_id, slot)
+    engine.on_milestone = _make_on_milestone(chat_id)
 
     game_label = GAME_LABELS.get(engine.game, engine.game)
     msg = await update.message.reply_text(f"Connecting to Stake ({game_label})…")
@@ -481,12 +532,13 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"Failed to start: {engine.last_error}")
         return
 
-    active_engines[user_id] = engine
+    active_engines.setdefault(user_id, {})[slot] = engine
     _engine_chat_ids[user_id] = chat_id
 
     wc = round(99.0 / engine.multiplier_target, 2)
+    slot_info = f" (slot {slot})" if len(_get_running(user_id)) > 1 else ""
     await msg.edit_text(
-        f"Session #{engine.session_id} started!\n\n"
+        f"Session #{engine.session_id}{slot_info} started!\n\n"
         f"Game: `{game_label}`\n"
         f"Strategy: `{engine.strategy}`\n"
         f"Multiplier: `{engine.multiplier_target}x` ({wc}%)\n"
@@ -497,9 +549,12 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def _notify_stop(chat_id: int, user_id: int, reason: str, app):
-    engine = active_engines.pop(user_id, None)
-    _engine_chat_ids.pop(user_id, None)
+async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
+    user_engines = active_engines.get(user_id, {})
+    engine = user_engines.pop(slot, None)
+    if not user_engines:
+        active_engines.pop(user_id, None)
+        _engine_chat_ids.pop(user_id, None)
     if not engine:
         return
     s = engine.get_status()
@@ -515,11 +570,26 @@ async def _notify_milestone(chat_id: int, data: dict, app):
 # ── /stop ────────────────────────────────────────────────
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    engine = active_engines.get(user_id)
-    if engine and engine.running:
+    running = _get_running(user_id)
+
+    # /stop all — stop all sessions
+    if context.args and context.args[0].lower() == "all":
+        if running:
+            for engine in running.values():
+                engine.stop_reason = "Stopped by user"
+                engine.stop()
+            await _reply(update, f"Stopping {len(running)} session(s)…")
+            return
+
+    if running:
+        slot, engine, err = _resolve_engine(user_id, context.args or [])
+        if err:
+            await _reply(update, err + "\nUse `/stop all` to stop all.", parse_mode="Markdown")
+            return
         engine.stop_reason = "Stopped by user"
         engine.stop()
         return
+
     # Clean up zombie sessions
     db_path = user_db_path(user_id)
     if os.path.exists(db_path):
@@ -542,38 +612,72 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /pause ───────────────────────────────────────────────
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    engine = active_engines.get(user_id)
-    if not engine or not engine.running:
-        await _reply(update, "No session running.")
+    # /pause all
+    if context.args and context.args[0].lower() == "all":
+        running = _get_running(user_id)
+        for e in running.values():
+            e.pause()
+        await _reply(update, f"Paused {len(running)} session(s)." if running else "No sessions running.")
+        return
+    slot, engine, err = _resolve_engine(user_id, context.args or [])
+    if err:
+        await _reply(update, err)
         return
     engine.pause()
-    await _reply(update, "Session paused. /resume to continue.", parse_mode="Markdown")
+    await _reply(update, f"Session (slot {slot}) paused. /resume to continue.", parse_mode="Markdown")
 
 
 # ── /resume ──────────────────────────────────────────────
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    engine = active_engines.get(user_id)
-    if not engine or not engine.running:
-        await _reply(update, "No session running.")
+    # /resume all
+    if context.args and context.args[0].lower() == "all":
+        running = _get_running(user_id)
+        for e in running.values():
+            e.resume()
+        await _reply(update, f"Resumed {len(running)} session(s)." if running else "No sessions running.")
+        return
+    slot, engine, err = _resolve_engine(user_id, context.args or [])
+    if err:
+        await _reply(update, err)
         return
     engine.resume()
-    await _reply(update, "Session resumed.")
+    await _reply(update, f"Session (slot {slot}) resumed.")
 
 
 # ── /status ──────────────────────────────────────────────
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    engine = active_engines.get(user_id)
-    if not engine or not engine.running:
+    running = _get_running(user_id)
+
+    if not running:
         await update.message.reply_text(
             "No session running. Start one with /bet", parse_mode="Markdown")
         return
 
+    # Multiple sessions and no slot specified — show summary
+    if len(running) > 1 and not context.args:
+        lines = [f"*{len(running)} Active Sessions:*\n"]
+        for slot, engine in sorted(running.items()):
+            s = engine.get_status()
+            p = s["profit"]
+            ps = "+" if p >= 0 else ""
+            game = s.get("game", "limbo").capitalize()
+            lines.append(
+                f"*#{slot}*  {game}  `{s['strategy']}`  `{ps}{p:.8f}`  ({s['bets']} bets)")
+        lines.append(f"\nUse `/status <slot>` for detail.")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+
+    slot, engine, err = _resolve_engine(user_id, context.args or [])
+    if err:
+        await update.message.reply_text(err)
+        return
+
     text = format_status(engine.get_status())
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Refresh", callback_data="refresh_status"),
-        InlineKeyboardButton("Stop", callback_data="stop_session"),
+        InlineKeyboardButton("Refresh", callback_data=f"refresh_status:{slot}"),
+        InlineKeyboardButton("Stop", callback_data=f"stop_session:{slot}"),
     ]])
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
@@ -581,41 +685,44 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /monitor ─────────────────────────────────────────────
 async def cmd_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    engine = active_engines.get(user_id)
-    if not engine or not engine.running:
-        await update.message.reply_text(
-            "No session running. Start one with /bet", parse_mode="Markdown")
+    slot, engine, err = _resolve_engine(user_id, context.args or [])
+    if err:
+        await update.message.reply_text(err)
         return
 
     interval = 5
-    if context.args:
+    # Parse interval from args (skip slot number if present)
+    for a in (context.args or []):
         try:
-            interval = max(3, min(60, int(context.args[0])))
+            v = int(a)
+            if v != slot:
+                interval = max(3, min(60, v))
         except ValueError:
             pass
 
-    old = active_monitors.pop(user_id, None)
+    user_monitors = active_monitors.get(user_id, {})
+    old = user_monitors.pop(slot, None)
     if old and not old.done():
         old.cancel()
 
     text = format_status(engine.get_status())
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
-        InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
-        InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+        InlineKeyboardButton("Stop Monitor", callback_data=f"stop_monitor:{slot}"),
+        InlineKeyboardButton("Stop Session", callback_data=f"stop_session:{slot}"),
     ]])
     msg = await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
     task = asyncio.create_task(
-        _monitor_loop(msg, user_id, interval))
-    active_monitors[user_id] = task
+        _monitor_loop(msg, user_id, slot, interval))
+    active_monitors.setdefault(user_id, {})[slot] = task
 
 
-async def _monitor_loop(msg, user_id: int, interval: int):
+async def _monitor_loop(msg, user_id: int, slot: int, interval: int):
     try:
         while True:
             await asyncio.sleep(interval)
-            engine = active_engines.get(user_id)
+            engine = active_engines.get(user_id, {}).get(slot)
             if not engine or not engine.running:
                 try:
                     await msg.edit_text(
@@ -628,8 +735,8 @@ async def _monitor_loop(msg, user_id: int, interval: int):
             text = format_status(engine.get_status())
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
-                InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
-                InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+                InlineKeyboardButton("Stop Monitor", callback_data=f"stop_monitor:{slot}"),
+                InlineKeyboardButton("Stop Session", callback_data=f"stop_session:{slot}"),
             ]])
             try:
                 await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
@@ -638,10 +745,24 @@ async def _monitor_loop(msg, user_id: int, interval: int):
     except asyncio.CancelledError:
         pass
     finally:
-        active_monitors.pop(user_id, None)
+        user_monitors = active_monitors.get(user_id, {})
+        user_monitors.pop(slot, None)
+        if not user_monitors:
+            active_monitors.pop(user_id, None)
 
 
 # ── Inline button callbacks ─────────────────────────────
+def _parse_callback_slot(data: str) -> tuple:
+    """Parse 'action:slot' from callback data. Returns (action, slot)."""
+    if ":" in data:
+        action, slot_str = data.rsplit(":", 1)
+        try:
+            return action, int(slot_str)
+        except ValueError:
+            pass
+    return data, None
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -650,32 +771,46 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "noop":
         return
 
-    if query.data == "refresh_status":
-        engine = active_engines.get(user_id)
+    action, slot = _parse_callback_slot(query.data)
+
+    # Resolve engine — use slot from callback, or auto-resolve single session
+    def _get_engine():
+        if slot is not None:
+            return slot, active_engines.get(user_id, {}).get(slot)
+        # Backwards compat: no slot encoded, auto-resolve
+        running = _get_running(user_id)
+        if len(running) == 1:
+            s, e = next(iter(running.items()))
+            return s, e
+        return None, None
+
+    if action == "refresh_status":
+        s, engine = _get_engine()
         if not engine or not engine.running:
             await query.edit_message_text("Session ended.")
             return
         text = format_status(engine.get_status())
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Refresh", callback_data="refresh_status"),
-            InlineKeyboardButton("Stop", callback_data="stop_session"),
+            InlineKeyboardButton("Refresh", callback_data=f"refresh_status:{s}"),
+            InlineKeyboardButton("Stop", callback_data=f"stop_session:{s}"),
         ]])
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
         except Exception:
             pass
 
-    elif query.data == "stop_monitor":
-        task = active_monitors.pop(user_id, None)
+    elif action == "stop_monitor":
+        s, engine = _get_engine()
+        user_mons = active_monitors.get(user_id, {})
+        task = user_mons.pop(s, None) if s else None
         if task and not task.done():
             task.cancel()
-        engine = active_engines.get(user_id)
         if engine and engine.running:
             text = format_status(engine.get_status())
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("Refresh", callback_data="refresh_status"),
-                InlineKeyboardButton("Monitor", callback_data="start_monitor_5"),
-                InlineKeyboardButton("Stop", callback_data="stop_session"),
+                InlineKeyboardButton("Refresh", callback_data=f"refresh_status:{s}"),
+                InlineKeyboardButton("Monitor", callback_data=f"start_monitor_5:{s}"),
+                InlineKeyboardButton("Stop", callback_data=f"stop_session:{s}"),
             ]])
             try:
                 await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
@@ -684,34 +819,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("Monitor stopped. Session ended.")
 
-    elif query.data.startswith("start_monitor_"):
-        interval = int(query.data.split("_")[-1])
-        engine = active_engines.get(user_id)
+    elif action.startswith("start_monitor_"):
+        interval = int(action.split("_")[-1])
+        s, engine = _get_engine()
         if not engine or not engine.running:
             await query.edit_message_text("Session ended.")
             return
-        old = active_monitors.pop(user_id, None)
+        user_mons = active_monitors.get(user_id, {})
+        old = user_mons.pop(s, None) if s else None
         if old and not old.done():
             old.cancel()
         text = format_status(engine.get_status())
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
-            InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
-            InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+            InlineKeyboardButton("Stop Monitor", callback_data=f"stop_monitor:{s}"),
+            InlineKeyboardButton("Stop Session", callback_data=f"stop_session:{s}"),
         ]])
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
         except Exception:
             pass
         task = asyncio.create_task(
-            _monitor_loop(query.message, user_id, interval))
-        active_monitors[user_id] = task
+            _monitor_loop(query.message, user_id, s, interval))
+        active_monitors.setdefault(user_id, {})[s] = task
 
-    elif query.data == "stop_session":
-        task = active_monitors.pop(user_id, None)
+    elif action == "stop_session":
+        s, engine = _get_engine()
+        user_mons = active_monitors.get(user_id, {})
+        task = user_mons.pop(s, None) if s else None
         if task and not task.done():
             task.cancel()
-        engine = active_engines.get(user_id)
         if engine and engine.running:
             engine.stop_reason = "Stopped by user"
             engine.stop()
@@ -1136,22 +1273,25 @@ def save_resume_state():
         return
 
     # Pause all engines immediately
-    for engine in active_engines.values():
-        engine.paused = True
+    for engines_dict in active_engines.values():
+        for engine in engines_dict.values():
+            engine.paused = True
     time.sleep(1)  # let in-flight bets finish
 
     snapshots = []
-    for user_id, engine in list(active_engines.items()):
-        try:
-            engine._flush_bets()
-            engine._db_save_session()
-            snap = engine.snapshot_state()
-            snap["chat_id"] = _engine_chat_ids.get(user_id)
-            snapshots.append(snap)
-            engine.running = False
-            engine._close_conn()
-        except Exception as e:
-            logger.error("Failed to snapshot user %d: %s", user_id, e)
+    for user_id, engines_dict in list(active_engines.items()):
+        for slot, engine in list(engines_dict.items()):
+            try:
+                engine._flush_bets()
+                engine._db_save_session()
+                snap = engine.snapshot_state()
+                snap["chat_id"] = _engine_chat_ids.get(user_id)
+                snap["slot"] = slot
+                snapshots.append(snap)
+                engine.running = False
+                engine._close_conn()
+            except Exception as e:
+                logger.error("Failed to snapshot user %d slot %d: %s", user_id, slot, e)
 
     if snapshots:
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -1183,6 +1323,7 @@ async def load_resume_state(application):
         chat_id = snap.get("chat_id")
         config = snap["config"]
         db_path = snap["db_path"]
+        slot = snap.get("slot", _alloc_slot(user_id))
 
         if not chat_id:
             logger.warning("No chat_id for user %d, skipping resume", user_id)
@@ -1192,10 +1333,10 @@ async def load_resume_state(application):
             engine = BettingEngine(user_id, db_path, config)
             engine.restore_state(snap)
 
-            def _make_on_stop(cid, uid):
+            def _make_on_stop(cid, uid, s):
                 def on_stop(reason):
                     asyncio.run_coroutine_threadsafe(
-                        _notify_stop(cid, uid, reason, application), loop)
+                        _notify_stop(cid, uid, s, reason, application), loop)
                 return on_stop
 
             def _make_on_milestone(cid):
@@ -1204,20 +1345,20 @@ async def load_resume_state(application):
                         _notify_milestone(cid, data, application), loop)
                 return on_milestone
 
-            engine.on_stop = _make_on_stop(chat_id, user_id)
+            engine.on_stop = _make_on_stop(chat_id, user_id, slot)
             engine.on_milestone = _make_on_milestone(chat_id)
 
             if engine.start_resumed():
-                active_engines[user_id] = engine
+                active_engines.setdefault(user_id, {})[slot] = engine
                 _engine_chat_ids[user_id] = chat_id
                 resumed += 1
                 await application.bot.send_message(
                     chat_id,
-                    f"Bot updated — session #{engine.session_id} resumed automatically.\n"
+                    f"Bot updated — session #{engine.session_id} (slot {slot}) resumed.\n"
                     f"Use /status to check progress.",
                 )
             else:
-                logger.error("Resume failed for user %d: %s", user_id, engine.last_error)
+                logger.error("Resume failed for user %d slot %d: %s", user_id, slot, engine.last_error)
         except Exception as e:
             logger.error("Resume failed for user %d: %s", user_id, e)
 
