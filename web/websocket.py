@@ -76,8 +76,12 @@ manager = ConnectionManager()
 
 
 async def authenticate_ws(ws: WebSocket) -> Optional[dict]:
-    """Validate JWT from query param on WS connect."""
+    """Validate JWT from query param or cookie on WS connect."""
     token = ws.query_params.get("token")
+    if not token:
+        # Fall back to httpOnly cookie from headers
+        from .auth import COOKIE_NAME
+        token = ws.cookies.get(COOKIE_NAME)
     if not token:
         return None
     return decode_token(token)
