@@ -526,7 +526,7 @@ class BettingEngine:
             "bet_delay": self.bet_delay,
         }
         if self.strategy_key == "6":  # Delay Martingale
-            snap["delay_threshold"] = self.delay_threshold
+            snap["delay_threshold"] = self.delay_martin_threshold
         if self.game == "dice":
             snap["dice_target"] = self.dice_target
             snap["dice_condition"] = self.dice_condition
