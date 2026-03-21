@@ -83,10 +83,10 @@ def init_db():
     conn.close()
 
 
-def change_admin_password(username: str, old_password: str, new_password: str) -> bool:
+def change_admin_password(user_id: int, old_password: str, new_password: str) -> bool:
     conn = get_db()
     row = conn.execute(
-        "SELECT * FROM admin_users WHERE username = ?", (username,)
+        "SELECT * FROM admin_users WHERE id = ?", (user_id,)
     ).fetchone()
     if not row or not _verify_password(old_password, row["password_hash"]):
         conn.close()

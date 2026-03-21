@@ -175,7 +175,7 @@ async def change_password(
     confirm_password: str = Form(...),
     admin: dict = Depends(get_current_admin),
 ):
-    username = admin["sub"].split(":", 1)[1] if ":" in admin["sub"] else admin["sub"]
+    admin_id = int(admin["sub"].split(":", 1)[1]) if ":" in admin["sub"] else 1
 
     if new_password != confirm_password:
         return templates.TemplateResponse("admin/change_password.html", {
@@ -189,7 +189,7 @@ async def change_password(
             "error": "Password must be at least 6 characters.", "success": None,
         })
 
-    if not change_admin_password(username, current_password, new_password):
+    if not change_admin_password(admin_id, current_password, new_password):
         return templates.TemplateResponse("admin/change_password.html", {
             "request": request, "admin": admin,
             "error": "Current password is incorrect.", "success": None,
