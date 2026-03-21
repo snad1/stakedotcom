@@ -89,6 +89,7 @@ def format_status(s: dict) -> str:
         f"  Bet: `{s['current_bet']:.8f}`  Base: `{s.get('base_bet', 0):.8f}`\n"
         f"  Hi: `{s['highest_bet']:.8f}`\n"
         f"  Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm\n"
+        f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg\n"
         f"\n"
         f"`{s['status']}`"
     )
