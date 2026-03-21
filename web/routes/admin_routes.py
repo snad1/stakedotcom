@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..config import settings, TEMPLATES_DIR
 from ..auth import get_current_admin
-from ..database import get_tg_users, get_tg_user, update_tg_user, get_audit_log, audit
+from ..database import get_tg_users, get_tg_user, update_tg_user, get_audit_log, audit, change_admin_password
 from ..bot_db import get_platform_stats, get_sessions, get_session, get_session_stats, get_user_config, get_session_count, get_bets, get_bet_count
 from ..services import all_service_statuses, system_metrics, format_bytes
 
@@ -154,4 +154,49 @@ async def audit_page(request: Request, admin: dict = Depends(get_current_admin))
         "request": request,
         "admin": admin,
         "logs": logs,
+    })
+
+
+@router.get("/change-password", response_class=HTMLResponse)
+async def change_password_page(request: Request, admin: dict = Depends(get_current_admin)):
+    return templates.TemplateResponse("admin/change_password.html", {
+        "request": request,
+        "admin": admin,
+        "error": None,
+        "success": None,
+    })
+
+
+@router.post("/change-password")
+async def change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    admin: dict = Depends(get_current_admin),
+):
+    username = admin["sub"].split(":", 1)[1] if ":" in admin["sub"] else admin["sub"]
+
+    if new_password != confirm_password:
+        return templates.TemplateResponse("admin/change_password.html", {
+            "request": request, "admin": admin,
+            "error": "New passwords do not match.", "success": None,
+        })
+
+    if len(new_password) < 6:
+        return templates.TemplateResponse("admin/change_password.html", {
+            "request": request, "admin": admin,
+            "error": "Password must be at least 6 characters.", "success": None,
+        })
+
+    if not change_admin_password(username, current_password, new_password):
+        return templates.TemplateResponse("admin/change_password.html", {
+            "request": request, "admin": admin,
+            "error": "Current password is incorrect.", "success": None,
+        })
+
+    audit(admin["sub"], "change_password", "Admin password changed")
+    return templates.TemplateResponse("admin/change_password.html", {
+        "request": request, "admin": admin,
+        "error": None, "success": "Password changed successfully.",
     })
