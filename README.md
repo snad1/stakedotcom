@@ -1,4 +1,4 @@
-# Stake AutoBot v1.2 + Telegram Bot v1.1
+# Stake AutoBot v1.2 + Telegram Bot v1.1.6
 
 High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard **and a Telegram bot**. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
@@ -22,6 +22,7 @@ High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a li
 | **Smart stop conditions** | Max profit, max loss, max bets, max wins, min balance floor |
 | **Safety cap** | Never bets more than 20% of current balance in one go |
 | **Session database** | SQLite log of every bet and session — survives restarts |
+| **Auto data retention** | Old bet records auto-purged after 3 days; session stats preserved forever |
 | **Config persistence** | Save/load config with `--resume`, smart wizard with defaults |
 | **Monitor mode** | `--monitor` to attach a live TUI to a running daemon — pause/resume/stop remotely |
 | **Daemon mode** | `--daemon` for background running, `--status` to check, `--stop` to halt |
@@ -375,6 +376,8 @@ cd stake && PYTHONPATH=. python3 -m tg.bot
 | `/lastbets [n]` | Recent bets |
 | `/rules` / `/addrule` / `/delrule` / `/editrule` / `/clearrules` | Manage rules |
 | `/presets` / `/savepreset` / `/loadpreset` | Manage presets |
+| `/cleanup [days]` | Purge old bet records (default 3 days), keep session stats |
+| `/delsession <id>` | Delete a specific session and its bets |
 
 ### Architecture
 

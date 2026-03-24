@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.6 — Data Retention & Cleanup (2026-03-24)
+
+### TG Bot v1.1.6
+
+#### Added
+
+- **Automatic bet cleanup** — Old bet records (3+ days) from ended sessions are automatically purged when a new session starts. Session statistics (profit, bets, streaks, balance extremes, speed) are preserved — only raw bet rows are deleted. Disk space is reclaimed via VACUUM.
+- **`/cleanup [days]`** — Manually purge bet records older than N days (default 3). Session stats remain intact. Usage: `/cleanup` or `/cleanup 1`.
+- **`/delsession <id>`** — Delete a specific session and all its bets by session ID. Blocks deletion of currently running sessions. Shows bet count and profit before confirming.
+- **`bets_purged` flag** — Sessions table gains a `bets_purged` column to track which sessions have already been cleaned, avoiding redundant queries on subsequent cleanups.
+
 ## v1.1.5 — Reliable Resume (2026-03-13)
 
 ### TG Bot v1.1.5

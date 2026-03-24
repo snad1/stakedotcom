@@ -73,6 +73,50 @@ def init_db(db_path: str):
     conn.close()
 
 
+def cleanup_old_bets(db_path: str, bet_age_days: int = 3):
+    """Delete bet rows for ended sessions older than bet_age_days.
+
+    Session rows (with all pre-aggregated stats) are kept forever.
+    Only the individual bet detail rows are purged to reclaim disk space.
+    """
+    conn = sqlite3.connect(db_path, timeout=10)
+    c = conn.cursor()
+
+    # Migrate: add bets_purged column if missing
+    try:
+        c.execute("ALTER TABLE sessions ADD COLUMN bets_purged INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    c.execute("""
+        DELETE FROM bets
+        WHERE session_id IN (
+            SELECT id FROM sessions
+            WHERE ended_at IS NOT NULL
+              AND ended_at < datetime('now', ?)
+              AND bets_purged = 0
+        )
+    """, (f'-{bet_age_days} days',))
+
+    deleted = c.rowcount
+
+    if deleted > 0:
+        c.execute("""
+            UPDATE sessions SET bets_purged = 1
+            WHERE ended_at IS NOT NULL
+              AND ended_at < datetime('now', ?)
+              AND bets_purged = 0
+        """, (f'-{bet_age_days} days',))
+
+    conn.commit()
+
+    if deleted > 0:
+        conn.execute("VACUUM")
+
+    conn.close()
+    return deleted
+
+
 def db_connect(db_path: str):
     """Create a WAL-mode connection to the database."""
     conn = sqlite3.connect(db_path, timeout=5)

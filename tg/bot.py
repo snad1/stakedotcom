@@ -18,6 +18,7 @@ from .handlers import (
     cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
     cmd_session, cmd_web,
+    cmd_cleanup, cmd_delsession,
     callback_handler,
     save_resume_state, load_resume_state,
 )
@@ -81,6 +82,8 @@ def main():
             BotCommand("loadpreset",  "Load a preset"),
             BotCommand("web",         "Open web dashboard"),
             BotCommand("benchmark",   "Test API response speed"),
+            BotCommand("cleanup",     "Purge old bet records"),
+            BotCommand("delsession",  "Delete a session by ID"),
         ])
         logger.info("Bot commands registered with Telegram")
         # Resume any engines saved from graceful shutdown
@@ -124,6 +127,8 @@ def main():
     app.add_handler(CommandHandler("loadpreset", cmd_loadpreset))
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("benchmark", cmd_benchmark))
+    app.add_handler(CommandHandler("cleanup", cmd_cleanup))
+    app.add_handler(CommandHandler("delsession", cmd_delsession))
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_handler))

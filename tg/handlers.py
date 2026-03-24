@@ -29,7 +29,7 @@ from .database import (
     user_db_path, load_user_config, save_user_config,
     load_presets, save_presets,
 )
-from core.database import init_db
+from core.database import init_db, cleanup_old_bets
 from core.strategy import (
     STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME, StrategyRule,
     describe_rule, load_rules_from_text,
@@ -1411,6 +1411,76 @@ def save_resume_state():
             json.dump(snapshots, f)
         os.chmod(RESUME_FILE, 0o600)
         logger.info("Saved %d engine(s) for resume", len(snapshots))
+
+
+# ── /cleanup ──────────────────────────────────────────────
+async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db_path = user_db_path(user_id)
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No session data yet.")
+        return
+
+    days = 3
+    if context.args:
+        try:
+            days = max(0, int(context.args[0]))
+        except ValueError:
+            await update.message.reply_text("Usage: /cleanup [days]\nDefault: 3")
+            return
+
+    await update.message.reply_text(f"Cleaning up bet records older than {days} day(s)…")
+    deleted = cleanup_old_bets(db_path, bet_age_days=days)
+    await update.message.reply_text(
+        f"Deleted *{deleted:,}* bet record(s).\n"
+        f"Session statistics are preserved.",
+        parse_mode="Markdown",
+    )
+
+
+# ── /delsession ──────────────────────────────────────────
+async def cmd_delsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db_path = user_db_path(user_id)
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No session data yet.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /delsession <session\\_id>")
+        return
+
+    try:
+        session_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Session ID must be a number.")
+        return
+
+    # Block deletion of currently running sessions
+    running = _get_running(user_id)
+    for engine in running.values():
+        if engine.session_id == session_id:
+            await update.message.reply_text(
+                f"Session #{session_id} is currently running. Stop it first with /stop.")
+            return
+
+    conn = sqlite3.connect(db_path, timeout=10)
+    row = conn.execute("SELECT id, total_bets, profit FROM sessions WHERE id = ?",
+                       (session_id,)).fetchone()
+    if not row:
+        conn.close()
+        await update.message.reply_text(f"Session #{session_id} not found.")
+        return
+
+    conn.execute("DELETE FROM bets WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.execute("VACUUM")
+    conn.close()
+    await update.message.reply_text(
+        f"Deleted session *#{session_id}* ({row[1]:,} bets, profit: {row[2]:.8f}).",
+        parse_mode="Markdown",
+    )
 
 
 async def load_resume_state(application):
