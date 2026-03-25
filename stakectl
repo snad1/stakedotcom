@@ -30,6 +30,11 @@ usage() {
     echo "    stakectl logs        Stream live logs"
     echo "    stakectl logs-full   Show last 200 log lines"
     echo ""
+    echo "  BATCH:"
+    echo "    stakectl start-all   Start all services (bot + TG + web)"
+    echo "    stakectl stop-all    Stop all services"
+    echo "    stakectl status-all  Show status of all services"
+    echo ""
     echo "  SHORTCUTS:"
     echo "    stakectl interactive Start daemon + attach monitor in one command"
     echo "    stakectl tmux        Run monitor in a detachable tmux session"
@@ -249,6 +254,53 @@ cmd_update() {
     echo "  CLI bot: stakectl restart"
 }
 
+cmd_start_all() {
+    echo "Starting all services…"
+    cmd_start 2>/dev/null || true
+    cmd_tg start 2>/dev/null || true
+    if systemctl --user list-unit-files "$WEB_SERVICE.service" &>/dev/null; then
+        systemctl --user start "$WEB_SERVICE" 2>/dev/null || true
+    fi
+    echo ""
+    cmd_status_all
+}
+
+cmd_stop_all() {
+    echo "Stopping all services…"
+    systemctl --user stop "$SERVICE" 2>/dev/null || true
+    systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
+    systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
+    echo "All services stopped."
+}
+
+cmd_status_all() {
+    echo ""
+    echo "╔══════════════════════════════════════════╗"
+    echo "║   Stake AutoBot — Service Status          ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo ""
+
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        echo "  CLI Bot:      ● RUNNING"
+    else
+        echo "  CLI Bot:      ○ stopped"
+    fi
+
+    if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
+        echo "  Telegram Bot: ● RUNNING"
+    else
+        echo "  Telegram Bot: ○ stopped"
+    fi
+
+    if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
+        echo "  Web Admin:    ● RUNNING"
+    else
+        echo "  Web Admin:    ○ stopped"
+    fi
+
+    echo ""
+}
+
 cmd_flaresolverr() {
     local action="${1:-status}"
     case "$action" in
@@ -459,5 +511,8 @@ case "${1:-}" in
     tg)           cmd_tg "${2:-}" ;;
     web)          cmd_web "${@:2}" ;;
     flaresolverr) cmd_flaresolverr "${2:-}" ;;
+    start-all)    cmd_start_all ;;
+    stop-all)     cmd_stop_all ;;
+    status-all)   cmd_status_all ;;
     *)            usage ;;
 esac

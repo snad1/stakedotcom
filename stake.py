@@ -302,10 +302,18 @@ _CONFIG_KEYS = [
     "profit_increment", "profit_threshold",
 ]
 
+def _mask_key(key: str) -> str:
+    """Mask token/key for safe logging: show first 8 + last 4 chars."""
+    if not key or len(key) < 16:
+        return "***"
+    return f"{key[:8]}...{key[-4:]}"
+
 def save_config():
     data = {k: getattr(state, k) for k in _CONFIG_KEYS}
-    with open(CONFIG_PATH, "w") as f:
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
+    logger.info("Config saved (token=%s)", _mask_key(data.get("access_token", "")))
 
 def load_config() -> bool:
     if not os.path.exists(CONFIG_PATH):
@@ -1872,6 +1880,183 @@ def _build_one_rule():
     return rule
 
 
+def _edit_one_rule(old: StrategyRule):
+    """Edit an existing rule part-by-part. Returns updated StrategyRule, _BACK, or None."""
+    r = StrategyRule.from_dict(old.to_dict())
+    act_label = next((v[1] for v in RULE_ACTIONS.values() if v[0] == r.action), r.action)
+
+    while True:
+        console.print()
+        console.print(f"    [bold]{r.description}[/]")
+        console.print()
+
+        parts = []
+        if r.cond_type == "sequence":
+            mode_label = dict(every="Every N", every_streak="Every streak of N",
+                              first_streak="First streak of N",
+                              streak_above="Streak above N", streak_below="Streak below N").get(r.cond_mode, r.cond_mode)
+            parts.append(("Condition",  r.cond_type.title()))
+            parts.append(("Mode",       mode_label))
+            parts.append(("N value",    str(int(r.cond_value))))
+            parts.append(("Event",      r.cond_trigger))
+        elif r.cond_type == "profit":
+            op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
+            parts.append(("Condition",  r.cond_type.title()))
+            parts.append(("Field",      r.cond_field))
+            parts.append(("Operator",   op_sym))
+            parts.append(("Value",      str(r.cond_value)))
+        elif r.cond_type == "bet":
+            op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
+            parts.append(("Condition",  r.cond_type.title()))
+            parts.append(("Field",      r.cond_field))
+            parts.append(("Operator",   op_sym))
+            parts.append(("Value",      str(r.cond_value)))
+
+        act_label = next((v[1] for v in RULE_ACTIONS.values() if v[0] == r.action), r.action)
+        parts.append(("Action",     act_label))
+        if r.action_value:
+            parts.append(("Action value", str(r.action_value)))
+
+        for i, (label, val) in enumerate(parts, 1):
+            console.print(f"      [bold yellow][{i}][/] {label:14s} [cyan]{val}[/]")
+        save_n = len(parts) + 1
+        replace_n = save_n + 1
+        console.print(f"      [bold yellow][{save_n}][/] [green]Save changes[/]")
+        console.print(f"      [bold yellow][{replace_n}][/] [yellow]Rebuild from scratch[/]")
+
+        valid = [str(i) for i in range(1, replace_n + 1)]
+        pick = _ask("    Edit which part?", default=str(save_n), choices=valid)
+        if pick is _BACK:
+            return _BACK
+        pick = int(pick)
+
+        if pick == save_n:
+            r.description = _describe_rule(r)
+            return r
+
+        if pick == replace_n:
+            console.print("    [dim]Building replacement rule...[/]")
+            replacement = _build_one_rule()
+            if replacement is _BACK:
+                continue
+            return replacement
+
+        label = parts[pick - 1][0]
+
+        if label == "Condition":
+            console.print("      [dim]Change condition type:[/]")
+            for k, name in COND_TYPES.items():
+                tag = {"sequence": "Sequence", "profit": "Profit / Loss / Balance",
+                       "bet": "Bet properties"}.get(name, name)
+                console.print(f"        [bold yellow][{k}][/] {tag}")
+            cur_key = next((k for k, v in COND_TYPES.items() if v == r.cond_type), "1")
+            ct = _ask("      Type", default=cur_key, choices=list(COND_TYPES.keys()))
+            if ct is _BACK:
+                continue
+            new_type = COND_TYPES[ct]
+            if new_type != r.cond_type:
+                r.cond_type = new_type
+                if new_type == "sequence":
+                    r.cond_field = ""
+                    r.cond_mode = "every"
+                    r.cond_value = 1.0
+                    r.cond_trigger = "win"
+                elif new_type == "profit":
+                    r.cond_field = "profit"
+                    r.cond_mode = "gte"
+                    r.cond_value = 0.0
+                    r.cond_trigger = ""
+                elif new_type == "bet":
+                    r.cond_field = "amount"
+                    r.cond_mode = "gte"
+                    r.cond_value = 0.0
+                    r.cond_trigger = ""
+
+        elif label == "Mode":
+            console.print("      [dim]Sequence mode:[/]")
+            for k, (_, ml) in SEQ_MODES.items():
+                console.print(f"        [bold yellow][{k}][/] {ml}")
+            cur_key = next((k for k, v in SEQ_MODES.items() if v[0] == r.cond_mode), "1")
+            sm = _ask("      Mode", default=cur_key, choices=list(SEQ_MODES.keys()))
+            if sm is _BACK:
+                continue
+            r.cond_mode = SEQ_MODES[sm][0]
+
+        elif label == "N value":
+            nv = _ask("      N value", default=str(int(r.cond_value)))
+            if nv is _BACK:
+                continue
+            try:
+                r.cond_value = float(nv)
+            except ValueError:
+                console.print("      [red]Invalid number[/]")
+
+        elif label == "Event":
+            console.print("        [bold yellow][1][/] win  [bold yellow][2][/] loss  [bold yellow][3][/] bet")
+            cur_key = {"win": "1", "loss": "2", "bet": "3"}.get(r.cond_trigger, "1")
+            st = _ask("      Event", default=cur_key, choices=["1", "2", "3"])
+            if st is _BACK:
+                continue
+            r.cond_trigger = SEQ_TRIGGERS[st]
+
+        elif label == "Field":
+            if r.cond_type == "profit":
+                console.print("        [bold yellow][1][/] profit  [bold yellow][2][/] loss  [bold yellow][3][/] balance")
+                cur_key = next((k for k, v in PROFIT_FIELDS.items() if v == r.cond_field), "1")
+                pf = _ask("      Field", default=cur_key, choices=list(PROFIT_FIELDS.keys()))
+                if pf is _BACK:
+                    continue
+                r.cond_field = PROFIT_FIELDS[pf]
+            elif r.cond_type == "bet":
+                for k, name in BET_FIELDS.items():
+                    console.print(f"        [bold yellow][{k}][/] {name}")
+                cur_key = next((k for k, v in BET_FIELDS.items() if v == r.cond_field), "1")
+                bf = _ask("      Field", default=cur_key, choices=list(BET_FIELDS.keys()))
+                if bf is _BACK:
+                    continue
+                r.cond_field = BET_FIELDS[bf]
+
+        elif label == "Operator":
+            for k, (_, sym) in CMP_OPS.items():
+                console.print(f"        [bold yellow][{k}][/] {sym}")
+            cur_key = next((k for k, v in CMP_OPS.items() if v[0] == r.cond_mode), "1")
+            op = _ask("      Operator", default=cur_key, choices=list(CMP_OPS.keys()))
+            if op is _BACK:
+                continue
+            r.cond_mode = CMP_OPS[op][0]
+
+        elif label == "Value":
+            vl = _ask("      Value", default=str(r.cond_value))
+            if vl is _BACK:
+                continue
+            try:
+                r.cond_value = float(vl)
+            except ValueError:
+                console.print("      [red]Invalid number[/]")
+
+        elif label == "Action":
+            console.print("      [dim]Change action:[/]")
+            for k, (_, al) in RULE_ACTIONS.items():
+                console.print(f"        [bold yellow][{k:>2}][/] {al}")
+            cur_key = next((k for k, v in RULE_ACTIONS.items() if v[0] == r.action), "1")
+            ak = _ask("      Action", default=cur_key, choices=list(RULE_ACTIONS.keys()))
+            if ak is _BACK:
+                continue
+            new_action = RULE_ACTIONS[ak][0]
+            if new_action != r.action:
+                r.action = new_action
+                r.action_value = 0.0
+
+        elif label == "Action value":
+            av = _ask("      Action value", default=str(r.action_value))
+            if av is _BACK:
+                continue
+            try:
+                r.action_value = float(av)
+            except ValueError:
+                console.print("      [red]Invalid number[/]")
+
+
 def setup_wizard():
     console.clear()
     console.print()
@@ -2198,11 +2383,11 @@ def setup_wizard():
                     for i, r in enumerate(state.custom_rules, 1):
                         console.print(f"    [dim]{i}.[/] {r.description}")
                     console.print()
-                    console.print("    [bold yellow][1][/] Add rule   [bold yellow][2][/] Delete rule   [bold yellow][3][/] Clear all   [bold yellow][4][/] Continue")
-                    v2 = _ask("  Select", default="4", choices=["1", "2", "3", "4"])
+                    console.print("    [bold yellow][1][/] Add rule   [bold yellow][2][/] Edit rule   [bold yellow][3][/] Delete rule   [bold yellow][4][/] Clear all   [bold yellow][5][/] Continue")
+                    v2 = _ask("  Select", default="5", choices=["1", "2", "3", "4", "5"])
                     if v2 is _BACK:
                         return False
-                    if v2 == "4":
+                    if v2 == "5":
                         break
                     elif v2 == "1":
                         rule = _build_one_rule()
@@ -2212,6 +2397,29 @@ def setup_wizard():
                             state.custom_rules.append(rule)
                             console.print(f"    [green]+ Rule {len(state.custom_rules)}:[/] {rule.description}\n")
                     elif v2 == "2":
+                        if len(state.custom_rules) == 1:
+                            idx = 0
+                        else:
+                            en = _ask(f"  Rule # to edit (1-{len(state.custom_rules)})")
+                            if en is _BACK:
+                                continue
+                            try:
+                                idx = int(en) - 1
+                                if not (0 <= idx < len(state.custom_rules)):
+                                    console.print("    [red]Invalid rule number[/]")
+                                    continue
+                            except ValueError:
+                                console.print("    [red]Enter a number[/]")
+                                continue
+                        old = state.custom_rules[idx]
+                        console.print(f"    [dim]Editing:[/] {old.description}")
+                        replacement = _edit_one_rule(old)
+                        if replacement is _BACK:
+                            continue
+                        if replacement is not None:
+                            state.custom_rules[idx] = replacement
+                            console.print(f"    [green]Updated:[/] {replacement.description}\n")
+                    elif v2 == "3":
                         if len(state.custom_rules) == 1:
                             idx = 0
                         else:
@@ -2228,7 +2436,7 @@ def setup_wizard():
                                 continue
                         removed = state.custom_rules.pop(idx)
                         console.print(f"    [red]Deleted:[/] {removed.description}\n")
-                    elif v2 == "3":
+                    elif v2 == "4":
                         state.custom_rules = []
                         console.print("    [yellow]All rules cleared.[/]\n")
                 else:
