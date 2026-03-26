@@ -540,6 +540,14 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EOF
 chmod +x "$INSTALL_DIR/run.sh"
 
+cat > "$INSTALL_DIR/run-tg.sh" << 'EOF'
+#!/usr/bin/env bash
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+set -a; source "$DIR/.env" 2>/dev/null; set +a
+cd "$DIR" && "$DIR/venv/bin/python3" -m tg.bot "$@"
+EOF
+chmod +x "$INSTALL_DIR/run-tg.sh"
+
 # ── Done ──────────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════════"
