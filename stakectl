@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Stake AutoBot — Management Command v2.1
+# Wrapped in { } so bash reads entire script before executing —
+# prevents corruption when cmd_update replaces this file mid-run.
+{
 set -euo pipefail
 
 INSTALL_DIR="$HOME/stake-bot"
@@ -516,3 +519,5 @@ case "${1:-}" in
     status-all)   cmd_status_all ;;
     *)            usage ;;
 esac
+exit
+}
