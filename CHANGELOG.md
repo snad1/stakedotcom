@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.1.7 — Security, Rule Editor & Ops Improvements (2026-03-26)
+
+### CLI Bot v1.1.7
+
+#### Added
+
+- **`_edit_one_rule()` interactive rule editor** — Edit existing rules in-place via the setup wizard; wired into the main configuration flow
+- **`stakectl start-all / stop-all / status-all`** — Batch commands to start, stop, or check status of all managed services at once
+
+#### Security
+
+- **`_mask_key()` for token logging** — API tokens are masked before being written to logs in `save_config()`, preventing accidental credential exposure
+- **`save_config()` file permissions** — Config files are now written with `0o600` permissions, restricting read access to the owning user only
+
+### Infrastructure
+
+- **`run-tg.sh` helper** — Added to `install.sh` for launching the Telegram bot process directly
+
+---
+
 ## v1.1.6 — Data Retention & Cleanup (2026-03-24)
 
 ### TG Bot v1.1.6
