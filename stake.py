@@ -1416,7 +1416,8 @@ def _save_state_file():
             "last_error": state.last_error,
             "updated_at": datetime.now().isoformat(),
         }
-        with open(STATE_PATH, "w") as f:
+        fd = os.open(STATE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
     except Exception:
         pass

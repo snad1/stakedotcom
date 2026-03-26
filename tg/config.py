@@ -4,6 +4,7 @@ import os
 import logging
 
 # ── Environment ──────────────────────────────────────────
+APP_ENV   = os.environ.get("APP_ENV", "production")
 BOT_TOKEN = os.environ.get("STAKE_TG_TOKEN", "")
 DATA_DIR  = os.environ.get("STAKE_TG_DATA", os.path.expanduser("~/.stakebot_tg"))
 WEB_URL   = os.environ.get("STAKE_WEB_URL", "")          # e.g. http://IP:8001
