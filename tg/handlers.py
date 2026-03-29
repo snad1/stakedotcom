@@ -1636,8 +1636,8 @@ async def load_resume_state(application):
                 await application.bot.send_message(
                     chat_id,
                     f"Resume failed for session #{snap.get('session_id', '?')} (slot {slot}):\n"
-                    (f"`{engine.last_error}`\n" if APP_ENV != "production" else "")
-                    f"Use /bet to start a new session.",
+                    + (f"`{engine.last_error}`\n" if APP_ENV != "production" else "")
+                    + "Use /bet to start a new session.",
                     parse_mode="Markdown",
                 )
         except Exception as e:
