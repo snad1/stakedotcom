@@ -43,7 +43,7 @@ High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a li
 # 1. Setup
 cd stake
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt  # includes casino-shared from GitHub
 
 # 2. Run (wizard guides you through config)
 python3 stake.py
@@ -61,6 +61,7 @@ python3 stake.py --resume
 ```bash
 # 1. Upload files
 scp stake.py requirements.txt install.sh user@your-server:~/
+# shared/ library is auto-installed via pip from GitHub (requires SSH key)
 
 # 2. Install (sets up venv, systemd, Docker, FlareSolverr)
 ssh user@your-server

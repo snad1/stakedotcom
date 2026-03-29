@@ -48,6 +48,16 @@ else
     exit 1
 fi
 
+# Copy shared/ library (cross-bot shared modules)
+SHARED_DIR="$REPO_DIR/../shared"
+if [ -d "$SHARED_DIR" ]; then
+    rm -rf "$INSTALL_DIR/shared"
+    cp -r "$SHARED_DIR" "$INSTALL_DIR/"
+    echo "  ✓ shared/ library copied"
+else
+    echo "  ⚠ $SHARED_DIR not found — shared imports may fail"
+fi
+
 # ── 3. Python venv + deps ──
 echo "[3/7] Setting up Python environment…"
 if [ ! -d "$INSTALL_DIR/venv" ]; then

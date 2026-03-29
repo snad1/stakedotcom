@@ -77,6 +77,16 @@ cp tg/engine.py      "$INSTALL_DIR/tg/"
 cp tg/formatter.py   "$INSTALL_DIR/tg/"
 cp tg/handlers.py    "$INSTALL_DIR/tg/"
 cp tg/bot.py         "$INSTALL_DIR/tg/"
+
+# Copy shared/ library (cross-bot shared modules)
+if [ -d "../shared" ]; then
+    rm -rf "$INSTALL_DIR/shared"
+    cp -r ../shared "$INSTALL_DIR/"
+    echo "   shared/ library copied"
+else
+    echo "   ⚠ ../shared/ not found — shared imports may fail"
+fi
+
 # Copy .env
 if [ -f ".env" ]; then
     cp .env "$INSTALL_DIR/.env"
@@ -356,7 +366,14 @@ cmd_update() {
             mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/tg"
             cp core/*.py "$INSTALL_DIR/core/"
             cp tg/*.py   "$INSTALL_DIR/tg/"
-            echo "Bot + TG bot files updated."
+            # Update shared/ library
+            if [ -d "../shared" ]; then
+                rm -rf "$INSTALL_DIR/shared"
+                cp -r ../shared "$INSTALL_DIR/"
+                echo "Bot + TG bot + shared/ updated."
+            else
+                echo "Bot + TG bot files updated (shared/ not found)."
+            fi
             # Auto-restart TG bot gracefully (sessions auto-resume)
             if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
                 echo "Restarting Telegram bot (sessions will auto-resume)…"

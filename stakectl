@@ -219,6 +219,13 @@ cmd_update() {
         cp tg/*.py "$INSTALL_DIR/tg/"
     fi
 
+    # Update shared/ library
+    if [ -d "../shared" ]; then
+        rm -rf "$INSTALL_DIR/shared"
+        cp -r ../shared "$INSTALL_DIR/"
+        echo "shared/ library updated."
+    fi
+
     # Self-update: copy this script to its installed location
     if [ -f "$SCRIPT_NAME" ]; then
         local installed
