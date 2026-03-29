@@ -58,7 +58,15 @@ async def auth_exception_handler(request: Request, exc: HTTPException):
         accept = request.headers.get("accept", "")
         if "text/html" in accept:
             return RedirectResponse("/login", status_code=302)
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    detail = exc.detail if settings.app_env != "production" else "An error occurred. Please try again."
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled error: %s", exc, exc_info=True)
+    detail = str(exc) if settings.app_env != "production" else "Something went wrong. Please try again."
+    return JSONResponse(status_code=500, content={"detail": detail})
 
 
 @app.get("/")

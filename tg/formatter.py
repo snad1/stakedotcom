@@ -57,42 +57,95 @@ def format_status(s: dict) -> str:
     bc_e = _pnl_emoji(bal_change)
 
     state = "\U0001f7e2 LIVE" if not s["paused"] else "\U0001f7e1 PAUSED"
-    game = s.get("game", "limbo").capitalize()
+    game_info = s.get("game_info", s.get("game", "limbo").capitalize())
 
-    return (
-        f"*Session #{s['session_id']}* \u2014 {s['uptime']}\n"
-        f"{state} | {game}\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        f"\U0001f4b0 *Balance*\n"
-        f"  Current: `{s['balance']:.8f} {s['currency']}`\n"
-        f"  {pe} P/L: `{ps}{p:.8f}`\n"
-        f"  Wagered: `{s['wagered']:.8f}`\n"
-        f"  {bc_e} Change: `{bc_s}{bal_change:.8f}`\n"
-        f"\n"
-        f"\U0001f4ca *Stats*\n"
-        f"  Bets: `{_fmti(s['bets'])}`  W: `{_fmti(s['wins'])}`  L: `{_fmti(s['losses'])}`\n"
-        f"  Win Rate: `{s['win_rate']}`\n"
-        f"  {avg_e} Avg P/L: `{avg_s}{avg:.8f}`\n"
-        f"\n"
-        f"\U0001f4c8 *Extremes*\n"
-        f"  Peak Bal: `{s['highest_balance']:.8f}`\n"
-        f"  Low Bal: `{s['lowest_balance']:.8f}`\n"
-        f"  Best Win: `+{s['highest_win']:.8f}`\n"
-        f"  Worst Loss: `{'-' if s['biggest_loss'] > 0 else ''}{s['biggest_loss']:.8f}`\n"
-        f"\n"
-        f"{se} *Streaks*\n"
-        f"  Current: `{streak_s}`\n"
-        f"  Best: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`\n"
-        f"\n"
-        f"\u2699\ufe0f *Config*\n"
-        f"  Strategy: `{s['strategy']}` {s['multiplier']}x\n"
-        f"  Bet: `{s['current_bet']:.8f}`  Base: `{s.get('base_bet', 0):.8f}`\n"
-        f"  Hi: `{s['highest_bet']:.8f}`\n"
-        f"  Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm\n"
-        f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg\n"
-        f"\n"
-        f"`{s['status']}`"
-    )
+    lines = [
+        f"*Session #{s['session_id']}* \u2014 {s['uptime']}",
+        f"{state} | {game_info}",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        "\U0001f4b0 *Balance*",
+        f"  Current: `{s['balance']:.8f} {s['currency']}`",
+        f"  {pe} P/L: `{ps}{p:.8f}`",
+        f"  Wagered: `{s['wagered']:.8f}`",
+        f"  {bc_e} Change: `{bc_s}{bal_change:.8f}`",
+        "",
+        "\U0001f4ca *Stats*",
+        f"  Bets: `{_fmti(s['bets'])}`  W: `{_fmti(s['wins'])}`  L: `{_fmti(s['losses'])}`",
+        f"  Win Rate: `{s['win_rate']}`",
+        f"  {avg_e} Avg P/L: `{avg_s}{avg:.8f}`",
+        "",
+        "\U0001f4c8 *Extremes*",
+        f"  Peak Bal: `{s['highest_balance']:.8f}`",
+        f"  Low Bal: `{s['lowest_balance']:.8f}`",
+        f"  Best Win: `+{s['highest_win']:.8f}`",
+        f"  Worst Loss: `{'-' if s['biggest_loss'] > 0 else ''}{s['biggest_loss']:.8f}`",
+        "",
+        f"{se} *Streaks*",
+        f"  Current: `{streak_s}`",
+        f"  Best: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`",
+        "",
+        "\u2699\ufe0f *Config*",
+        f"  Strategy: `{s['strategy']}` {s['multiplier']}x",
+    ]
+
+    detail = s.get("strategy_detail", "")
+    if detail:
+        lines.append(f"  `{detail}`")
+
+    lines += [
+        f"  Bet: `{s['current_bet']:.8f}`  Base: `{s.get('base_bet', 0):.8f}`",
+        f"  Hi: `{s['highest_bet']:.8f}`",
+    ]
+
+    delay = s.get("bet_delay", 0)
+    if delay:
+        lines.append(f"  Delay: `{delay}s`")
+
+    pk_bps = int(s.get("peak_bps", 0))
+    lw_bps = int(s.get("low_bps", 0))
+    pk_bpm = int(s.get("peak_bpm", 0))
+    lw_bpm = int(s.get("low_bpm", 0))
+    lines += [
+        f"  Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm",
+        f"  Range: `{lw_bps}-{pk_bps}` bps / `{lw_bpm}-{pk_bpm}` bpm",
+        f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg",
+    ]
+
+    # stop conditions
+    stops = s.get("stop_conditions", {})
+    if stops:
+        lines.append("")
+        lines.append("\U0001f6d1 *Stop Conditions*")
+        if "max_profit" in stops:
+            lines.append(f"  Profit >= `{stops['max_profit']}`")
+        if "max_loss" in stops:
+            lines.append(f"  Loss >= `{stops['max_loss']}`")
+        if "max_bets" in stops:
+            lines.append(f"  Bets >= `{_fmti(stops['max_bets'])}`")
+        if "max_wins" in stops:
+            lines.append(f"  Wins >= `{_fmti(stops['max_wins'])}`")
+        if "min_balance" in stops:
+            lines.append(f"  Balance <= `{stops['min_balance']}`")
+
+    # profit bump
+    pi = s.get("profit_increment")
+    pt = s.get("profit_threshold")
+    if pi and pt:
+        lines.append("")
+        lines.append(f"\U0001f4c8 *Profit Bump*")
+        lines.append(f"  +`{pi:.8f}` every `{pt}` profit")
+
+    # custom rules
+    rules = s.get("rules", [])
+    if rules:
+        lines.append("")
+        lines.append(f"\U0001f4dc *Rules ({len(rules)})*")
+        for i, desc in enumerate(rules, 1):
+            lines.append(f"  {i}. `{desc}`")
+
+    lines += ["", f"`{s['status']}`"]
+
+    return "\n".join(lines)
 
 
 # ── Session stopped ──────────────────────────────────────

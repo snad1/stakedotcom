@@ -252,7 +252,8 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     connected = engine.connect()
     if not connected:
-        await msg.edit_text(f"Connection failed: {engine.last_error}")
+        detail = f": {engine.last_error}" if APP_ENV != "production" else ""
+        await msg.edit_text(f"Connection failed{detail}. Check /config and try again.")
         return
 
     times = []
@@ -469,8 +470,10 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["strategy"] = STRATEGY_NAMES[key]
         elif param == "multiplier":
             mult = float(value)
+            if mult <= 1.0:
+                await update.message.reply_text("Multiplier must be > 1.0")
+                return
             config["multiplier_target"] = mult
-            # Auto-update dice target for current condition
             wc = 99.0 / mult
             cond = config.get("dice_condition", "above")
             if cond == "above":
@@ -478,7 +481,11 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 config["dice_target"] = round(wc, 2)
         elif param == "basebet":
-            config["base_bet"] = float(value)
+            val = float(value)
+            if val < 0:
+                await update.message.reply_text("Base bet must be >= 0.")
+                return
+            config["base_bet"] = val
         elif param == "dicetarget":
             config["dice_target"] = float(value)
         elif param in ("dicecondition", "condition"):
@@ -495,21 +502,68 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 config["dice_target"] = round(wc, 2)
         elif param == "lossmult":
-            config["loss_mult"] = float(value)
+            val = float(value)
+            if val <= 0:
+                await update.message.reply_text("Loss multiplier must be > 0.")
+                return
+            config["loss_mult"] = val
         elif param == "winmult":
-            config["win_mult"] = float(value)
+            val = float(value)
+            if val <= 0:
+                await update.message.reply_text("Win multiplier must be > 0.")
+                return
+            config["win_mult"] = val
         elif param == "delay":
-            config["bet_delay"] = float(value)
+            val = float(value)
+            if val < 0:
+                await update.message.reply_text("Delay must be >= 0.")
+                return
+            config["bet_delay"] = val
         elif param == "maxprofit":
-            config["max_profit"] = float(value) if value.lower() != "off" else None
+            if value.lower() != "off":
+                val = float(value)
+                if val <= 0:
+                    await update.message.reply_text("Max profit must be > 0.")
+                    return
+                config["max_profit"] = val
+            else:
+                config["max_profit"] = None
         elif param == "maxloss":
-            config["max_loss"] = float(value) if value.lower() != "off" else None
+            if value.lower() != "off":
+                val = float(value)
+                if val <= 0:
+                    await update.message.reply_text("Max loss must be > 0.")
+                    return
+                config["max_loss"] = val
+            else:
+                config["max_loss"] = None
         elif param == "maxbets":
-            config["max_bets"] = int(value) if value.lower() != "off" else None
+            if value.lower() != "off":
+                val = int(value)
+                if val <= 0:
+                    await update.message.reply_text("Max bets must be > 0.")
+                    return
+                config["max_bets"] = val
+            else:
+                config["max_bets"] = None
         elif param == "maxwins":
-            config["max_wins"] = int(value) if value.lower() != "off" else None
+            if value.lower() != "off":
+                val = int(value)
+                if val <= 0:
+                    await update.message.reply_text("Max wins must be > 0.")
+                    return
+                config["max_wins"] = val
+            else:
+                config["max_wins"] = None
         elif param == "minbalance":
-            config["stop_on_balance"] = float(value) if value.lower() != "off" else None
+            if value.lower() != "off":
+                val = float(value)
+                if val < 0:
+                    await update.message.reply_text("Min balance must be >= 0.")
+                    return
+                config["stop_on_balance"] = val
+            else:
+                config["stop_on_balance"] = None
         elif param == "delaythreshold":
             config["delay_martin_threshold"] = int(value)
         elif param in ("milestonebets", "msbets"):
@@ -521,9 +575,23 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("milestoneprofit", "msprofit"):
             config["milestone_profit"] = float(value)
         elif param in ("profitthreshold", "pt"):
-            config["profit_threshold"] = float(value) if value.lower() != "off" else None
+            if value.lower() != "off":
+                val = float(value)
+                if val <= 0:
+                    await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
+                    return
+                config["profit_threshold"] = val
+            else:
+                config["profit_threshold"] = None
         elif param in ("profitincrement", "pi"):
-            config["profit_increment"] = float(value) if value.lower() != "off" else None
+            if value.lower() != "off":
+                val = float(value)
+                if val <= 0:
+                    await update.message.reply_text("Profit increment must be > 0 (or 'off').")
+                    return
+                config["profit_increment"] = val
+            else:
+                config["profit_increment"] = None
         else:
             await update.message.reply_text(
                 f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
@@ -603,7 +671,8 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"Connecting to Stake ({game_label})…")
 
     if not engine.start():
-        await msg.edit_text(f"Failed to start: {engine.last_error}")
+        detail = f": {engine.last_error}" if APP_ENV != "production" else ""
+        await msg.edit_text(f"Failed to start{detail}. Check /config and try again.")
         return
 
     active_engines.setdefault(user_id, {})[slot] = engine
@@ -1567,7 +1636,7 @@ async def load_resume_state(application):
                 await application.bot.send_message(
                     chat_id,
                     f"Resume failed for session #{snap.get('session_id', '?')} (slot {slot}):\n"
-                    f"`{engine.last_error}`\n"
+                    (f"`{engine.last_error}`\n" if APP_ENV != "production" else "")
                     f"Use /bet to start a new session.",
                     parse_mode="Markdown",
                 )

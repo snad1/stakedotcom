@@ -169,9 +169,13 @@ def get_tg_user(user_id: int) -> dict | None:
 
 
 def update_tg_user(user_id: int, **kwargs):
+    _ALLOWED_COLUMNS = {"username", "tier", "last_active", "is_blocked", "notes"}
+    safe = {k: v for k, v in kwargs.items() if k in _ALLOWED_COLUMNS}
+    if not safe:
+        return
     conn = get_db()
-    sets = [f"{k} = ?" for k in kwargs]
-    vals = list(kwargs.values()) + [user_id]
+    sets = [f"{k} = ?" for k in safe]
+    vals = list(safe.values()) + [user_id]
     conn.execute(f"UPDATE tg_users SET {', '.join(sets)} WHERE user_id = ?", vals)
     conn.commit()
     conn.close()

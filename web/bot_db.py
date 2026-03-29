@@ -60,7 +60,8 @@ def get_user_config(user_id: int) -> dict:
 def save_user_config(user_id: int, config: dict):
     path = _user_config_path(user_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(config, f, indent=2)
 
 

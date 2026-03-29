@@ -47,7 +47,8 @@ def load_user_config(user_id: int) -> dict:
 
 def save_user_config(user_id: int, config: dict):
     path = user_config_path(user_id)
-    with open(path, "w") as f:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(config, f, indent=2)
 
 
@@ -65,5 +66,6 @@ def load_presets(user_id: int) -> dict:
 
 def save_presets(user_id: int, presets: dict):
     path = user_presets_path(user_id)
-    with open(path, "w") as f:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(presets, f, indent=2)
