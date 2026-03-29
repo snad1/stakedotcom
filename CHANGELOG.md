@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.1 — Zero Bets & Insufficient Balance Fix (2026-03-29)
+
+### Fixed
+
+- **Zero-amount bets** — Allow base bet of 0 for free/test betting; MIN_BET guard changed from `amount < MIN_BET` to `0 < amount < MIN_BET` so zero passes through to the API
+- **Default base bet** — Changed default `base_bet`/`current_bet` from `MIN_BET` to `0.0`
+- **Insufficient balance detection** — CLI and TG now properly detect "insufficient balance" in HTTP error responses and stop the session immediately
+- **TG error notification** — Added `on_error` callback; sends `⚠️ Insufficient balance` message to user via Telegram before stopping
+
+---
+
 ## v1.2.0 — Shared Library as pip Package (2026-03-29)
 
 ### Infrastructure
