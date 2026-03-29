@@ -226,6 +226,7 @@ class BettingEngine:
         # ── callbacks ──
         self.on_stop         = None
         self.on_milestone    = None
+        self.on_error        = None
 
         # ── batching state ──
         self._bet_queue: list = []
@@ -496,6 +497,9 @@ class BettingEngine:
             err = str(e)
             if "429" in err:
                 self.last_error = "Rate limit 429"
+            elif "insufficient" in err.lower() or "balance" in err.lower():
+                self.last_error = "Insufficient balance"
+                self._insufficient_balance = True
             else:
                 self.last_error = err[:120]
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
@@ -993,6 +997,11 @@ class BettingEngine:
 
             if result is None:
                 if self._insufficient_balance:
+                    if self.on_error:
+                        try:
+                            self.on_error(f"Insufficient balance for bet {self.current_bet:.8f}")
+                        except Exception:
+                            pass
                     self.running = False
                     self.stop_reason = f"Insufficient balance for bet {self.current_bet:.8f}"
                     self.status = f"STOPPED: {self.stop_reason}"

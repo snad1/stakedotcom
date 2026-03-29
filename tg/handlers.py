@@ -664,8 +664,15 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _notify_milestone(cid, data, app), loop)
         return on_milestone
 
+    def _make_on_error(cid):
+        def on_error(msg):
+            asyncio.run_coroutine_threadsafe(
+                _notify_error(cid, msg, app), loop)
+        return on_error
+
     engine.on_stop = _make_on_stop(chat_id, user_id, slot)
     engine.on_milestone = _make_on_milestone(chat_id)
+    engine.on_error = _make_on_error(chat_id)
 
     game_label = GAME_LABELS.get(engine.game, engine.game)
     msg = await update.message.reply_text(f"Connecting to Stake ({game_label})…")
@@ -708,6 +715,10 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
 async def _notify_milestone(chat_id: int, data: dict, app):
     text = format_milestone(data)
     await app.bot.send_message(chat_id, text, parse_mode="Markdown")
+
+
+async def _notify_error(chat_id: int, message: str, app):
+    await app.bot.send_message(chat_id, f"⚠️ {message}", parse_mode="Markdown")
 
 
 # ── /stop ────────────────────────────────────────────────
@@ -1609,8 +1620,15 @@ async def load_resume_state(application):
                         _notify_milestone(cid, data, application), loop)
                 return on_milestone
 
+            def _make_on_error(cid):
+                def on_error(msg):
+                    asyncio.run_coroutine_threadsafe(
+                        _notify_error(cid, msg, application), loop)
+                return on_error
+
             engine.on_stop = _make_on_stop(chat_id, user_id, slot)
             engine.on_milestone = _make_on_milestone(chat_id)
+            engine.on_error = _make_on_error(chat_id)
 
             # Retry connection up to 3 times (API may not be ready immediately)
             started = False
