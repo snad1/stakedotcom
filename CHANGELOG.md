@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.1.8 — Security Hardening (2026-03-29)
+
+### CLI Bot v1.1.8
+
+#### Security
+
+- **`_save_state_file()` permissions** — State files now written with `0o600` permissions via `os.open()`, preventing other users from reading session state
+- **ENV-controlled error messages** — TG bot error handlers now log full details server-side and show user-friendly messages in production. Controlled via `APP_ENV` environment variable
+- **`stakectl` self-update safety** — Script wrapped in `{ }` block to prevent parse errors when `cmd_update` replaces the file mid-run
+
+---
+
 ## v1.1.7 — Security, Rule Editor & Ops Improvements (2026-03-26)
 
 ### CLI Bot v1.1.7
