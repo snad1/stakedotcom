@@ -452,7 +452,7 @@ class BettingEngine:
 
     def _api_place_bet(self, amount: float) -> Optional[dict]:
         """Place a bet. Returns parsed result dict or None."""
-        if amount < MIN_BET:
+        if 0 < amount < MIN_BET:
             amount = MIN_BET
 
         game_info = GAMES[self.game]

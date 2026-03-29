@@ -792,8 +792,8 @@ class BotState:
         self.dice_target      = 50.5          # roll target (0-100)
         self.dice_condition   = "above"       # "above" or "below"
 
-        self.base_bet         = MIN_BET
-        self.current_bet      = MIN_BET
+        self.base_bet         = 0.0
+        self.current_bet      = 0.0
         self.strategy         = "Martingale"
         self.strategy_key     = "2"
         self.win_mult         = 1.0
@@ -1002,7 +1002,7 @@ def api_test_connection() -> bool:
 
 def api_place_bet(amount: float) -> Optional[dict]:
     """Place a bet on the current game via REST. Returns parsed result dict or None."""
-    if amount < MIN_BET:
+    if 0 < amount < MIN_BET:
         amount = MIN_BET
 
     game_info = GAMES[state.game]
@@ -1263,7 +1263,7 @@ def betting_loop():
         # calculate next bet — no cap, API rejects if insufficient balance
         raw_next  = compute_next_bet(bet_state)
         next_bet  = max(state.base_bet, raw_next)
-        if next_bet < MIN_BET:
+        if 0 < next_bet < MIN_BET:
             next_bet = MIN_BET
         state.current_bet = next_bet
         last_result = bet_state
