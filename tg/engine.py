@@ -1063,7 +1063,7 @@ class BettingEngine:
                 elapsed = now - self.session_start
                 if elapsed > 0:
                     self.bets_per_second = self.total_bets / elapsed
-                    self.bets_per_minute = self._bets_this_min
+                    self.bets_per_minute = self.bets_per_second * 60
 
                 sec_key = int(now)
                 min_key = int(now) // 60
