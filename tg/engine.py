@@ -742,7 +742,7 @@ class BettingEngine:
             if b.get("currency", "").lower() == self.currency.lower():
                 bal = float(b.get("amount", 0))
                 break
-        if bal <= 0:
+        if bal <= 0 and self.base_bet > 0:
             self.last_error = f"No {self.currency.upper()} balance found"
             return False
 
