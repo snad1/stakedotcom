@@ -1,232 +1,32 @@
-"""Web app's own SQLite database — admin users, sessions, audit log."""
+"""Web database — delegates to shared library, bound to this bot's settings."""
 
-import sqlite3
-import uuid
-from datetime import datetime
-import hashlib
-import hmac
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from .config import settings
+from shared.web.database import (  # noqa: E402
+    _hash_password, _verify_password,
+    get_db as _get_db, init_db as _init_db,
+    verify_admin as _verify_admin, change_admin_password as _change_admin_password,
+    sync_tg_user as _sync_tg_user, get_tg_users as _get_tg_users,
+    get_tg_user as _get_tg_user, update_tg_user as _update_tg_user,
+    audit as _audit, get_audit_log as _get_audit_log,
+    create_web_session as _create_web_session,
+    is_session_valid as _is_session_valid, revoke_session as _revoke_session,
+)
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS admin_users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role          TEXT DEFAULT 'admin',
-    created_at    TEXT DEFAULT (datetime('now')),
-    last_login    TEXT
-);
-
-CREATE TABLE IF NOT EXISTS tg_users (
-    user_id       INTEGER PRIMARY KEY,
-    username      TEXT,
-    tier          TEXT DEFAULT 'free',
-    first_seen    TEXT DEFAULT (datetime('now')),
-    last_active   TEXT,
-    is_blocked    INTEGER DEFAULT 0,
-    notes         TEXT DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS web_sessions (
-    id            TEXT PRIMARY KEY,
-    user_type     TEXT NOT NULL,
-    user_id       TEXT NOT NULL,
-    created_at    TEXT DEFAULT (datetime('now')),
-    expires_at    TEXT NOT NULL,
-    revoked       INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS audit_log (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp     TEXT DEFAULT (datetime('now')),
-    actor         TEXT NOT NULL,
-    action        TEXT NOT NULL,
-    detail        TEXT DEFAULT ''
-);
-"""
-
-
-def _hash_password(password: str) -> str:
-    salt = uuid.uuid4().hex
-    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
-    return f"pbkdf2:{salt}:{h.hex()}"
-
-
-def _verify_password(password: str, stored: str) -> bool:
-    try:
-        _, salt, hash_hex = stored.split(":", 2)
-        h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
-        return hmac.compare_digest(h.hex(), hash_hex)
-    except (ValueError, AttributeError):
-        return False
-
-
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(settings.db_path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
-
-
-def init_db():
-    conn = get_db()
-    conn.executescript(_SCHEMA)
-
-    # Seed default admin if not exists (OR IGNORE handles multi-worker race)
-    conn.execute(
-        "INSERT OR IGNORE INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)",
-        (settings.admin_user, _hash_password(settings.admin_pass), "admin"),
-    )
-    conn.commit()
-    conn.close()
-
-
-def change_admin_password(user_id: int, old_password: str, new_password: str) -> bool:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM admin_users WHERE id = ?", (user_id,)
-    ).fetchone()
-    if not row or not _verify_password(old_password, row["password_hash"]):
-        conn.close()
-        return False
-    conn.execute(
-        "UPDATE admin_users SET password_hash = ? WHERE id = ?",
-        (_hash_password(new_password), row["id"]),
-    )
-    conn.commit()
-    conn.close()
-    return True
-
-
-# ── Admin user helpers ──
-
-def verify_admin(username: str, password: str) -> dict | None:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM admin_users WHERE username = ?", (username,)
-    ).fetchone()
-    if row and _verify_password(password, row["password_hash"]):
-        conn.execute(
-            "UPDATE admin_users SET last_login = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), row["id"]),
-        )
-        conn.commit()
-        conn.close()
-        return dict(row)
-    conn.close()
-    return None
-
-
-# ── TG user helpers ──
-
-def sync_tg_user(user_id: int, username: str = None, tier: str = None):
-    conn = get_db()
-    existing = conn.execute(
-        "SELECT user_id FROM tg_users WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    now = datetime.utcnow().isoformat()
-    if existing:
-        updates = ["last_active = ?"]
-        params = [now]
-        if username:
-            updates.append("username = ?")
-            params.append(username)
-        if tier:
-            updates.append("tier = ?")
-            params.append(tier)
-        params.append(user_id)
-        conn.execute(
-            f"UPDATE tg_users SET {', '.join(updates)} WHERE user_id = ?",
-            params,
-        )
-    else:
-        conn.execute(
-            "INSERT INTO tg_users (user_id, username, tier, first_seen, last_active) VALUES (?, ?, ?, ?, ?)",
-            (user_id, username or "", tier or "free", now, now),
-        )
-    conn.commit()
-    conn.close()
-
-
-def get_tg_users() -> list[dict]:
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM tg_users ORDER BY last_active DESC"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_tg_user(user_id: int) -> dict | None:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM tg_users WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def update_tg_user(user_id: int, **kwargs):
-    _ALLOWED_COLUMNS = {"username", "tier", "last_active", "is_blocked", "notes"}
-    safe = {k: v for k, v in kwargs.items() if k in _ALLOWED_COLUMNS}
-    if not safe:
-        return
-    conn = get_db()
-    sets = [f"{k} = ?" for k in safe]
-    vals = list(safe.values()) + [user_id]
-    conn.execute(f"UPDATE tg_users SET {', '.join(sets)} WHERE user_id = ?", vals)
-    conn.commit()
-    conn.close()
-
-
-# ── Audit log ──
-
-def audit(actor: str, action: str, detail: str = ""):
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO audit_log (actor, action, detail) VALUES (?, ?, ?)",
-        (actor, action, detail),
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_audit_log(limit: int = 100) -> list[dict]:
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-# ── Web session tracking ──
-
-def create_web_session(user_type: str, user_id: str, expires_at: str) -> str:
-    jti = str(uuid.uuid4())
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO web_sessions (id, user_type, user_id, expires_at) VALUES (?, ?, ?, ?)",
-        (jti, user_type, user_id, expires_at),
-    )
-    conn.commit()
-    conn.close()
-    return jti
-
-
-def is_session_valid(jti: str) -> bool:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT revoked FROM web_sessions WHERE id = ?", (jti,)
-    ).fetchone()
-    conn.close()
-    return row is not None and not row["revoked"]
-
-
-def revoke_session(jti: str):
-    conn = get_db()
-    conn.execute("UPDATE web_sessions SET revoked = 1 WHERE id = ?", (jti,))
-    conn.commit()
-    conn.close()
+# Bind db_path from settings
+get_db = lambda: _get_db(settings.db_path)
+init_db = lambda: _init_db(settings.db_path, settings.admin_user, settings.admin_pass)
+verify_admin = lambda username, password: _verify_admin(settings.db_path, username, password)
+change_admin_password = lambda user_id, old_password, new_password: _change_admin_password(settings.db_path, user_id, old_password, new_password)
+sync_tg_user = lambda user_id, username=None, tier=None: _sync_tg_user(settings.db_path, user_id, username, tier)
+get_tg_users = lambda: _get_tg_users(settings.db_path)
+get_tg_user = lambda user_id: _get_tg_user(settings.db_path, user_id)
+update_tg_user = lambda user_id, **kwargs: _update_tg_user(settings.db_path, user_id, **kwargs)
+audit = lambda actor, action, detail="": _audit(settings.db_path, actor, action, detail)
+get_audit_log = lambda limit=100: _get_audit_log(settings.db_path, limit)
+create_web_session = lambda user_type, user_id, expires_at: _create_web_session(settings.db_path, user_type, user_id, expires_at)
+is_session_valid = lambda jti: _is_session_valid(settings.db_path, jti)
+revoke_session = lambda jti: _revoke_session(settings.db_path, jti)
