@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.1.9 — DRY Shared Library Extraction (2026-03-29)
+
+### Infrastructure
+
+- **Shared library extraction** — Extracted ~6,600 lines of duplicated code into `shared/` library used across all 6 casino bots
+  - `web/websocket.py`, `web/database.py`, `web/auth.py`, `web/services.py`, `web/bot_db.py`, `web/routes/auth_routes.py` — thin shims delegating to shared modules
+  - `tg/database.py` — thin shim binding `DATA_DIR` to shared persistence
+  - `core/strategy.py` — keeps local STRATEGIES dict, delegates rule engine to shared
+  - `core/database.py` — keeps local `init_db`, delegates utilities to shared
+- Zero downstream import changes — all existing imports continue working
+
+### Security
+
+- **Shell injection fix** — Replaced `create_subprocess_shell` with `shutil.copy2` in update flow
+- **Deprecated datetime fix** — Replaced `datetime.utcnow()` with `datetime.now(timezone.utc)`
+- **Narrowed exception handling** — Replaced broad `except Exception` with specific types
+- **Removed unused imports** — Cleaned up unused `import os` from shims
+
+### Testing
+
+- **114-test suite** added covering all shared modules
+
+---
+
 ## v1.1.8 — Security Hardening (2026-03-29)
 
 ### CLI Bot v1.1.8
