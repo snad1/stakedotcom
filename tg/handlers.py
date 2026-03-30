@@ -49,6 +49,10 @@ _next_slot: Dict[int, int] = {}  # user_id → next slot number
 
 MAX_SESSIONS = 5  # max concurrent sessions per user
 
+# ── Recurring bet state ─────────────────────────────────
+# recurring_state[user_id][slot] = {"delay": int, "chat_id": int, "config": dict, "timer_task": Task|None}
+recurring_state: Dict[int, Dict[int, dict]] = {}
+
 # ── Active monitors ─────────────────────────────────────
 # user_id → {slot: asyncio.Task}
 active_monitors: Dict[int, Dict[int, asyncio.Task]] = {}
@@ -123,6 +127,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Session:*\n"
         "/bet — Start betting session (up to 5 concurrent)\n"
         "/stop — Stop session (`/stop all` for all)\n"
+        "/stop recurring — Cancel all recurring bets\n"
         "/pause / /resume (add slot# for multi-session)\n"
         "/status — Live status (`/status 2` for slot)\n"
         "/monitor — Auto-updating status\n"
@@ -166,10 +171,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`milestonelosses` — Notify every N losses (0=off)\n"
         "`milestoneprofit` — Notify every X profit (0=off)\n"
         "`profitthreshold` — Auto-raise base bet every X profit (`off` to disable)\n"
-        "`profitincrement` — Amount to add to base bet (`off` to disable)\n\n"
+        "`profitincrement` — Amount to add to base bet (`off` to disable)\n"
+        "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
+        "`recurringdelay` — Seconds before restart (default 60)\n\n"
         "*Session* _(up to 5 concurrent)_\n"
         "/bet — Start session\n"
         "/stop — Stop session (`/stop all` or `/stop 2`)\n"
+        "/stop recurring — Cancel all recurring bets and stop sessions\n"
         "/pause — Pause (`/pause all` or `/pause 2`)\n"
         "/resume — Resume (`/resume all` or `/resume 2`)\n"
         "/status — Live status (`/status 2` for specific slot)\n"
@@ -409,6 +417,10 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mp: ms.append(f"{mp} profit")
         lines.append(f"Milestones: `{', '.join(ms) if ms else 'off'}`")
 
+        rec_on = config.get("recurring", False)
+        rec_delay = int(config.get("recurring_delay") or 60)
+        lines.append(f"Recurring: `{'on (' + str(rec_delay) + 's)' if rec_on else 'off'}`")
+
         # Rules (for rule-based strategy)
         if strategy_key == "7":
             rules_text = config.get("custom_rules_text", "")
@@ -592,6 +604,20 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["profit_increment"] = val
             else:
                 config["profit_increment"] = None
+        elif param == "recurring":
+            if value.lower() in ("on", "true", "yes", "1"):
+                config["recurring"] = True
+            elif value.lower() in ("off", "false", "no", "0"):
+                config["recurring"] = False
+            else:
+                await update.message.reply_text("Use: `/set recurring on` or `/set recurring off`", parse_mode="Markdown")
+                return
+        elif param in ("recurringdelay", "recdelay"):
+            val = int(value)
+            if val < 5:
+                await update.message.reply_text("Recurring delay must be >= 5 seconds.")
+                return
+            config["recurring_delay"] = val
         else:
             await update.message.reply_text(
                 f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
@@ -685,15 +711,28 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_engines.setdefault(user_id, {})[slot] = engine
     _engine_chat_ids[user_id] = chat_id
 
+    if config.get("recurring"):
+        delay = int(config.get("recurring_delay") or 60)
+        recurring_state.setdefault(user_id, {})[slot] = {
+            "delay": delay,
+            "chat_id": chat_id,
+            "config": dict(config),
+            "timer_task": None,
+            "app": app,
+            "loop": loop,
+        }
+
     wc = round(99.0 / engine.multiplier_target, 2)
     slot_info = f" (slot {slot})" if len(_get_running(user_id)) > 1 else ""
+    rec_info = f"\nRecurring: `{int(config.get('recurring_delay') or 60)}s`" if config.get("recurring") else ""
     await msg.edit_text(
         f"Session #{engine.session_id}{slot_info} started!\n\n"
         f"Game: `{game_label}`\n"
         f"Strategy: `{engine.strategy}`\n"
         f"Multiplier: `{engine.multiplier_target}x` ({wc}%)\n"
         f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
-        f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`\n\n"
+        f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`"
+        f"{rec_info}\n\n"
         f"Use /status to check progress.",
         parse_mode="Markdown",
     )
@@ -711,6 +750,108 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     text = format_stop(s, reason)
     await app.bot.send_message(chat_id, text, parse_mode="Markdown")
 
+    # Recurring bet: schedule restart if condition stop (not manual)
+    user_rec = recurring_state.get(user_id, {})
+    rec = user_rec.get(slot)
+    if rec and reason != "Stopped by user" and "insufficient" not in reason.lower():
+        delay = rec["delay"]
+        config = rec["config"]
+        await app.bot.send_message(
+            chat_id,
+            f"Recurring: restarting in {delay}s...\n"
+            f"Use `/stop recurring` to cancel.",
+            parse_mode="Markdown",
+        )
+        task = asyncio.create_task(
+            _recurring_restart(chat_id, user_id, slot, delay, config, app))
+        rec["timer_task"] = task
+
+
+async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
+                             delay: int, config: dict, app):
+    await asyncio.sleep(delay)
+
+    user_rec = recurring_state.get(user_id, {})
+    if old_slot not in user_rec:
+        return  # cancelled while waiting
+
+    running = _get_running(user_id)
+    if len(running) >= MAX_SESSIONS:
+        await app.bot.send_message(
+            chat_id, "Recurring restart skipped — max sessions reached.")
+        user_rec.pop(old_slot, None)
+        return
+
+    tier = get_user_tier(user_id)
+    min_delay = TIERS.get(tier, 1.0)
+    config_delay = float(config.get("bet_delay") or 0)
+    config["bet_delay"] = max(config_delay, min_delay)
+
+    db_path = user_db_path(user_id)
+    try:
+        engine = BettingEngine(user_id, db_path, config)
+    except Exception as e:
+        logger.error("Recurring restart config error: %s", e, exc_info=True)
+        await app.bot.send_message(chat_id, f"Recurring restart failed: config error.")
+        user_rec.pop(old_slot, None)
+        return
+
+    slot = _alloc_slot(user_id)
+    loop = asyncio.get_event_loop()
+
+    def _make_on_stop(cid, uid, s):
+        def on_stop(reason):
+            asyncio.run_coroutine_threadsafe(
+                _notify_stop(cid, uid, s, reason, app), loop)
+        return on_stop
+
+    def _make_on_milestone(cid):
+        def on_milestone(data):
+            asyncio.run_coroutine_threadsafe(
+                _notify_milestone(cid, data, app), loop)
+        return on_milestone
+
+    def _make_on_error(cid):
+        def on_error(msg):
+            asyncio.run_coroutine_threadsafe(
+                _notify_error(cid, msg, app), loop)
+        return on_error
+
+    engine.on_stop = _make_on_stop(chat_id, user_id, slot)
+    engine.on_milestone = _make_on_milestone(chat_id)
+    engine.on_error = _make_on_error(chat_id)
+
+    if not engine.start():
+        await app.bot.send_message(
+            chat_id, f"Recurring restart failed: {engine.last_error}")
+        user_rec.pop(old_slot, None)
+        return
+
+    active_engines.setdefault(user_id, {})[slot] = engine
+    _engine_chat_ids[user_id] = chat_id
+
+    # Move recurring state to new slot
+    rec_data = user_rec.pop(old_slot, None)
+    if rec_data:
+        rec_data["timer_task"] = None
+        user_rec[slot] = rec_data
+        recurring_state.setdefault(user_id, {})[slot] = rec_data
+
+    game_label = GAME_LABELS.get(engine.game, engine.game)
+    wc = round(99.0 / engine.multiplier_target, 2)
+    await app.bot.send_message(
+        chat_id,
+        f"Recurring session #{engine.session_id} started!\n\n"
+        f"Game: `{game_label}`\n"
+        f"Strategy: `{engine.strategy}`\n"
+        f"Multiplier: `{engine.multiplier_target}x` ({wc}%)\n"
+        f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
+        f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`\n"
+        f"Recurring: `{rec_data['delay'] if rec_data else delay}s`\n\n"
+        f"Use /status to check progress.",
+        parse_mode="Markdown",
+    )
+
 
 async def _notify_milestone(chat_id: int, data: dict, app):
     text = format_milestone(data)
@@ -721,18 +862,63 @@ async def _notify_error(chat_id: int, message: str, app):
     await app.bot.send_message(chat_id, f"⚠️ {message}", parse_mode="Markdown")
 
 
+def _cancel_recurring_for_slot(user_id: int, slot: int):
+    user_rec = recurring_state.get(user_id, {})
+    rec = user_rec.pop(slot, None)
+    if rec:
+        task = rec.get("timer_task")
+        if task and not task.done():
+            task.cancel()
+    if not user_rec:
+        recurring_state.pop(user_id, None)
+
+
+def _cancel_recurring_for_user(user_id: int):
+    user_rec = recurring_state.pop(user_id, {})
+    for rec in user_rec.values():
+        task = rec.get("timer_task")
+        if task and not task.done():
+            task.cancel()
+
+
 # ── /stop ────────────────────────────────────────────────
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     running = _get_running(user_id)
 
-    # /stop all — stop all sessions
-    if context.args and context.args[0].lower() == "all":
+    if context.args and context.args[0].lower() == "recurring":
+        # Cancel all recurring bets and stop all sessions
+        user_rec = recurring_state.pop(user_id, {})
+        cancelled = 0
+        for rec in user_rec.values():
+            task = rec.get("timer_task")
+            if task and not task.done():
+                task.cancel()
+                cancelled += 1
         if running:
             for engine in running.values():
                 engine.stop_reason = "Stopped by user"
                 engine.stop()
-            await _reply(update, f"Stopping {len(running)} session(s)…")
+        config = load_user_config(user_id)
+        config["recurring"] = False
+        save_user_config(user_id, config)
+        parts = []
+        if cancelled:
+            parts.append(f"Cancelled {cancelled} pending restart(s)")
+        if running:
+            parts.append(f"Stopping {len(running)} session(s)")
+        parts.append("Recurring mode disabled")
+        await _reply(update, ". ".join(parts) + ".")
+        return
+
+    # /stop all — stop all sessions
+    if context.args and context.args[0].lower() == "all":
+        _cancel_recurring_for_user(user_id)
+        if running:
+            for engine in running.values():
+                engine.stop_reason = "Stopped by user"
+                engine.stop()
+            await _reply(update, f"Stopping {len(running)} session(s)...")
             return
 
     if running:
@@ -740,6 +926,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if err:
             await _reply(update, err + "\nUse `/stop all` to stop all.", parse_mode="Markdown")
             return
+        _cancel_recurring_for_slot(user_id, slot)
         engine.stop_reason = "Stopped by user"
         engine.stop()
         return
