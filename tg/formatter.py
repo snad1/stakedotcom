@@ -133,7 +133,7 @@ def format_status(s: dict) -> str:
     if pi and pt:
         lines.append("")
         lines.append(f"\U0001f4c8 *Profit Bump*")
-        lines.append(f"  +`{pi:.8f}` every `{pt}` profit")
+        lines.append(f"  +`{float(pi):.8f}` every `{float(pt):.8f}` profit")
 
     # custom rules
     rules = s.get("rules", [])
@@ -337,7 +337,7 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
                 parts = [f"{k}: {v}" for k, v in stops.items()]
                 lines.append(f"  Stops: `{', '.join(parts)}`")
             if snap.get("profit_threshold"):
-                lines.append(f"  Profit incr: `+{snap['profit_increment']:.8f} every {snap['profit_threshold']}`")
+                lines.append(f"  Profit incr: `+{float(snap['profit_increment']):.8f} every {float(snap['profit_threshold']):.8f}`")
             rules = snap.get("rules", [])
             if rules:
                 from core.strategy import StrategyRule, describe_rule
