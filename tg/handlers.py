@@ -403,7 +403,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pi = config.get("profit_increment")
         pt = config.get("profit_threshold")
         if pi and pt:
-            lines.append(f"Profit increment: `+{float(pi):.8f} every {pt} profit`")
+            lines.append(f"Profit increment: `+{float(pi):.8f} every {float(pt):.8f} profit`")
 
         # Milestones
         ms = []
