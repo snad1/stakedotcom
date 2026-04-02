@@ -236,8 +236,7 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Run test bets (amount=0) and measure API response times."""
     user_id = update.effective_user.id
     config = load_user_config(user_id)
-    api_key = config.get("api_key")
-    if not api_key:
+    if not config.get("access_token"):
         await update.message.reply_text("Set your token first: /settoken", parse_mode="Markdown")
         return
 
@@ -255,11 +254,10 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_path = user_db_path(user_id)
     test_config = dict(config)
     test_config["base_bet"] = 0
-    engine = BettingEngine(user_id, db_path, api_key, test_config)
-    engine.lockdown_token = config.get("lockdown_token", "")
+    engine = BettingEngine(user_id, db_path, test_config)
 
-    connected = engine.connect()
-    if not connected:
+    await engine._recreate_http()
+    if not await engine._api_test_connection():
         detail = f": {engine.last_error}" if APP_ENV != "production" else ""
         await msg.edit_text(f"Connection failed{detail}. Check /config and try again.")
         return
@@ -268,7 +266,7 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i in range(count):
         try:
             t0 = _time.time()
-            result = engine._api_place_bet(0)
+            result = await engine._api_place_bet(0)
             elapsed = (_time.time() - t0) * 1000
             times.append(elapsed)
         except Exception:
@@ -311,20 +309,17 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         db_path = user_db_path(user_id)
         engine = BettingEngine(user_id, db_path, config)
-        engine._init_http()
-        # Try CF bypass chain: cached cookies → FlareSolverr solve
+        await engine._recreate_http()
         engine._cf_cache_load()
         balances = []
         for base in API_BASES:
             engine._api_base = base
-            # Pass 1: try with cached CF cookies (or none)
-            balances = engine.api_get_balances()
+            balances = await engine.api_get_balances()
             if balances:
                 break
-            # Pass 2: solve Cloudflare and retry
             site_url = base.split("/_api")[0]
-            if engine._solve_cloudflare(site_url):
-                balances = engine.api_get_balances()
+            if await engine._solve_cloudflare(site_url):
+                balances = await engine.api_get_balances()
                 if balances:
                     break
         if not balances:
@@ -673,27 +668,22 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     slot = _alloc_slot(user_id)
 
-    # Set up async callbacks from betting thread
-    loop = asyncio.get_event_loop()
     chat_id = update.effective_chat.id
     app = context.application
 
     def _make_on_stop(cid, uid, s):
         def on_stop(reason):
-            asyncio.run_coroutine_threadsafe(
-                _notify_stop(cid, uid, s, reason, app), loop)
+            asyncio.ensure_future(_notify_stop(cid, uid, s, reason, app))
         return on_stop
 
     def _make_on_milestone(cid):
         def on_milestone(data):
-            asyncio.run_coroutine_threadsafe(
-                _notify_milestone(cid, data, app), loop)
+            asyncio.ensure_future(_notify_milestone(cid, data, app))
         return on_milestone
 
     def _make_on_error(cid):
         def on_error(msg):
-            asyncio.run_coroutine_threadsafe(
-                _notify_error(cid, msg, app), loop)
+            asyncio.ensure_future(_notify_error(cid, msg, app))
         return on_error
 
     engine.on_stop = _make_on_stop(chat_id, user_id, slot)
@@ -703,7 +693,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     game_label = GAME_LABELS.get(engine.game, engine.game)
     msg = await update.message.reply_text(f"Connecting to Stake ({game_label})…")
 
-    if not engine.start():
+    if not await engine.start():
         detail = f": {engine.last_error}" if APP_ENV != "production" else ""
         await msg.edit_text(f"Failed to start{detail}. Check /config and try again.")
         return
@@ -719,7 +709,6 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "config": dict(config),
             "timer_task": None,
             "app": app,
-            "loop": loop,
         }
 
     wc = round(99.0 / engine.multiplier_target, 2)
@@ -797,31 +786,27 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
         return
 
     slot = _alloc_slot(user_id)
-    loop = asyncio.get_event_loop()
 
     def _make_on_stop(cid, uid, s):
         def on_stop(reason):
-            asyncio.run_coroutine_threadsafe(
-                _notify_stop(cid, uid, s, reason, app), loop)
+            asyncio.ensure_future(_notify_stop(cid, uid, s, reason, app))
         return on_stop
 
     def _make_on_milestone(cid):
         def on_milestone(data):
-            asyncio.run_coroutine_threadsafe(
-                _notify_milestone(cid, data, app), loop)
+            asyncio.ensure_future(_notify_milestone(cid, data, app))
         return on_milestone
 
     def _make_on_error(cid):
         def on_error(msg):
-            asyncio.run_coroutine_threadsafe(
-                _notify_error(cid, msg, app), loop)
+            asyncio.ensure_future(_notify_error(cid, msg, app))
         return on_error
 
     engine.on_stop = _make_on_stop(chat_id, user_id, slot)
     engine.on_milestone = _make_on_milestone(chat_id)
     engine.on_error = _make_on_error(chat_id)
 
-    if not engine.start():
+    if not await engine.start():
         await app.bot.send_message(
             chat_id, f"Recurring restart failed: {engine.last_error}")
         user_rec.pop(old_slot, None)
@@ -1777,7 +1762,6 @@ async def load_resume_state(application):
     finally:
         os.remove(RESUME_FILE)  # consume it — don't re-resume on crash
 
-    loop = asyncio.get_event_loop()
     resumed = 0
 
     for snap in snapshots:
@@ -1797,30 +1781,26 @@ async def load_resume_state(application):
 
             def _make_on_stop(cid, uid, s):
                 def on_stop(reason):
-                    asyncio.run_coroutine_threadsafe(
-                        _notify_stop(cid, uid, s, reason, application), loop)
+                    asyncio.ensure_future(_notify_stop(cid, uid, s, reason, application))
                 return on_stop
 
             def _make_on_milestone(cid):
                 def on_milestone(data):
-                    asyncio.run_coroutine_threadsafe(
-                        _notify_milestone(cid, data, application), loop)
+                    asyncio.ensure_future(_notify_milestone(cid, data, application))
                 return on_milestone
 
             def _make_on_error(cid):
                 def on_error(msg):
-                    asyncio.run_coroutine_threadsafe(
-                        _notify_error(cid, msg, application), loop)
+                    asyncio.ensure_future(_notify_error(cid, msg, application))
                 return on_error
 
             engine.on_stop = _make_on_stop(chat_id, user_id, slot)
             engine.on_milestone = _make_on_milestone(chat_id)
             engine.on_error = _make_on_error(chat_id)
 
-            # Retry connection up to 3 times (API may not be ready immediately)
             started = False
             for attempt in range(3):
-                if engine.start_resumed():
+                if await engine.start_resumed():
                     started = True
                     break
                 logger.warning("Resume attempt %d/3 failed for user %d slot %d: %s",

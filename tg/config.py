@@ -38,6 +38,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("stakebot")
 
+# Suppress noisy httpx/httpcore debug logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # ── Config keys persisted per user ───────────────────────
 CONFIG_KEYS = [
     "access_token", "lockdown_token", "cookie",
