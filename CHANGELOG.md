@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.4.0 — Async Engine, /tweak, Proxy (2026-04-02)
+
+### Added
+
+- **Async engine** — TG betting engine converted from blocking threads to async I/O. Multiple sessions run truly concurrent instead of competing for Python's GIL
+- **`/tweak` command** — Live-edit running sessions without stopping: delay, stop conditions (maxwins, maxbets, maxprofit, maxloss, minbalance), milestones, basebet, multiplier, loss/win mult
+- **Per-session proxy** — Route each session through a different IP: `/set proxy http://user:pass@ip:port` or `socks5://...`
+- **Production-safe errors** — `_set_error()` method ensures raw API errors never leak to users in production
+
+### Changed
+
+- HTTP client: `requests.Session` → `curl_cffi.AsyncSession`
+- Threading: `threading.Thread` → `asyncio.create_task`
+- Sleep: `time.sleep` → `asyncio.sleep`
+- Callbacks: `run_coroutine_threadsafe` → `asyncio.ensure_future`
+- Suppressed httpx/httpcore polling log noise
+
+---
+
 ## v1.3.2 — Recurring Bets & Zero-Balance Fix (2026-03-29)
 
 ### Added

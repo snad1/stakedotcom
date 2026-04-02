@@ -1,4 +1,4 @@
-# Stake AutoBot v1.3.2 + Telegram Bot v1.2.3
+# Stake AutoBot v1.4.0 + Telegram Bot v1.3.0
 
 High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard **and a Telegram bot**. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
