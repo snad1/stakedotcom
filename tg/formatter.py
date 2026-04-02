@@ -85,7 +85,7 @@ def format_status(s: dict) -> str:
         f"  Best: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`",
         "",
         "\u2699\ufe0f *Config*",
-        f"  Strategy: `{s['strategy']}` {s['multiplier']}x",
+        f"  Strategy: `{s['strategy']}` {s['multiplier']:.2f}x",
     ]
 
     detail = s.get("strategy_detail", "")
@@ -117,15 +117,15 @@ def format_status(s: dict) -> str:
         lines.append("")
         lines.append("\U0001f6d1 *Stop Conditions*")
         if "max_profit" in stops:
-            lines.append(f"  Profit >= `{stops['max_profit']}`")
+            lines.append(f"  Profit >= `{float(stops['max_profit']):.8f}`")
         if "max_loss" in stops:
-            lines.append(f"  Loss >= `{stops['max_loss']}`")
+            lines.append(f"  Loss >= `{float(stops['max_loss']):.8f}`")
         if "max_bets" in stops:
             lines.append(f"  Bets >= `{_fmti(stops['max_bets'])}`")
         if "max_wins" in stops:
             lines.append(f"  Wins >= `{_fmti(stops['max_wins'])}`")
         if "min_balance" in stops:
-            lines.append(f"  Balance <= `{stops['min_balance']}`")
+            lines.append(f"  Balance <= `{float(stops['min_balance']):.8f}`")
 
     # profit bump
     pi = s.get("profit_increment")

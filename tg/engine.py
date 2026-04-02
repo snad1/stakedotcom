@@ -975,9 +975,9 @@ class BettingEngine:
         # strategy detail
         strat_detail = ""
         if self.strategy_key in ("2", "6", "7"):
-            strat_detail = f"loss_mult: {self.loss_mult}x"
+            strat_detail = f"loss_mult: {self.loss_mult:.2f}x"
         elif self.strategy_key in ("3", "5"):
-            strat_detail = f"win_mult: {self.win_mult}x"
+            strat_detail = f"win_mult: {self.win_mult:.2f}x"
 
         # rule descriptions
         rule_descs = []

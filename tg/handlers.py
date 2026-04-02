@@ -366,7 +366,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Currency: `{(config.get('currency') or 'usdt').upper()}`",
             f"Game: `{GAME_LABELS.get(game, game)}`",
             f"Strategy: `{strategy}`",
-            f"Multiplier: `{multiplier}x` ({wc}% win chance)",
+            f"Multiplier: `{multiplier:.2f}x` ({wc}% win chance)",
             f"Base bet: `{_cv('base_bet', 0.0001):.8f}`",
         ]
 
@@ -376,9 +376,9 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Strategy-specific fields
         if strategy_key in ("2", "6"):  # Martingale, Delay Martingale
-            lines.append(f"Loss mult: `{_cv('loss_mult', 2.0)}x`")
+            lines.append(f"Loss mult: `{_cv('loss_mult', 2.0):.2f}x`")
         if strategy_key in ("3", "5"):  # Anti-Martingale, Paroli
-            lines.append(f"Win mult: `{_cv('win_mult', 1.0)}x`")
+            lines.append(f"Win mult: `{_cv('win_mult', 1.0):.2f}x`")
         if strategy_key == "6":  # Delay Martingale
             lines.append(f"Delay threshold: `{_cv('delay_martin_threshold', 3, int)}`")
 
@@ -386,11 +386,11 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Stop conditions
         stops = []
-        if config.get("max_profit"): stops.append(f"Max profit: {config['max_profit']}")
-        if config.get("max_loss"):   stops.append(f"Max loss: {config['max_loss']}")
+        if config.get("max_profit"): stops.append(f"Max profit: {float(config['max_profit']):.8f}")
+        if config.get("max_loss"):   stops.append(f"Max loss: {float(config['max_loss']):.8f}")
         if config.get("max_bets"):   stops.append(f"Max bets: {config['max_bets']}")
         if config.get("max_wins"):   stops.append(f"Max wins: {config['max_wins']}")
-        if config.get("stop_on_balance"): stops.append(f"Min balance: {config['stop_on_balance']}")
+        if config.get("stop_on_balance"): stops.append(f"Min balance: {float(config['stop_on_balance']):.8f}")
         if stops:
             lines.append(f"Stop: `{', '.join(stops)}`")
         else:
@@ -733,7 +733,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Session #{engine.session_id}{slot_info} started!\n\n"
         f"Game: `{game_label}`\n"
         f"Strategy: `{engine.strategy}`\n"
-        f"Multiplier: `{engine.multiplier_target}x` ({wc}%)\n"
+        f"Multiplier: `{engine.multiplier_target:.2f}x` ({wc}%)\n"
         f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
         f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`"
         f"{rec_info}\n\n"
@@ -844,7 +844,7 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
         f"Recurring session #{engine.session_id} started!\n\n"
         f"Game: `{game_label}`\n"
         f"Strategy: `{engine.strategy}`\n"
-        f"Multiplier: `{engine.multiplier_target}x` ({wc}%)\n"
+        f"Multiplier: `{engine.multiplier_target:.2f}x` ({wc}%)\n"
         f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
         f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`\n"
         f"Recurring: `{rec_data['delay'] if rec_data else delay}s`\n\n"
