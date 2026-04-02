@@ -172,12 +172,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`milestoneprofit` — Notify every X profit (0=off)\n"
         "`profitthreshold` — Auto-raise base bet every X profit (`off` to disable)\n"
         "`profitincrement` — Amount to add to base bet (`off` to disable)\n"
+        "`proxy` — http://user:pass@ip:port or socks5://... (`off` to disable)\n"
         "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
         "`recurringdelay` — Seconds before restart (default 60)\n\n"
         "*Session* _(up to 5 concurrent)_\n"
         "/bet — Start session\n"
         "/stop — Stop session (`/stop all` or `/stop 2`)\n"
         "/stop recurring — Cancel all recurring bets and stop sessions\n"
+        "/tweak — Change settings on a running session\n"
         "/pause — Pause (`/pause all` or `/pause 2`)\n"
         "/resume — Resume (`/resume all` or `/resume 2`)\n"
         "/status — Live status (`/status 2` for specific slot)\n"
@@ -613,6 +615,19 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Recurring delay must be >= 5 seconds.")
                 return
             config["recurring_delay"] = val
+        elif param == "proxy":
+            if value.lower() in ("off", "none", "direct", "0"):
+                config["proxy"] = None
+                await update.message.reply_text("Proxy disabled — using direct connection.", parse_mode="Markdown")
+                save_user_config(user_id, config)
+                return
+            if not (value.startswith("http://") or value.startswith("https://") or value.startswith("socks5://")):
+                await update.message.reply_text(
+                    "Proxy format: `http://user:pass@ip:port` or `socks5://user:pass@ip:port`\n"
+                    "Use `/set proxy off` to disable.",
+                    parse_mode="Markdown")
+                return
+            config["proxy"] = value
         else:
             await update.message.reply_text(
                 f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
@@ -933,6 +948,80 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         conn.close()
     await _reply(update, "No session running.")
+
+
+# ── /tweak ───────────────────────────────────────────────
+async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change settings on a running session without stopping it."""
+    user_id = update.effective_user.id
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "*Tweak a running session:*\n\n"
+            "`/tweak delay 0.1` \u2014 bet delay\n"
+            "`/tweak maxwins 5000` \u2014 stop at wins\n"
+            "`/tweak maxbets 10000` \u2014 stop at bets\n"
+            "`/tweak maxprofit 0.001` \u2014 stop at profit\n"
+            "`/tweak maxloss 0.001` \u2014 stop at loss\n"
+            "`/tweak minbalance 1.0` \u2014 stop below balance\n"
+            "`/tweak milestonewins 1000` \u2014 milestone interval\n"
+            "`/tweak basebet 0.00000002`\n"
+            "`/tweak multiplier 2.5`\n"
+            "`/tweak lossmult 2.01`\n"
+            "`/tweak winmult 1.5`\n\n"
+            "Use `off` to disable: `/tweak maxwins off`\n"
+            "Add slot: `/tweak maxwins 5000 2`",
+            parse_mode="Markdown")
+        return
+
+    param = context.args[0].lower()
+    value = context.args[1]
+    slot_args = context.args[2:] if len(context.args) > 2 else []
+
+    slot, engine, err = _resolve_engine(user_id, slot_args)
+    if err:
+        await _reply(update, err)
+        return
+
+    off = value.lower() in ("off", "none", "0", "disable")
+    changes = {}
+    try:
+        if param in ("basebet", "base_bet"):
+            changes["base_bet"] = float(value)
+        elif param == "delay":
+            changes["bet_delay"] = float(value)
+        elif param == "multiplier":
+            changes["multiplier"] = float(value)
+        elif param in ("lossmult", "loss_mult"):
+            changes["loss_mult"] = float(value)
+        elif param in ("winmult", "win_mult"):
+            changes["win_mult"] = float(value)
+        elif param == "maxprofit":
+            changes["max_profit"] = None if off else float(value)
+        elif param == "maxloss":
+            changes["max_loss"] = None if off else float(value)
+        elif param == "maxbets":
+            changes["max_bets"] = None if off else int(value)
+        elif param == "maxwins":
+            changes["max_wins"] = None if off else int(value)
+        elif param == "minbalance":
+            changes["stop_on_balance"] = None if off else float(value)
+        elif param in ("milestonebets", "msbets"):
+            changes["milestone_bets"] = int(value)
+        elif param in ("milestonewins", "mswins"):
+            changes["milestone_wins"] = int(value)
+        elif param in ("profitincrement", "pi"):
+            changes["profit_increment"] = None if off else float(value)
+        elif param in ("profitthreshold", "pt"):
+            changes["profit_threshold"] = None if off else float(value)
+        else:
+            await update.message.reply_text(f"Unknown tweak param: `{param}`\nUse `/tweak` for options.", parse_mode="Markdown")
+            return
+    except ValueError:
+        await update.message.reply_text(f"Invalid value: `{value}`", parse_mode="Markdown")
+        return
+
+    result = await engine.mutate(changes)
+    await update.message.reply_text(f"Tweaked slot {slot}: {result}", parse_mode="Markdown")
 
 
 # ── /pause ───────────────────────────────────────────────

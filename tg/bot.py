@@ -13,7 +13,7 @@ from .config import BOT_TOKEN, DATA_DIR, logger
 from . import VERSION
 from .handlers import (
     cmd_start, cmd_help, cmd_settoken, cmd_benchmark, cmd_balance, cmd_config,
-    cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_pause, cmd_resume,
+    cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_tweak, cmd_pause, cmd_resume,
     cmd_status, cmd_monitor, cmd_stats, cmd_lastbets,
     cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
@@ -65,6 +65,7 @@ def main():
             BotCommand("strategies",  "List strategies"),
             BotCommand("bet",         "Start betting session"),
             BotCommand("stop",        "Stop session"),
+            BotCommand("tweak",       "Change settings on a running session"),
             BotCommand("pause",       "Pause betting"),
             BotCommand("resume",      "Resume betting"),
             BotCommand("status",      "Live status with refresh button"),
@@ -110,6 +111,7 @@ def main():
     app.add_handler(CommandHandler("strategies", cmd_strategies))
     app.add_handler(CommandHandler("bet", cmd_bet))
     app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_handler(CommandHandler("tweak", cmd_tweak))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("status", cmd_status))

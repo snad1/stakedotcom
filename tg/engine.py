@@ -145,6 +145,7 @@ class BettingEngine:
         self.win_mult          = _cfg(config, "win_mult", 1.0)
         self.loss_mult         = _cfg(config, "loss_mult", 2.0)
         self.bet_delay         = _cfg(config, "bet_delay", 0)
+        self.proxy             = config.get("proxy") or None
         self.delay_martin_threshold = _cfg(config, "delay_martin_threshold", 3, int)
 
         # ── rules ──
@@ -253,10 +254,14 @@ class BettingEngine:
         except Exception:
             pass
         if _HAS_CFFI_ASYNC:
-            self._http = CffiAsyncSession(impersonate="chrome")
+            kwargs = {"impersonate": "chrome"}
+            if self.proxy:
+                kwargs["proxy"] = self.proxy
+            self._http = CffiAsyncSession(**kwargs)
         else:
             self._http = httpx.AsyncClient(
                 headers=self._headers(), timeout=REQUEST_TIMEOUT,
+                proxy=self.proxy if self.proxy else None,
             )
         logger.info("User %d: HTTP client recreated", self.user_id)
 
@@ -802,6 +807,7 @@ class BettingEngine:
             "stop_on_balance": self.stop_on_balance,
             "profit_increment": self.profit_increment,
             "profit_threshold": self.profit_threshold,
+            "proxy": self.proxy,
             "milestone_bets": self.milestone_bets,
             "milestone_wins": self.milestone_wins,
             "milestone_losses": self.milestone_losses,
@@ -886,6 +892,59 @@ class BettingEngine:
 
     def stop(self):
         self.running = False
+
+    async def mutate(self, changes: dict) -> str:
+        """Apply config changes to a running session. Returns status message."""
+        msgs = []
+        if "bet_delay" in changes:
+            self.bet_delay = float(changes["bet_delay"])
+            msgs.append(f"Delay: {self.bet_delay}s")
+        if "max_profit" in changes:
+            v = changes["max_profit"]
+            self.max_profit = float(v) if v is not None else None
+            msgs.append(f"Max profit: {float(v):.8f}" if v is not None else "Max profit: off")
+        if "max_loss" in changes:
+            v = changes["max_loss"]
+            self.max_loss = float(v) if v is not None else None
+            msgs.append(f"Max loss: {float(v):.8f}" if v is not None else "Max loss: off")
+        if "max_bets" in changes:
+            v = changes["max_bets"]
+            self.max_bets = int(v) if v is not None else None
+            msgs.append(f"Max bets: {v}" if v is not None else "Max bets: off")
+        if "max_wins" in changes:
+            v = changes["max_wins"]
+            self.max_wins = int(v) if v is not None else None
+            msgs.append(f"Max wins: {v}" if v is not None else "Max wins: off")
+        if "stop_on_balance" in changes:
+            v = changes["stop_on_balance"]
+            self.stop_on_balance = float(v) if v is not None else None
+            msgs.append(f"Min balance: {float(v):.8f}" if v is not None else "Min balance: off")
+        if "milestone_bets" in changes:
+            self.milestone_bets = int(changes["milestone_bets"])
+            msgs.append(f"Milestone bets: {self.milestone_bets}")
+        if "milestone_wins" in changes:
+            self.milestone_wins = int(changes["milestone_wins"])
+            msgs.append(f"Milestone wins: {self.milestone_wins}")
+        if "profit_increment" in changes:
+            self.profit_increment = changes["profit_increment"]
+            msgs.append(f"Profit increment: {float(self.profit_increment):.8f}" if self.profit_increment else "Profit increment: off")
+        if "profit_threshold" in changes:
+            self.profit_threshold = changes["profit_threshold"]
+            msgs.append(f"Profit threshold: {float(self.profit_threshold):.8f}" if self.profit_threshold else "Profit threshold: off")
+        if "base_bet" in changes:
+            self.base_bet = float(changes["base_bet"])
+            self.current_bet = self.base_bet
+            msgs.append(f"Base bet: {self.base_bet:.8f}")
+        if "multiplier" in changes:
+            self.multiplier_target = float(changes["multiplier"])
+            msgs.append(f"Multiplier: {self.multiplier_target:.2f}")
+        if "loss_mult" in changes:
+            self.loss_mult = float(changes["loss_mult"])
+            msgs.append(f"Loss mult: {self.loss_mult:.2f}")
+        if "win_mult" in changes:
+            self.win_mult = float(changes["win_mult"])
+            msgs.append(f"Win mult: {self.win_mult:.2f}")
+        return "; ".join(msgs) if msgs else "No changes applied"
 
     def pause(self):
         self.paused = True
