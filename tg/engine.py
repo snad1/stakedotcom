@@ -946,8 +946,8 @@ class BettingEngine:
             msgs.append(f"Profit threshold: {float(self.profit_threshold):.8f}" if self.profit_threshold else "Profit threshold: off")
         if "base_bet" in changes:
             self.base_bet = float(changes["base_bet"])
-            self.current_bet = self.base_bet
-            msgs.append(f"Base bet: {self.base_bet:.8f}")
+            # Don't reset current_bet during loss streak — applies on next win
+            msgs.append(f"Base bet: {self.base_bet:.8f} (applies on next win)")
         if "multiplier" in changes:
             self.multiplier_target = float(changes["multiplier"])
             msgs.append(f"Multiplier: {self.multiplier_target:.2f}")
