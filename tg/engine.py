@@ -1158,7 +1158,7 @@ class BettingEngine:
             self._queue_bet(result, raw_profit, self.current_balance)
             self._periodic_save()
 
-            if (self.profit_increment and self.profit_threshold
+            if (self.profit_increment is not None and self.profit_threshold
                     and self.profit >= self.next_profit_milestone):
                 self.base_bet += self.profit_increment
                 self.next_profit_milestone += self.profit_threshold

@@ -512,13 +512,13 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["dice_target"] = round(wc, 2)
         elif param == "lossmult":
             val = float(value)
-            if val <= 0:
+            if val < 0:
                 await update.message.reply_text("Loss multiplier must be > 0.")
                 return
             config["loss_mult"] = val
         elif param == "winmult":
             val = float(value)
-            if val <= 0:
+            if val < 0:
                 await update.message.reply_text("Win multiplier must be > 0.")
                 return
             config["win_mult"] = val
@@ -531,7 +531,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param == "maxprofit":
             if value.lower() != "off":
                 val = float(value)
-                if val <= 0:
+                if val < 0:
                     await update.message.reply_text("Max profit must be > 0.")
                     return
                 config["max_profit"] = val
@@ -540,7 +540,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param == "maxloss":
             if value.lower() != "off":
                 val = float(value)
-                if val <= 0:
+                if val < 0:
                     await update.message.reply_text("Max loss must be > 0.")
                     return
                 config["max_loss"] = val
@@ -549,7 +549,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param == "maxbets":
             if value.lower() != "off":
                 val = int(value)
-                if val <= 0:
+                if val < 0:
                     await update.message.reply_text("Max bets must be > 0.")
                     return
                 config["max_bets"] = val
@@ -558,7 +558,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param == "maxwins":
             if value.lower() != "off":
                 val = int(value)
-                if val <= 0:
+                if val < 0:
                     await update.message.reply_text("Max wins must be > 0.")
                     return
                 config["max_wins"] = val
@@ -586,7 +586,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("profitthreshold", "pt"):
             if value.lower() != "off":
                 val = float(value)
-                if val <= 0:
+                if val < 0:
                     await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
                     return
                 config["profit_threshold"] = val
@@ -595,8 +595,8 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("profitincrement", "pi"):
             if value.lower() != "off":
                 val = float(value)
-                if val <= 0:
-                    await update.message.reply_text("Profit increment must be > 0 (or 'off').")
+                if val < 0:
+                    await update.message.reply_text("Profit increment must be >= 0 (or 'off').")
                     return
                 config["profit_increment"] = val
             else:
