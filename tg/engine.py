@@ -194,6 +194,7 @@ class BettingEngine:
         self.profit_history  = deque(maxlen=40)
         self.profit_history.append(0.0)
         self.recent_bets     = deque(maxlen=5)
+        self._chart_snapshots: list = []    # [[bet_num, profit, balance], ...]
         self.status          = "Idle"
         self.last_error      = ""
         self.stop_reason     = ""
@@ -648,6 +649,7 @@ class BettingEngine:
                 self.low_bps if self.low_bps != float("inf") else 0,
                 self.peak_bpm,
                 self.low_bpm if self.low_bpm != float("inf") else 0,
+                json.dumps(self._chart_snapshots[-2000:]),
                 self.session_id,
             )
             if final:
@@ -659,7 +661,8 @@ class BettingEngine:
                         highest_balance=?, lowest_balance=?,
                         highest_win=?, biggest_loss=?,
                         bets_per_minute=?, bets_per_second=?,
-                        peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
+                        peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?,
+                        chart_snapshots=?
                     WHERE id=?
                 """, (datetime.now().isoformat(),) + fields)
             else:
@@ -671,7 +674,8 @@ class BettingEngine:
                         highest_balance=?, lowest_balance=?,
                         highest_win=?, biggest_loss=?,
                         bets_per_minute=?, bets_per_second=?,
-                        peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
+                        peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?,
+                        chart_snapshots=?
                     WHERE id=?
                 """, fields)
             conn.commit()
@@ -1126,6 +1130,10 @@ class BettingEngine:
 
             if self.total_bets % 5 == 0:
                 self.profit_history.append(self.profit)
+
+            # Chart snapshot every 100 bets (survives bet cleanup)
+            if self.total_bets % 100 == 0:
+                self._chart_snapshots.append([self.total_bets, round(self.profit, 10), round(self.current_balance, 10)])
 
             self.recent_bets.append({
                 "n": self.total_bets, "time": datetime.now().isoformat(),

@@ -40,6 +40,7 @@ def init_db(db_path: str):
         ("bets", "game", "TEXT DEFAULT 'limbo'"),
         ("bets", "result_display", "TEXT DEFAULT ''"),
         ("sessions", "config_snapshot", "TEXT DEFAULT ''"),
+        ("sessions", "chart_snapshots", "TEXT DEFAULT '[]'"),
     ]:
         try:
             c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {defn}")
