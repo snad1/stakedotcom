@@ -615,6 +615,12 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Recurring delay must be >= 5 seconds.")
                 return
             config["recurring_delay"] = val
+        elif param in ("purgedays", "purge_days"):
+            val = int(value)
+            if val < 1 or val > 30:
+                await update.message.reply_text("Purge days must be 1-30.")
+                return
+            config["purge_days"] = val
         elif param == "proxy":
             if value.lower() in ("off", "none", "direct", "0"):
                 config["proxy"] = None
