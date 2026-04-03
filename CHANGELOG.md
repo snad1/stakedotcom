@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.4.1 — Safety, Cleanup, Charts (2026-04-03)
+
+### Added
+
+- **Live bet cleanup** — Bets older than N days auto-deleted every hour during running sessions. `/set purgedays 1` (default 1, range 1-30)
+- **Chart snapshots** — Profit/balance saved every 100 bets. Web charts survive bet cleanup
+- **Profit increment = 0** — Creates new sessions at profit threshold without increasing base bet
+
+### Fixed
+
+- **CK audit** — 65 scientific notation violations fixed across all services
+- **`/tweak basebet` safety** — No longer kills strategy recovery during loss streak (applies on next win)
+
+---
+
 ## v1.4.0 — Async Engine, /tweak, Proxy (2026-04-02)
 
 ### Added
