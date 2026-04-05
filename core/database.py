@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from shared.core.database import (  # noqa: E402
     SESSIONS_SCHEMA,
-    cleanup_old_bets, db_connect, secure_path,
+    cleanup_old_bets, cleanup_live_bets, db_connect, secure_path,
 )
 
 
