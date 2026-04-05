@@ -226,6 +226,14 @@ cmd_update() {
         echo "shared/ library updated."
     fi
 
+    # Update casino-shared pip package
+    if [ -f "$INSTALL_DIR/venv/bin/pip" ]; then
+        "$INSTALL_DIR/venv/bin/pip" install --force-reinstall --no-cache-dir --quiet \
+            "casino-shared @ git+ssh://git@github.com/snad1/casino-shared.git" 2>/dev/null && \
+            echo "casino-shared pip package updated." || \
+            echo "casino-shared pip update skipped (network issue)."
+    fi
+
     # Self-update: copy this script to its installed location
     if [ -f "$SCRIPT_NAME" ]; then
         local installed
