@@ -175,6 +175,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`proxy` — http://user:pass@ip:port or socks5://... (`off` to disable)\n"
         "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
         "`recurringdelay` — Seconds before restart (default 60)\n"
+        "`streakdelay_loss` — Delay after N losses (`5:1.0` = every 5 losses → 1s)\n"
+        "`streakdelay_win` — Delay after N wins (`10:0.5` = every 10 wins → 0.5s)\n"
         "`purgedays` — Auto-delete bets older than N days (1-30, default 1)\n\n"
         "*Session* _(up to 5 concurrent)_\n"
         "/bet — Start session\n"
@@ -619,6 +621,22 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Recurring delay must be >= 5 seconds.")
                 return
             config["recurring_delay"] = val
+        elif param in ("streakdelay_loss", "sdloss"):
+            if value.lower() == "off":
+                config["streak_delay_loss"] = None
+            elif ":" not in value:
+                await update.message.reply_text("Format: `/set streakdelay_loss 5:1.0` (every 5 losses → 1s delay)\nUse `off` to disable.", parse_mode="Markdown")
+                return
+            else:
+                config["streak_delay_loss"] = value
+        elif param in ("streakdelay_win", "sdwin"):
+            if value.lower() == "off":
+                config["streak_delay_win"] = None
+            elif ":" not in value:
+                await update.message.reply_text("Format: `/set streakdelay_win 10:0.5` (every 10 wins → 0.5s delay)\nUse `off` to disable.", parse_mode="Markdown")
+                return
+            else:
+                config["streak_delay_win"] = value
         elif param in ("purgedays", "purge_days"):
             val = int(value)
             if val < 1 or val > 30:
@@ -1005,6 +1023,10 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             changes["base_bet"] = float(value)
         elif param == "delay":
             changes["bet_delay"] = float(value)
+        elif param in ("sdloss", "streakdelay_loss"):
+            changes["streak_delay_loss"] = None if off else value
+        elif param in ("sdwin", "streakdelay_win"):
+            changes["streak_delay_win"] = None if off else value
         elif param == "multiplier":
             changes["multiplier"] = float(value)
         elif param in ("lossmult", "loss_mult"):

@@ -52,6 +52,7 @@ CONFIG_KEYS = [
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "profit_increment", "profit_threshold",
+    "streak_delay_loss", "streak_delay_win",
     "proxy",
 ]
 
