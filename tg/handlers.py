@@ -390,6 +390,13 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         lines.append(f"Bet delay: `{_cv('bet_delay', 0)}s`")
 
+        sdl = config.get("streak_delay_loss")
+        sdw = config.get("streak_delay_win")
+        if sdl:
+            lines.append(f"Streak delay loss: `{sdl}`")
+        if sdw:
+            lines.append(f"Streak delay win: `{sdw}`")
+
         # Stop conditions
         stops = []
         if config.get("max_profit"): stops.append(f"Max profit: {float(config['max_profit']):.8f}")
