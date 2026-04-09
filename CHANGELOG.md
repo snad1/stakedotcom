@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.3 — Streak Delay & Recurring Bet Fixes (2026-04-09)
+
+### Added
+
+- **Streak delay** — Delay next bet after N consecutive wins/losses. Configure with `/set streakdelay_loss 5:1.0` (every 5 losses → 1s delay) and `/set streakdelay_win 10:0.5`. Works with all strategies including auto-bet. Live tweak with `/tweak sdloss 5:1.0` / `/tweak sdwin off`
+- **Streak delay in /config** — Displays streak delay settings in configuration output
+
+### Fixed
+
+- **Recurring bet preserves profit increment** — When a session stops and recurring restarts, the current (profit-incremented) base_bet is now carried forward instead of resetting to the original config value. Useful for short recurring sessions to bypass server-side throttling while maintaining bet progression
+
 ## v1.4.2 — Bug Fixes (2026-04-07)
 
 ### Fixed
