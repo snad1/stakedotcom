@@ -798,6 +798,8 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     if rec and reason != "Stopped by user" and "insufficient" not in reason.lower():
         delay = rec["delay"]
         config = rec["config"]
+        # Carry forward the current base_bet (profit increment may have raised it)
+        config["base_bet"] = engine.base_bet
         await app.bot.send_message(
             chat_id,
             f"Recurring: restarting in {delay}s...\n"
