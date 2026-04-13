@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.4 — Insufficient Balance Stop (2026-04-13)
+
+### Fixed
+
+- **Insufficient balance now always stops session** — Added pre-bet balance guard (`current_bet > current_balance`). Previously, deep Martingale streaks could drive `current_bet` above balance without the session stopping
+
 ## v1.4.3 — Streak Delay & Recurring Bet Fixes (2026-04-09)
 
 ### Added

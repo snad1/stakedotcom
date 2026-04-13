@@ -505,6 +505,10 @@ class BettingEngine:
         """Place a bet. Returns parsed result dict or None."""
         if 0 < amount < MIN_BET:
             amount = MIN_BET
+        if self.current_balance > 0 and amount > self.current_balance:
+            self._set_error("Insufficient balance", f"bet {amount:.8f} > balance {self.current_balance:.8f}")
+            self._insufficient_balance = True
+            return None
 
         game_info = GAMES[self.game]
         endpoint = game_info["endpoint"]
