@@ -32,6 +32,61 @@ def _fmti(n) -> str:
     return f"{int(n):,}"
 
 
+def format_full_config(s: dict) -> list:
+    """Return full config as list of formatted lines. Used by status, stop, and session-start."""
+    lines = []
+    lines.append(f"  Game: `{s.get('game_label', s.get('game_info', s.get('game', '?')))}`")
+    lines.append(f"  Strategy: `{s.get('strategy', '?')}` `{s.get('multiplier', 0):.2f}x`")
+    sk = s.get("strategy_key", "")
+    if sk in ("2", "6", "7"):
+        lines.append(f"  Loss mult: `{s.get('loss_mult', 0):.2f}x`")
+    if sk in ("3", "5"):
+        lines.append(f"  Win mult: `{s.get('win_mult', 0):.2f}x`")
+
+    base_bet = s.get("base_bet", 0)
+    bbp = s.get("basebet_pct") or 0
+    if bbp > 0:
+        lines.append(f"  Base bet: `{base_bet:.8f}` (`{bbp*100:.4f}%` of balance)")
+    else:
+        lines.append(f"  Base bet: `{base_bet:.8f}`")
+
+    bd = s.get("bet_delay", 0)
+    if bd:
+        lines.append(f"  Bet delay: `{bd:.3f}s`")
+    sdl = s.get("streak_delay_loss")
+    if sdl and sdl[0] > 0:
+        lines.append(f"  Streak delay loss: every `{sdl[0]}` \u2192 `{sdl[1]:.3f}s`")
+    sdw = s.get("streak_delay_win")
+    if sdw and sdw[0] > 0:
+        lines.append(f"  Streak delay win: every `{sdw[0]}` \u2192 `{sdw[1]:.3f}s`")
+    sbl = s.get("streakbet_loss")
+    if sbl and sbl[0] > 0:
+        lines.append(f"  Streak bet loss: every `{sbl[0]}` losses \u2192 `x{sbl[1]:.3f}`")
+
+    stops = s.get("stop_conditions", {}) or {}
+    if stops:
+        parts = []
+        if "max_profit" in stops: parts.append(f"profit\u2265`{float(stops['max_profit']):.8f}`")
+        if "max_loss" in stops:   parts.append(f"loss\u2265`{float(stops['max_loss']):.8f}`")
+        if "max_bets" in stops:   parts.append(f"bets\u2265`{_fmti(stops['max_bets'])}`")
+        if "max_wins" in stops:   parts.append(f"wins\u2265`{_fmti(stops['max_wins'])}`")
+        if "min_balance" in stops: parts.append(f"bal\u2264`{float(stops['min_balance']):.8f}`")
+        lines.append(f"  Stops: {', '.join(parts)}")
+
+    pi = s.get("profit_increment")
+    pt = s.get("profit_threshold")
+    npm = s.get("next_profit_milestone")
+    if pi is not None and pt:
+        nxt = f" (next at `{float(npm):.8f}`)" if npm else ""
+        lines.append(f"  Profit bump: `+{float(pi):.8f}` every `{float(pt):.8f}`{nxt}")
+
+    mb = s.get("milestone_bets")
+    if mb:
+        lines.append(f"  Milestone: every `{_fmti(mb)}` bets")
+
+    return lines
+
+
 def _bar(value: float, total: float, width: int = 10) -> str:
     if total <= 0:
         return "\u2591" * width
@@ -85,21 +140,11 @@ def format_status(s: dict) -> str:
         f"  Best: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`",
         "",
         "\u2699\ufe0f *Config*",
-        f"  Strategy: `{s['strategy']}` {s['multiplier']:.2f}x",
     ]
-
-    detail = s.get("strategy_detail", "")
-    if detail:
-        lines.append(f"  `{detail}`")
-
+    lines += format_full_config(s)
     lines += [
-        f"  Bet: `{s['current_bet']:.8f}`  Base: `{s.get('base_bet', 0):.8f}`",
-        f"  Hi: `{s['highest_bet']:.8f}`",
+        f"  Bet now: `{s['current_bet']:.8f}`  Hi: `{s['highest_bet']:.8f}`",
     ]
-
-    delay = s.get("bet_delay", 0)
-    if delay:
-        lines.append(f"  Delay: `{delay}s`")
 
     pk_bps = int(s.get("peak_bps", 0))
     lw_bps = int(s.get("low_bps", 0))
@@ -110,30 +155,6 @@ def format_status(s: dict) -> str:
         f"  Range: `{lw_bps}-{pk_bps}` bps / `{lw_bpm}-{pk_bpm}` bpm",
         f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg",
     ]
-
-    # stop conditions
-    stops = s.get("stop_conditions", {})
-    if stops:
-        lines.append("")
-        lines.append("\U0001f6d1 *Stop Conditions*")
-        if "max_profit" in stops:
-            lines.append(f"  Profit >= `{float(stops['max_profit']):.8f}`")
-        if "max_loss" in stops:
-            lines.append(f"  Loss >= `{float(stops['max_loss']):.8f}`")
-        if "max_bets" in stops:
-            lines.append(f"  Bets >= `{_fmti(stops['max_bets'])}`")
-        if "max_wins" in stops:
-            lines.append(f"  Wins >= `{_fmti(stops['max_wins'])}`")
-        if "min_balance" in stops:
-            lines.append(f"  Balance <= `{float(stops['min_balance']):.8f}`")
-
-    # profit bump
-    pi = s.get("profit_increment")
-    pt = s.get("profit_threshold")
-    if pi and pt:
-        lines.append("")
-        lines.append(f"\U0001f4c8 *Profit Bump*")
-        lines.append(f"  +`{float(pi):.8f}` every `{float(pt):.8f}` profit")
 
     # custom rules
     rules = s.get("rules", [])
@@ -162,6 +183,7 @@ def format_stop(s: dict, reason: str) -> str:
 
     game = s.get("game", "limbo").capitalize()
 
+    config_lines = "\n".join(format_full_config(s))
     return (
         f"\U0001f6d1 *Session #{s['session_id']} ended* ({game})\n"
         f"Reason: _{reason}_\n"
@@ -182,6 +204,9 @@ def format_stop(s: dict, reason: str) -> str:
         f"  Best Win: `+{s['highest_win']:.8f}`\n"
         f"  Worst Loss: `{'-' if s['biggest_loss'] > 0 else ''}{s['biggest_loss']:.8f}`\n"
         f"  Streaks: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`\n"
+        f"\n"
+        f"\u2699\ufe0f *Config used*\n"
+        f"{config_lines}\n"
         f"\n"
         f"\u23f1 Uptime: `{s['uptime']}`\n"
         f"Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm"

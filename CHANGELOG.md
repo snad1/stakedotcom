@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.0 — Adaptive Base Bet & Full Config Visibility (2026-04-14)
+
+### Added
+
+- **`basebet_pct`** — Set base bet as a fraction of current balance (e.g. `/set basebet_pct 0.001` = 0.1%). Recomputes on session start and at every profit-increment milestone, so base bet auto-shrinks during drawdowns and grows during profit. Live-tweakable via `/tweak bbpct 0.001`
+- **`streakbet_loss`** — Reduce (or scale) bet after N consecutive losses. Format `N:multiplier` (e.g. `/set streakbet_loss 10:0.5` halves bet every 10 losses). Damping floor for Martingale-style strategies. Live-tweakable via `/tweak sbloss 10:0.5`
+
+### Changed
+
+- **Full config in every surface** — Session-start message, `/status`, and stop summary now display every active setting: streak delays, streak bet, basebet pct, profit bump + next milestone, milestone cadence, stops, win/loss multipliers. Single `format_full_config` helper in formatter; no more drift between surfaces
+
 ## v1.4.4 — Insufficient Balance Stop (2026-04-13)
 
 ### Fixed
