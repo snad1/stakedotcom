@@ -7,7 +7,8 @@ import signal
 import sys
 
 from telegram import BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.error import RetryAfter, NetworkError, TimedOut
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from .config import BOT_TOKEN, DATA_DIR, logger
 from . import VERSION
@@ -134,6 +135,16 @@ def main():
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_handler))
+
+    async def _error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+        err = context.error
+        if isinstance(err, RetryAfter):
+            logger.warning("Telegram flood control — retry in %ss", err.retry_after)
+        elif isinstance(err, (NetworkError, TimedOut)):
+            logger.warning("Telegram network: %s", err)
+        else:
+            logger.error("Unhandled: %s", err, exc_info=err)
+    app.add_error_handler(_error_handler)
 
     logger.info("Bot started. Polling…")
     app.run_polling(drop_pending_updates=True)
