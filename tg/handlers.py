@@ -880,7 +880,9 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
         user_rec.pop(old_slot, None)
         return
 
-    slot = _alloc_slot(user_id)
+    # Reuse old_slot if free (keeps /monitor + callbacks bound to same slot)
+    existing = active_engines.get(user_id, {})
+    slot = old_slot if old_slot not in existing else _alloc_slot(user_id)
 
     def _make_on_stop(cid, uid, s):
         def on_stop(reason):
