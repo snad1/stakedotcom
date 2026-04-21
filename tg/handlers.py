@@ -752,17 +752,20 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     def _make_on_stop(cid, uid, s):
         def on_stop(reason):
-            asyncio.ensure_future(_notify_stop(cid, uid, s, reason, app))
+            t = asyncio.create_task(_notify_stop(cid, uid, s, reason, app))
+            t.add_done_callback(_log_task_exception)
         return on_stop
 
     def _make_on_milestone(cid):
         def on_milestone(data):
-            asyncio.ensure_future(_notify_milestone(cid, data, app))
+            t = asyncio.create_task(_notify_milestone(cid, data, app))
+            t.add_done_callback(_log_task_exception)
         return on_milestone
 
     def _make_on_error(cid):
         def on_error(msg):
-            asyncio.ensure_future(_notify_error(cid, msg, app))
+            t = asyncio.create_task(_notify_error(cid, msg, app))
+            t.add_done_callback(_log_task_exception)
         return on_error
 
     engine.on_stop = _make_on_stop(chat_id, user_id, slot)
@@ -820,6 +823,12 @@ async def _safe_send(app, chat_id, text, **kwargs):
         logger.warning("Telegram rejected notification: %s", e)
 
 
+def _log_task_exception(task: asyncio.Task):
+    """Log exceptions from fire-and-forget tasks so they aren't silently swallowed."""
+    if not task.cancelled() and task.exception():
+        logger.error("Unhandled task exception: %s", task.exception(), exc_info=task.exception())
+
+
 async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     user_engines = active_engines.get(user_id, {})
     engine = user_engines.pop(slot, None)
@@ -828,9 +837,13 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
         _engine_chat_ids.pop(user_id, None)
     if not engine:
         return
-    s = engine.get_status()
-    text = format_stop(s, reason)
-    await _safe_send(app, chat_id, text, parse_mode="Markdown")
+    try:
+        s = engine.get_status()
+        text = format_stop(s, reason)
+        await _safe_send(app, chat_id, text, parse_mode="Markdown")
+    except Exception as exc:
+        logger.error("_notify_stop formatting error (slot %d): %s", slot, exc, exc_info=True)
+        await _safe_send(app, chat_id, f"Session #{engine.session_id} stopped: {reason}")
 
     # Recurring bet: schedule restart if condition stop (not manual)
     user_rec = recurring_state.get(user_id, {})
@@ -848,6 +861,7 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
         )
         task = asyncio.create_task(
             _recurring_restart(chat_id, user_id, slot, delay, config, app))
+        task.add_done_callback(_log_task_exception)
         rec["timer_task"] = task
 
 
@@ -886,17 +900,20 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
 
     def _make_on_stop(cid, uid, s):
         def on_stop(reason):
-            asyncio.ensure_future(_notify_stop(cid, uid, s, reason, app))
+            t = asyncio.create_task(_notify_stop(cid, uid, s, reason, app))
+            t.add_done_callback(_log_task_exception)
         return on_stop
 
     def _make_on_milestone(cid):
         def on_milestone(data):
-            asyncio.ensure_future(_notify_milestone(cid, data, app))
+            t = asyncio.create_task(_notify_milestone(cid, data, app))
+            t.add_done_callback(_log_task_exception)
         return on_milestone
 
     def _make_on_error(cid):
         def on_error(msg):
-            asyncio.ensure_future(_notify_error(cid, msg, app))
+            t = asyncio.create_task(_notify_error(cid, msg, app))
+            t.add_done_callback(_log_task_exception)
         return on_error
 
     engine.on_stop = _make_on_stop(chat_id, user_id, slot)
@@ -904,9 +921,18 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
     engine.on_error = _make_on_error(chat_id)
 
     if not await engine.start():
-        await _safe_send(app, 
-            chat_id, f"Recurring restart failed: {engine.last_error}")
-        user_rec.pop(old_slot, None)
+        err = engine.last_error or "unknown error"
+        logger.warning("Recurring restart failed for user %d slot %d: %s — retrying in %ds",
+                       user_id, old_slot, err, delay)
+        await _safe_send(app, chat_id,
+                         f"⚠️ Recurring restart failed: {err}\nRetrying in {delay}s…")
+        # Re-schedule retry — keep recurring state alive (don't pop)
+        rec = user_rec.get(old_slot)
+        if rec:
+            retry_task = asyncio.create_task(
+                _recurring_restart(chat_id, user_id, old_slot, delay, config, app))
+            retry_task.add_done_callback(_log_task_exception)
+            rec["timer_task"] = retry_task
         return
 
     active_engines.setdefault(user_id, {})[slot] = engine
@@ -1232,6 +1258,25 @@ async def _monitor_loop(msg, user_id: int, slot: int, interval: int):
             await asyncio.sleep(interval)
             engine = active_engines.get(user_id, {}).get(slot)
             if not engine or not engine.running:
+                # Check if a recurring restart is pending for this slot
+                user_rec = recurring_state.get(user_id, {})
+                rec = user_rec.get(slot)
+                if rec:
+                    timer = rec.get("timer_task")
+                    if timer and not timer.done():
+                        # Keep monitor alive while waiting for recurring restart
+                        keyboard = InlineKeyboardMarkup([[
+                            InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
+                            InlineKeyboardButton("Stop Monitor", callback_data=f"stop_monitor:{slot}"),
+                            InlineKeyboardButton("Stop Session", callback_data=f"stop_session:{slot}"),
+                        ]])
+                        try:
+                            await msg.edit_text(
+                                "⏳ Session ended. Recurring restart pending…",
+                                reply_markup=keyboard)
+                        except Exception:
+                            pass
+                        continue  # keep looping — new engine will appear after restart
                 try:
                     await msg.edit_text(
                         "Session ended. Monitor stopped.",
@@ -1340,7 +1385,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "refresh_status":
         s, engine = _get_engine()
         if not engine or not engine.running:
-            await query.edit_message_text("Session ended.")
+            # Keep buttons alive if a recurring restart is pending
+            user_rec = recurring_state.get(user_id, {})
+            rec = user_rec.get(s) if s is not None else None
+            timer = rec.get("timer_task") if rec else None
+            if timer and not timer.done():
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Refresh", callback_data=f"refresh_status:{s}"),
+                    InlineKeyboardButton("Stop", callback_data=f"stop_session:{s}"),
+                ]])
+                try:
+                    await query.edit_message_text(
+                        "⏳ Session ended. Recurring restart pending…",
+                        reply_markup=keyboard)
+                except Exception:
+                    pass
+            else:
+                try:
+                    await query.edit_message_text("Session ended.")
+                except Exception:
+                    pass
             return
         text = format_status(engine.get_status())
         keyboard = InlineKeyboardMarkup([[
@@ -1963,17 +2027,20 @@ async def load_resume_state(application):
 
             def _make_on_stop(cid, uid, s):
                 def on_stop(reason):
-                    asyncio.ensure_future(_notify_stop(cid, uid, s, reason, application))
+                    t = asyncio.create_task(_notify_stop(cid, uid, s, reason, application))
+                    t.add_done_callback(_log_task_exception)
                 return on_stop
 
             def _make_on_milestone(cid):
                 def on_milestone(data):
-                    asyncio.ensure_future(_notify_milestone(cid, data, application))
+                    t = asyncio.create_task(_notify_milestone(cid, data, application))
+                    t.add_done_callback(_log_task_exception)
                 return on_milestone
 
             def _make_on_error(cid):
                 def on_error(msg):
-                    asyncio.ensure_future(_notify_error(cid, msg, application))
+                    t = asyncio.create_task(_notify_error(cid, msg, application))
+                    t.add_done_callback(_log_task_exception)
                 return on_error
 
             engine.on_stop = _make_on_stop(chat_id, user_id, slot)
