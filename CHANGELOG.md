@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.2 — Recurring Notification Throttle (2026-04-21)
+
+- **Telegram flood ban on fast recurring sessions** — Stop and start notifications are now rate-limited to at most one of each per 30 seconds per user during recurring cycles. Losses, errors, insufficient balance, and manual stops are always sent immediately regardless of throttle
+
 ## v1.5.1 — Recurring Restart Reliability & Task Safety (2026-04-21)
 
 ### Fixed
