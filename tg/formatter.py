@@ -59,6 +59,9 @@ def format_full_config(s: dict) -> list:
     sdw = s.get("streak_delay_win")
     if sdw and sdw[0] > 0:
         lines.append(f"  Streak delay win: every `{sdw[0]}` \u2192 `{sdw[1]:.3f}s`")
+    sdb = s.get("streak_delay_bets")
+    if sdb and sdb[0] > 0:
+        lines.append(f"  Streak delay bets: every `{sdb[0]}` bets \u2192 `{sdb[1]:.3f}s`")
     sbl = s.get("streakbet_loss")
     if sbl and sbl[0] > 0:
         lines.append(f"  Streak bet loss: every `{sbl[0]}` losses \u2192 `x{sbl[1]:.3f}`")

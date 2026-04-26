@@ -148,6 +148,8 @@ class BettingEngine:
         # ── streak delay: pause after N consecutive wins/losses ──
         self.streak_delay_loss = self._parse_streak_delay(config.get("streak_delay_loss"))
         self.streak_delay_win  = self._parse_streak_delay(config.get("streak_delay_win"))
+        # streak_delay_bets "N:seconds" — every N total bets, delay X seconds (regardless of result)
+        self.streak_delay_bets = self._parse_streak_delay(config.get("streak_delay_bets"))
         # ── adaptive base bet ──
         # basebet_pct: base_bet = balance * pct, recomputed on session start + profit-increment
         self.basebet_pct       = float(config.get("basebet_pct") or 0)
@@ -309,17 +311,22 @@ class BettingEngine:
         return 1.0
 
     def _get_streak_delay(self) -> float:
-        """Check if current streak triggers a delay. Returns delay in seconds or 0."""
+        """Check if current streak/total-bets triggers a delay. Returns max applicable delay or 0."""
         streak = self.current_streak
+        delay = 0.0
         if streak < 0 and self.streak_delay_loss[0] > 0:
-            count, delay = self.streak_delay_loss
+            count, d = self.streak_delay_loss
             if abs(streak) > 0 and abs(streak) % count == 0:
-                return delay
+                delay = max(delay, d)
         if streak > 0 and self.streak_delay_win[0] > 0:
-            count, delay = self.streak_delay_win
+            count, d = self.streak_delay_win
             if streak % count == 0:
-                return delay
-        return 0.0
+                delay = max(delay, d)
+        if self.streak_delay_bets[0] > 0 and self.total_bets > 0:
+            count, d = self.streak_delay_bets
+            if self.total_bets % count == 0:
+                delay = max(delay, d)
+        return delay
 
     def _set_error(self, friendly: str, technical: str = ""):
         """Set last_error: friendly message in production, technical details in dev."""
@@ -618,6 +625,7 @@ class BettingEngine:
             "basebet_pct": self.basebet_pct or None,
             "streak_delay_loss": f"{self.streak_delay_loss[0]}:{self.streak_delay_loss[1]}" if self.streak_delay_loss[0] > 0 else None,
             "streak_delay_win": f"{self.streak_delay_win[0]}:{self.streak_delay_win[1]}" if self.streak_delay_win[0] > 0 else None,
+            "streak_delay_bets": f"{self.streak_delay_bets[0]}:{self.streak_delay_bets[1]}" if self.streak_delay_bets[0] > 0 else None,
             "streakbet_loss": f"{self.streakbet_loss[0]}:{self.streakbet_loss[1]}" if self.streakbet_loss[0] > 0 else None,
             "milestone_bets": self.milestone_bets,
         }
@@ -896,6 +904,7 @@ class BettingEngine:
             "milestone_profit": self.milestone_profit,
             "streak_delay_loss": f"{self.streak_delay_loss[0]}:{self.streak_delay_loss[1]}" if self.streak_delay_loss[0] > 0 else None,
             "streak_delay_win":  f"{self.streak_delay_win[0]}:{self.streak_delay_win[1]}" if self.streak_delay_win[0] > 0 else None,
+            "streak_delay_bets": f"{self.streak_delay_bets[0]}:{self.streak_delay_bets[1]}" if self.streak_delay_bets[0] > 0 else None,
             "streakbet_loss":    f"{self.streakbet_loss[0]}:{self.streakbet_loss[1]}" if self.streakbet_loss[0] > 0 else None,
             "basebet_pct":       self.basebet_pct or None,
         }
@@ -991,6 +1000,12 @@ class BettingEngine:
         if "streak_delay_win" in changes:
             self.streak_delay_win = self._parse_streak_delay(changes["streak_delay_win"])
             msgs.append(f"Streak delay win: {self.streak_delay_win[0]}x → {self.streak_delay_win[1]:.3f}s")
+        if "streak_delay_bets" in changes:
+            self.streak_delay_bets = self._parse_streak_delay(changes["streak_delay_bets"])
+            if self.streak_delay_bets[0] > 0:
+                msgs.append(f"Streak delay bets: every {self.streak_delay_bets[0]} bets → {self.streak_delay_bets[1]:.3f}s")
+            else:
+                msgs.append("Streak delay bets: off")
         if "streakbet_loss" in changes:
             self.streakbet_loss = self._parse_streak_delay(changes["streakbet_loss"])
             if self.streakbet_loss[0] > 0:
@@ -1135,6 +1150,7 @@ class BettingEngine:
             "milestone_bets": self.milestone_bets,
             "streak_delay_loss": self.streak_delay_loss,
             "streak_delay_win": self.streak_delay_win,
+            "streak_delay_bets": self.streak_delay_bets,
             "streakbet_loss": self.streakbet_loss,
             "basebet_pct": self.basebet_pct,
             "win_mult": self.win_mult,
