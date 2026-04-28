@@ -811,15 +811,16 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_engines.setdefault(user_id, {})[slot] = engine
     _engine_chat_ids[user_id] = chat_id
 
-    if config.get("recurring"):
-        delay = int(config.get("recurring_delay") or 60)
-        recurring_state.setdefault(user_id, {})[slot] = {
-            "delay": delay,
-            "chat_id": chat_id,
-            "config": dict(config),
-            "timer_task": None,
-            "app": app,
-        }
+    # Always register a recurring snapshot per session so the user can toggle
+    # /set recurring on/off mid-flight and have it apply to every running session.
+    # Whether to actually restart is decided at stop time by re-reading the live config.
+    recurring_state.setdefault(user_id, {})[slot] = {
+        "delay": int(config.get("recurring_delay") or 60),
+        "chat_id": chat_id,
+        "config": dict(config),
+        "timer_task": None,
+        "app": app,
+    }
 
     slot_info = f" (slot {slot})" if len(_get_running(user_id)) > 1 else ""
     rec_info = f"\nRecurring: `{int(config.get('recurring_delay') or 60)}s`" if config.get("recurring") else ""
@@ -866,12 +867,14 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     if not engine:
         return
     # Throttle stop notifications for fast recurring cycles to avoid Telegram flood bans.
-    # Always notify on: manual stop, errors, insufficient balance, or net loss.
-    # Throttle (max 1 per RECURRING_NOTIFY_THROTTLE seconds) for positive-profit condition stops.
+    # Only throttle when recurring is actually on AND it's a non-loss condition stop.
     user_rec = recurring_state.get(user_id, {})
-    is_recurring = bool(user_rec.get(slot))
+    try:
+        is_recurring_active = bool(load_user_config(user_id).get("recurring"))
+    except Exception:
+        is_recurring_active = False
     is_notable = (
-        not is_recurring
+        not is_recurring_active
         or reason == "Stopped by user"
         or "insufficient" in reason.lower()
         or engine.profit < 0
@@ -890,23 +893,35 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
         logger.info("User %d slot %d: stop notification throttled (profit %.8f, reason: %s)",
                     user_id, slot, engine.profit, reason)
 
-    # Recurring bet: schedule restart if condition stop (not manual)
+    # Recurring bet: schedule restart if condition stop (not manual) AND live config says recurring is on.
+    # Re-read the saved config at stop time so toggling /set recurring on/off applies to every session.
     rec = user_rec.get(slot)
-    if rec and reason != "Stopped by user" and "insufficient" not in reason.lower():
-        delay = rec["delay"]
+    try:
+        live_config = load_user_config(user_id)
+        recurring_on = bool(live_config.get("recurring"))
+        live_delay = int(live_config.get("recurring_delay") or rec["delay"]) if rec else 60
+    except Exception as e:
+        logger.warning("User %d: failed to reload config at stop, falling back to snapshot: %s", user_id, e)
+        recurring_on = bool(rec)
+        live_delay = rec["delay"] if rec else 60
+
+    if rec and recurring_on and reason != "Stopped by user" and "insufficient" not in reason.lower():
         config = rec["config"]
         # Carry forward the current base_bet (profit increment may have raised it)
         config["base_bet"] = engine.base_bet
-        await _safe_send(app, 
+        await _safe_send(app,
             chat_id,
-            f"Recurring: restarting in {delay}s...\n"
+            f"Recurring: restarting in {live_delay}s...\n"
             f"Use `/stop recurring` to cancel.",
             parse_mode="Markdown",
         )
         task = asyncio.create_task(
-            _recurring_restart(chat_id, user_id, slot, delay, config, app))
+            _recurring_restart(chat_id, user_id, slot, live_delay, config, app))
         task.add_done_callback(_log_task_exception)
         rec["timer_task"] = task
+    elif rec and not recurring_on:
+        # User turned recurring off — clean up the snapshot so it doesn't linger
+        recurring_state.get(user_id, {}).pop(slot, None)
 
 
 async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
@@ -2107,6 +2122,14 @@ async def load_resume_state(application):
             if started:
                 active_engines.setdefault(user_id, {})[slot] = engine
                 _engine_chat_ids[user_id] = chat_id
+                # Register recurring snapshot so a stop after resume can still recur
+                recurring_state.setdefault(user_id, {})[slot] = {
+                    "delay": int(config.get("recurring_delay") or 60),
+                    "chat_id": chat_id,
+                    "config": dict(config),
+                    "timer_task": None,
+                    "app": application,
+                }
                 resumed += 1
                 await application.bot.send_message(
                     chat_id,
