@@ -288,6 +288,32 @@ def _find_chrome_binary() -> Optional[str]:
                         return p
     return None
 
+_NODRIVER_PATCHED = False
+
+def _patch_nodriver_cdp():
+    """Patch nodriver to tolerate newer Chrome CDP schema (missing sameParty etc.)."""
+    global _NODRIVER_PATCHED
+    if _NODRIVER_PATCHED:
+        return
+    try:
+        from nodriver.cdp import network as _net
+        _orig = _net.Cookie.from_json.__func__
+
+        @classmethod
+        def _safe_from_json(cls, json):
+            j = dict(json)
+            j.setdefault("sameParty", False)
+            j.setdefault("sameSite", None)
+            j.setdefault("priority", "Medium")
+            j.setdefault("sourceScheme", "Unset")
+            j.setdefault("sourcePort", 0)
+            return _orig(cls, j)
+
+        _net.Cookie.from_json = _safe_from_json
+        _NODRIVER_PATCHED = True
+    except Exception:
+        pass
+
 def _solve_cf_nodriver(site_url: str) -> bool:
     """Use nodriver (undetected-chromedriver successor) — last-resort CF bypass."""
     global _cf_cookie_str, _cf_user_agent
@@ -296,6 +322,8 @@ def _solve_cf_nodriver(site_url: str) -> bool:
         import nodriver as uc
     except ImportError:
         return False
+
+    _patch_nodriver_cdp()
 
     chrome_path = _find_chrome_binary()
     if not chrome_path:

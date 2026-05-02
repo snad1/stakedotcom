@@ -572,12 +572,37 @@ window.navigator.permissions.query = (parameters) => (
                             return p
         return None
 
+    @staticmethod
+    def _patch_nodriver_cdp():
+        """Patch nodriver to tolerate newer Chrome CDP schema (missing sameParty etc.)."""
+        try:
+            from nodriver.cdp import network as _net
+            if getattr(_net.Cookie.from_json, "_patched", False):
+                return
+            _orig = _net.Cookie.from_json.__func__
+
+            @classmethod
+            def _safe_from_json(cls, json):
+                j = dict(json)
+                j.setdefault("sameParty", False)
+                j.setdefault("sameSite", None)
+                j.setdefault("priority", "Medium")
+                j.setdefault("sourceScheme", "Unset")
+                j.setdefault("sourcePort", 0)
+                return _orig(cls, j)
+
+            _safe_from_json._patched = True
+            _net.Cookie.from_json = _safe_from_json
+        except Exception:
+            pass
+
     async def _solve_cf_nodriver(self, site_url: str) -> bool:
         """Use nodriver (undetected-chromedriver successor) — last-resort CF bypass."""
         try:
             import nodriver as uc
         except ImportError:
             return False
+        self._patch_nodriver_cdp()
         chrome_path = await self._find_chrome_binary()
         if not chrome_path:
             logger.warning("User %d: nodriver — no Chrome/Chromium binary found", self.user_id)

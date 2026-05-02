@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.10 — Patch nodriver CDP cookie schema mismatch (2026-05-02)
+
+### Fixed
+
+- **nodriver hung indefinitely on `cookies.get_all()`** — nodriver's CDP cookie parser is hardcoded against an older Chromium schema and crashes with `KeyError: 'sameParty'` when newer Chromium omits that field. The crash happened in a background CDP listener task, leaving the foreground cookie call awaiting a response that never came. Now monkey-patches `nodriver.cdp.network.Cookie.from_json` to default the missing fields (`sameParty`, `sameSite`, `priority`, `sourceScheme`, `sourcePort`) before parsing, so cookie reads succeed against any Chromium build.
+
 ## v1.7.9 — nodriver hang protection + actionable CF block message (2026-05-02)
 
 ### Fixed
