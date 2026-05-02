@@ -1,15 +1,24 @@
 #!/bin/bash
-# warp-setup.sh — Install Cloudflare WARP on this server.
-# WARP is a free Cloudflare service that routes all traffic through their network.
-# Since stake.com is itself behind Cloudflare, CF often treats WARP-originated
-# traffic to its own customers more leniently than datacenter IPs.
+# warp-setup.sh — Install Cloudflare WARP as a LOCAL PROXY (not full-tunnel).
 #
-# Free, no signup, no email. Just install and connect.
+# Why proxy mode and not full-tunnel:
+#   Full-tunnel WARP captures ALL outbound traffic, including SSH responses,
+#   which can lock you out of the server. Proxy mode runs WARP as a SOCKS5
+#   server on 127.0.0.1:40000 — only programs that explicitly opt in route
+#   through WARP. SSH and everything else keep working unchanged.
 #
-# Usage:    sudo bash warp-setup.sh
-# Disconnect:  warp-cli disconnect
-# Reconnect:   warp-cli connect
-# Status:      warp-cli status
+# Usage:
+#   1. sudo bash warp-setup.sh
+#   2. After it finishes, run the bot with:
+#        python3 stake.py --proxy socks5://127.0.0.1:40000
+#      (the wizard's Proxy URL prompt also accepts this value)
+#
+# Why this might bypass CF:
+#   Cloudflare WARP gives you a Cloudflare-owned exit IP. CF's bot scoring
+#   often treats traffic between two Cloudflare endpoints (WARP -> CF-protected
+#   site) more leniently than datacenter-IP traffic.
+#
+# Free, no signup, no email. Survives reboots once configured.
 set -euo pipefail
 
 if [ "$EUID" -ne 0 ]; then
@@ -17,17 +26,15 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-echo "=== Cloudflare WARP setup ==="
+echo "=== Cloudflare WARP setup (proxy mode — SSH-safe) ==="
 
 if ! command -v lsb_release >/dev/null 2>&1; then
     apt update -qq && apt install -y lsb-release
 fi
-
 CODENAME=$(lsb_release -cs)
-echo "Distro codename: $CODENAME"
 
 if ! command -v warp-cli >/dev/null 2>&1; then
-    echo "Installing cloudflare-warp package..."
+    echo "Installing cloudflare-warp..."
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
         | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $CODENAME main" \
@@ -36,31 +43,41 @@ if ! command -v warp-cli >/dev/null 2>&1; then
     apt install -y cloudflare-warp
 fi
 
-echo
-echo "Original public IP:"
-curl -s --max-time 10 https://ifconfig.me || echo "(could not reach ifconfig.me)"
-echo
+# Make sure WARP is disconnected before we reconfigure
+warp-cli disconnect 2>/dev/null || true
 
 if ! warp-cli account 2>/dev/null | grep -q "Account type"; then
-    echo "Registering with Cloudflare WARP (free, no email)..."
+    echo "Registering free WARP account..."
     warp-cli registration new
 fi
 
-# Default mode is "warp" which proxies all traffic. Make sure we're in this mode.
-warp-cli mode warp 2>/dev/null || true
+# CRITICAL: switch to proxy mode BEFORE connecting, so WARP never captures all traffic.
+# In proxy mode, WARP listens on 127.0.0.1:40000 as SOCKS5 — opt-in only.
+echo "Setting WARP to proxy mode (SOCKS5 on 127.0.0.1:40000)..."
+warp-cli mode proxy
 
-echo "Connecting WARP tunnel..."
+echo "Connecting WARP tunnel (proxy mode)..."
 warp-cli connect
 sleep 3
 
 echo
-echo "New exit IP (should be a Cloudflare IP, not your VPS IP):"
+echo "WARP status:"
+warp-cli status || true
+echo
+echo "Server's public IP (unchanged — direct path still active):"
 curl -s --max-time 10 https://ifconfig.me || echo "(could not reach ifconfig.me)"
 echo
+
 echo
-echo "If the new IP is different from your original VPS IP, WARP is active."
-echo "Now re-run the stake bot — Cloudflare may let it through."
+echo "Exit IP via WARP proxy (this is what stake.com will see):"
+curl -s --max-time 10 --proxy socks5h://127.0.0.1:40000 https://ifconfig.me || echo "(WARP proxy not reachable yet — may take a few seconds)"
 echo
-echo "Status:    warp-cli status"
-echo "Stop:      warp-cli disconnect"
-echo "Restart:   warp-cli connect"
+
+echo
+echo "=== Done ==="
+echo "SSH is unaffected. Run the bot with:"
+echo "  python3 stake.py --proxy socks5://127.0.0.1:40000"
+echo
+echo "To stop WARP:    warp-cli disconnect"
+echo "To start WARP:   warp-cli connect"
+echo "Status:          warp-cli status"

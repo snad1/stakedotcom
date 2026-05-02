@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.13 — `warp-setup.sh` now uses proxy mode (SSH-safe) (2026-05-02)
+
+### Fixed
+
+- **`warp-setup.sh` locked users out of SSH** — Default WARP mode is full-tunnel: it captures ALL outbound traffic, including SSH return packets, which broke the management connection. Script now sets `warp-cli mode proxy` BEFORE connecting, so WARP runs as a local SOCKS5 server on `127.0.0.1:40000` and only the bot opts in. SSH and everything else stay untouched.
+- **Run bot via WARP proxy** — `python3 stake.py --proxy socks5://127.0.0.1:40000` routes only the bot's traffic through WARP's Cloudflare-owned exit IP.
+
 ## v1.7.12 — Free CF-block fixes: WARP setup + CF Worker proxy (2026-05-02)
 
 ### Added
