@@ -262,8 +262,10 @@ class BettingEngine:
             if self._http:
                 if hasattr(self._http, "aclose"):
                     await self._http.aclose()
-                else:
-                    self._http.close()
+                elif hasattr(self._http, "close"):
+                    result = self._http.close()
+                    if hasattr(result, '__await__'):
+                        await result
         except Exception:
             pass
         if _HAS_CFFI_ASYNC:
@@ -1339,8 +1341,10 @@ class BettingEngine:
             try:
                 if hasattr(self._http, "aclose"):
                     await self._http.aclose()
-                else:
-                    self._http.close()
+                elif hasattr(self._http, "close"):
+                    result = self._http.close()
+                    if hasattr(result, '__await__'):
+                        await result
             except Exception:
                 pass
         logger.info("User %d: Session #%d ended — %s",

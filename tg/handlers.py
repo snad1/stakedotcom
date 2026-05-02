@@ -843,7 +843,7 @@ async def _safe_send(app, chat_id, text, **kwargs):
     """Engine-driven send that swallows flood/network errors to avoid unraised Task exceptions."""
     from telegram.error import RetryAfter, NetworkError, TimedOut, BadRequest
     try:
-        await _safe_send(app, chat_id, text, **kwargs)
+        await app.bot.send_message(chat_id, text, **kwargs)
     except RetryAfter as e:
         logger.warning("Telegram flood — dropping notification (retry in %ss)", e.retry_after)
     except (NetworkError, TimedOut) as e:
