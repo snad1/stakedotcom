@@ -417,12 +417,60 @@ class BettingEngine:
                 sol = data.get("solution", {})
                 self._cf_user_agent = sol.get("userAgent", "")
                 cookies = sol.get("cookies", [])
-                self._cf_cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-                if self._cf_cookie_str:
+                has_clearance = any(c.get("name") == "cf_clearance" for c in cookies)
+                if has_clearance:
+                    self._cf_cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
                     self._cf_cache_save()
-                return bool(self._cf_cookie_str)
+                    return True
         except Exception:
             pass
+        return False
+
+    async def _solve_cf_playwright(self, site_url: str) -> bool:
+        """Use Playwright headless browser to solve CF Turnstile/managed challenges."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return False
+        try:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+                )
+                context = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                )
+                try:
+                    from playwright_stealth import stealth_async
+                    page = await context.new_page()
+                    await stealth_async(page)
+                except ImportError:
+                    page = await context.new_page()
+
+                await page.goto(site_url, wait_until="domcontentloaded", timeout=30000)
+
+                for _ in range(30):
+                    cookies = await context.cookies()
+                    cf = next((c for c in cookies if c["name"] == "cf_clearance"), None)
+                    if cf:
+                        self._cf_cookie_str = "; ".join(
+                            f"{c['name']}={c['value']}" for c in cookies
+                        )
+                        self._cf_user_agent = await page.evaluate("navigator.userAgent")
+                        self._cf_cache_save()
+                        await browser.close()
+                        return True
+                    await asyncio.sleep(1)
+
+                await browser.close()
+        except Exception as e:
+            logger.debug("User %d: Playwright CF solve failed: %s", self.user_id, e)
         return False
 
     async def _api_post(self, url: str, payload: dict) -> Optional[dict]:
@@ -480,9 +528,20 @@ class BettingEngine:
                 for domain_base in API_BASES:
                     site = domain_base.split("/_api")[0]
                     if await self._solve_cloudflare(site):
+                        await self._recreate_http()
                         base3, err3 = await _try_all()
                         if base3:
                             return True
+                        err = err3
+
+        if "403" in str(err):
+            for domain_base in API_BASES:
+                site = domain_base.split("/_api")[0]
+                if await self._solve_cf_playwright(site):
+                    await self._recreate_http()
+                    base4, err4 = await _try_all()
+                    if base4:
+                        return True
         return False
 
     # ── API ──────────────────────────────────────────────
@@ -573,21 +632,33 @@ class BettingEngine:
                     break
                 err = err3
 
-        # Pass 4: FlareSolverr
+        # Pass 4: FlareSolverr / Byparr
         if "403" in str(err):
             fs_ok = await self._check_flaresolverr_health()
             if fs_ok:
                 for domain_base in API_BASES:
                     site = domain_base.split("/_api")[0]
                     if await self._solve_cloudflare(site):
+                        await self._recreate_http()
                         base4, err4 = await _try_all()
                         if base4:
                             return True
                         err = err4
 
+        # Pass 5: Playwright (handles Turnstile / managed challenges)
+        if "403" in str(err):
+            for domain_base in API_BASES:
+                site = domain_base.split("/_api")[0]
+                if await self._solve_cf_playwright(site):
+                    await self._recreate_http()
+                    base5, err5 = await _try_all()
+                    if base5:
+                        return True
+                    err = err5
+
         if "403" in str(err):
             self._set_error(
-                "Cloudflare blocked — use /set proxy or /set cookie cf_clearance=VALUE",
+                "Cloudflare blocked — install playwright: pip install playwright playwright-stealth && playwright install chromium",
                 err or "CF 403 — all bypass attempts failed"
             )
         else:

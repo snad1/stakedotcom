@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.7.4 — Playwright CF bypass for Turnstile/managed challenges (2026-05-02)
+
+### Added
+
+- **Playwright CF bypass** — New Pass 5 in the CF bypass chain uses a headless Chromium browser to solve Cloudflare Turnstile and managed challenges that FlareSolverr v1 cannot handle. Triggered automatically when all other passes fail. Requires `playwright install chromium` after update.
+- **`playwright-stealth` support** — If `playwright-stealth` is installed, pages are patched to avoid headless detection.
+
+### Fixed
+
+- **`_solve_cloudflare` false positive** — Previously returned True when FlareSolverr got other CF cookies (`__cf_bm`) but not `cf_clearance`. Now only returns True when `cf_clearance` is present, preventing a failed retry from being silently skipped.
+- **Stale CF cookies after bypass** — HTTP session is now recreated after FlareSolverr/Playwright solve to clear `__cf_bm` cookies accumulated during failed attempts.
+
 ## v1.7.3 — Cloudflare bypass improvements (2026-05-02)
 
 ### Fixed

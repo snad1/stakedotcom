@@ -103,7 +103,7 @@ def _flaresolverr_available() -> bool:
         return False
 
 def _solve_cloudflare(site_url: str) -> bool:
-    """Use FlareSolverr to solve Cloudflare challenge. Caches cookies to disk."""
+    """Use FlareSolverr/Byparr to solve Cloudflare challenge. Caches cookies to disk."""
     global _cf_cookie_str, _cf_user_agent
     try:
         r = requests.post(FLARESOLVERR_URL, json={
@@ -116,13 +116,75 @@ def _solve_cloudflare(site_url: str) -> bool:
             sol = data.get("solution", {})
             _cf_user_agent = sol.get("userAgent", "")
             cookies = sol.get("cookies", [])
-            _cf_cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-            if _cf_cookie_str:
+            has_clearance = any(c.get("name") == "cf_clearance" for c in cookies)
+            if has_clearance:
+                _cf_cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
                 _cf_cache_save()
-            return bool(_cf_cookie_str)
+                return True
     except Exception:
         pass
     return False
+
+def _playwright_available() -> bool:
+    try:
+        import playwright  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+def _solve_cf_playwright(site_url: str) -> bool:
+    """Use Playwright headless browser to solve CF Turnstile/managed challenges."""
+    global _cf_cookie_str, _cf_user_agent
+    try:
+        import asyncio
+        from playwright.sync_api import sync_playwright
+
+        def _run():
+            global _cf_cookie_str, _cf_user_agent
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+                )
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                )
+                # Apply stealth patches if available
+                try:
+                    from playwright_stealth import stealth_sync
+                    page = context.new_page()
+                    stealth_sync(page)
+                except ImportError:
+                    page = context.new_page()
+
+                page.goto(site_url, wait_until="domcontentloaded", timeout=30000)
+
+                # Wait up to 30s for cf_clearance to appear
+                for _ in range(30):
+                    cookies = context.cookies()
+                    cf = next((c for c in cookies if c["name"] == "cf_clearance"), None)
+                    if cf:
+                        _cf_cookie_str = "; ".join(
+                            f"{c['name']}={c['value']}" for c in cookies
+                        )
+                        _cf_user_agent = page.evaluate("navigator.userAgent")
+                        _cf_cache_save()
+                        browser.close()
+                        return True
+                    page.wait_for_timeout(1000)
+
+                browser.close()
+            return False
+
+        return _run()
+    except Exception as e:
+        logger.debug("Playwright CF solve failed: %s", e)
+        return False
 
 # ===========================================================
 #  CONSTANTS
@@ -1007,22 +1069,35 @@ def api_test_connection() -> bool:
                 break
             err = err3
 
-    # Pass 4: FlareSolverr
+    # Pass 4: FlareSolverr / Byparr
     if "403" in str(err) and _flaresolverr_available():
         for domain_base in API_BASES:
             site = domain_base.split("/_api")[0]
-            console.print(f"  [yellow]Solving Cloudflare for {site}...[/yellow]")
+            console.print(f"  [yellow]Solving Cloudflare via FlareSolverr for {site}...[/yellow]")
             if _solve_cloudflare(site):
+                _recreate_http()  # clear stale CF cookies from session
                 base4, err4 = _try_all_bases()
                 if base4:
                     API_BASE = base4
                     return True
                 err = err4
 
+    # Pass 5: Playwright (handles Turnstile / managed challenges)
+    if "403" in str(err) and _playwright_available():
+        for domain_base in API_BASES:
+            site = domain_base.split("/_api")[0]
+            console.print(f"  [yellow]Solving Cloudflare via Playwright for {site}...[/yellow]")
+            if _solve_cf_playwright(site):
+                _recreate_http()
+                base5, err5 = _try_all_bases()
+                if base5:
+                    API_BASE = base5
+                    return True
+                err = err5
+
     if "403" in str(err):
         raise Exception(
-            "Cloudflare blocked — paste your full browser cookie string when prompted, "
-            "or set FLARESOLVERR_URL to a working FlareSolverr instance"
+            "Cloudflare blocked — try: pip install playwright playwright-stealth && playwright install chromium"
         )
     raise Exception(err or "All API domains failed")
 
