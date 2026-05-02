@@ -317,7 +317,7 @@ _CONFIG_KEYS = [
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
-    "profit_increment", "profit_threshold",
+    "profit_increment", "profit_threshold", "proxy",
 ]
 
 def _mask_key(key: str) -> str:
@@ -800,6 +800,7 @@ class BotState:
         self.access_token     = ""
         self.lockdown_token   = ""
         self.cookie           = ""     # full cookie string from browser
+        self.proxy            = ""     # optional proxy: http://user:pass@host:port or socks5://...
         self.currency         = "usdt"
         self.game             = "limbo"       # "limbo" or "dice"
         self.multiplier_target = 2.0          # shared: target payout multiplier
@@ -897,8 +898,8 @@ console = Console()
 # ===========================================================
 #  API HELPERS
 # ===========================================================
-def _headers() -> dict:
-    # Use FlareSolverr's user-agent if we solved CF, otherwise default
+def _headers(base: str = None) -> dict:
+    b = (base or API_BASE).split("/_api")[0]
     ua = _cf_user_agent or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
     h = {
         "Content-Type":     "application/json",
@@ -906,11 +907,10 @@ def _headers() -> dict:
         "x-access-token":   state.access_token,
         "x-lockdown-token": state.lockdown_token,
         "x-language":       "en",
-        "Origin":           API_BASE.split("/_api")[0],
-        "Referer":          API_BASE.split("/_api")[0] + f"/casino/games/{state.game}",
+        "Origin":           b,
+        "Referer":          b + f"/casino/games/{state.game}",
         "User-Agent":       ua,
     }
-    # Merge user-provided cookies with FlareSolverr CF cookies
     cookie_parts = []
     if _cf_cookie_str:
         cookie_parts.append(_cf_cookie_str)
@@ -947,9 +947,9 @@ def api_get_balances() -> list:
         logger.debug("Balance fetch failed: %s", e)
     return []
 
-def _api_post(url: str, payload: dict) -> Optional[dict]:
+def _api_post(url: str, payload: dict, base: str = None) -> Optional[dict]:
     """Make a POST request via curl_cffi (with CF cookies if solved)."""
-    r = _http.post(url, headers=_headers(), json=payload, timeout=15)
+    r = _http.post(url, headers=_headers(base=base), json=payload, timeout=15)
     if r.status_code != 200:
         body = r.text[:300] if r.text else "(empty)"
         raise ConnectionError(f"HTTP {r.status_code} from {url}: {body}")
@@ -970,7 +970,7 @@ def api_test_connection() -> bool:
         for base in API_BASES:
             gql_url = base.split("/_api/casino")[0] + "/_api/graphql"
             try:
-                data = _api_post(gql_url, payload)
+                data = _api_post(gql_url, payload, base=base)
                 if _check(data):
                     return base, None
                 last_err = f"Auth check: unexpected response from {gql_url}"
@@ -2140,6 +2140,10 @@ def setup_wizard():
         console.print("  [dim]Tip: In DevTools > Network, click any request to stake.com,[/]")
         console.print("  [dim]go to Headers tab, and copy the values from Request Headers.[/]")
         console.print()
+        console.print("  [dim yellow]⚠  CF cookies are bound to your browser's IP. If this bot runs[/]")
+        console.print("  [dim yellow]   on a server, connection will fail unless you set a proxy that[/]")
+        console.print("  [dim yellow]   routes through your local machine's IP.[/]")
+        console.print()
 
         if saved_token:
             console.print(f"  Saved token: [yellow]{saved_token[:8]}...{saved_token[-4:]}[/]")
@@ -2192,6 +2196,17 @@ def setup_wizard():
                 return False
             state.cookie = v
             saved_cookie = v
+
+        # Proxy (optional — needed when server IP is CF-blocked)
+        saved_proxy = state.proxy or ""
+        console.print()
+        console.print("  [dim]Proxy (optional — socks5://host:port or http://user:pass@host:port).[/]")
+        console.print("  [dim]Required if this bot runs on a server with a blocked IP. Press Enter to skip.[/]")
+        v = _ask("Proxy URL", default=saved_proxy or "")
+        if v is not _BACK:
+            state.proxy = v.strip()
+            if state.proxy:
+                _recreate_http()
 
         return True
 
@@ -3598,6 +3613,8 @@ def main():
     group.add_argument("--session-bets", type=int, metavar="ID", help="Show bets for a specific session")
     parser.add_argument("--preset", type=str, metavar="NAME",
                         help="Load a named preset and start (skips wizard)")
+    parser.add_argument("--proxy", type=str, metavar="URL",
+                        help="Proxy URL: http://user:pass@host:port or socks5://host:port")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable debug logging (dev mode)")
 
@@ -3605,6 +3622,10 @@ def main():
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+
+    if args.proxy:
+        state.proxy = args.proxy
+        _recreate_http()
 
     if args.daemon:
         args.resume = True
