@@ -32,15 +32,31 @@ except ImportError:
     sys.exit(1)
 
 # curl_cffi impersonates Chrome TLS fingerprint to bypass Cloudflare
+_HAS_CFFI = False
 try:
     from curl_cffi import requests as cffi_requests
     _http = cffi_requests.Session(impersonate="chrome")
+    _HAS_CFFI = True
 except ImportError:
     try:
         import cloudscraper
         _http = cloudscraper.create_scraper()
     except ImportError:
         _http = requests.Session()
+
+def _recreate_http(impersonate: str = "chrome"):
+    """Replace the global HTTP session with a new curl_cffi session using the given profile."""
+    global _http
+    if not _HAS_CFFI:
+        return
+    try:
+        _http.close()
+    except Exception:
+        pass
+    kwargs = {"impersonate": impersonate}
+    if getattr(state, "proxy", None):
+        kwargs["proxy"] = state.proxy
+    _http = cffi_requests.Session(**kwargs)
 
 # FlareSolverr: solve Cloudflare challenges, then use cookies with curl_cffi
 FLARESOLVERR_URL = os.environ.get("FLARESOLVERR_URL", "http://localhost:8191/v1")
@@ -940,65 +956,74 @@ def _api_post(url: str, payload: dict) -> Optional[dict]:
     return r.json()
 
 def api_test_connection() -> bool:
-    """Test auth with a zero-bet. Tries direct first, then FlareSolverr cookies + curl_cffi."""
+    """Test auth with a read-only GraphQL query. CF bypass: profile rotation → cache → FlareSolverr."""
     global API_BASE
-    game_info = GAMES[state.game]
-    build = game_info["build_payload"]
-    resp_key = game_info["response_key"]
-    endpoint = game_info["endpoint"]
-
-    saved_bet = state.current_bet
-    state.current_bet = 0
-    payload = build(state)
-    state.current_bet = saved_bet
+    query = """query AuthCheck { user { id __typename } }"""
+    payload = {"operationName": "AuthCheck", "query": query, "variables": {}}
 
     def _check(data):
-        return data and (resp_key in data or (isinstance(data.get("data"), dict) and resp_key in data["data"]))
+        return (data and isinstance(data.get("data"), dict)
+                and data["data"].get("user") is not None)
 
     def _try_all_bases():
         last_err = None
         for base in API_BASES:
-            url = base + endpoint
+            gql_url = base.split("/_api/casino")[0] + "/_api/graphql"
             try:
-                data = _api_post(url, payload)
+                data = _api_post(gql_url, payload)
                 if _check(data):
                     return base, None
-                last_err = f"Missing {resp_key} from {url}"
+                last_err = f"Auth check: unexpected response from {gql_url}"
             except Exception as e:
                 last_err = str(e)
-                continue
         return None, last_err
 
-    # Pass 1: direct requests (no CF cookies)
+    # Pass 1: direct
     base, err = _try_all_bases()
     if base:
         API_BASE = base
         return True
 
-    # Pass 2: try cached CF cookies from last FlareSolverr solve
+    # Pass 2: cached CF cookies
     if "403" in str(err) and _cf_cache_load():
         console.print("  [yellow]Using cached CF cookies...[/yellow]")
         base2, err2 = _try_all_bases()
         if base2:
             API_BASE = base2
-            console.print(f"  [green]Connected via {base2.split('//')[1].split('/')[0]} (cached)[/green]")
             return True
         err = err2
 
-    # Pass 3: solve Cloudflare fresh with FlareSolverr
+    # Pass 3: curl_cffi profile rotation
+    if "403" in str(err) and _HAS_CFFI:
+        for profile in ("chrome120", "chrome116", "chrome110", "firefox", "edge"):
+            console.print(f"  [yellow]Trying TLS profile: {profile}...[/yellow]")
+            _recreate_http(impersonate=profile)
+            base3, err3 = _try_all_bases()
+            if base3:
+                API_BASE = base3
+                return True
+            if "403" not in str(err3):
+                err = err3
+                break
+            err = err3
+
+    # Pass 4: FlareSolverr
     if "403" in str(err) and _flaresolverr_available():
         for domain_base in API_BASES:
             site = domain_base.split("/_api")[0]
             console.print(f"  [yellow]Solving Cloudflare for {site}...[/yellow]")
             if _solve_cloudflare(site):
-                console.print(f"  [green]Got CF cookies + user-agent, retrying...[/green]")
-                base3, err3 = _try_all_bases()
-                if base3:
-                    API_BASE = base3
-                    console.print(f"  [green]Connected via {base3.split('//')[1].split('/')[0]}[/green]")
+                base4, err4 = _try_all_bases()
+                if base4:
+                    API_BASE = base4
                     return True
-                err = err3
+                err = err4
 
+    if "403" in str(err):
+        raise Exception(
+            "Cloudflare blocked — paste your full browser cookie string when prompted, "
+            "or set FLARESOLVERR_URL to a working FlareSolverr instance"
+        )
     raise Exception(err or "All API domains failed")
 
 def api_place_bet(amount: float) -> Optional[dict]:
@@ -2186,14 +2211,17 @@ def setup_wizard():
         state.game = game_keys[int(v) - 1]
 
         # Test connection with this game
-        console.print(f"  [dim]Testing connection ({GAMES[state.game]['label']}, zero-bet)...[/]")
+        console.print(f"  [dim]Testing connection ({GAMES[state.game]['label']})...[/]")
         try:
             api_test_connection()
             console.print("[green]  Connected![/]\n")
         except Exception as e:
-            detail = f": {e}" if APP_ENV != "production" else ""
-            console.print(f"[red]  Connection failed{detail}.[/]")
-            console.print("[yellow]  Check your tokens and try again.[/]\n")
+            msg = str(e)
+            console.print(f"[red]  Connection failed: {msg}[/]")
+            if "Cloudflare" in msg:
+                console.print("[yellow]  Tip: in browser DevTools, copy the full Cookie header value and paste it at the cookie prompt.[/]\n")
+            else:
+                console.print("[yellow]  Check your tokens and try again.[/]\n")
             state.access_token = ""
             saved_token = ""
             return False
