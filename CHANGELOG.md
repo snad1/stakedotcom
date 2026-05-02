@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.7.12 — Free CF-block fixes: WARP setup + CF Worker proxy (2026-05-02)
+
+### Added
+
+- **`warp-setup.sh`** — Installs Cloudflare WARP (free, no signup, no email). Routes all server traffic through Cloudflare's network which CF often trusts more than datacenter IPs. 30-second setup; usually fixes IP-banned servers without paying.
+- **`cloudflare-worker/proxy.js`** — Drop-in JS for a Cloudflare Worker that transparently proxies the bot's requests to stake.com. Free tier supports 100K requests/day. Workers run on CF's network so requests bypass IP-based bot scoring entirely. Includes 5-minute deployment guide.
+- **`--api-base` flag + `STAKE_API_BASE` env var** — Override the upstream stake.com URL with your Worker URL: `python3 stake.py --api-base https://my-bot.example.workers.dev`. The bot's connection test, betting, and balance queries all route through the Worker.
+
+### Changed
+
+- **Final CF-blocked error now leads with free options** — WARP, then Worker, then run-locally, then ProtonVPN free tier. Paid options moved out.
+
 ## v1.7.11 — patchright backend + WireGuard helper (2026-05-02)
 
 ### Added

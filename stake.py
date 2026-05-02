@@ -392,7 +392,13 @@ def _solve_cf_nodriver(site_url: str) -> bool:
 #  CONSTANTS
 # ===========================================================
 # stake.bet uses REST API and has lighter Cloudflare than stake.com
-API_BASES    = ["https://stake.bet/_api/casino", "https://stake.com/_api/casino"]
+# Override with STAKE_API_BASE env var or --api-base flag (useful when proxying
+# through a Cloudflare Worker — then API_BASES becomes [worker_url + "/_api/casino"]).
+_API_BASE_OVERRIDE = os.environ.get("STAKE_API_BASE", "").rstrip("/")
+if _API_BASE_OVERRIDE:
+    API_BASES = [_API_BASE_OVERRIDE + "/_api/casino"]
+else:
+    API_BASES = ["https://stake.bet/_api/casino", "https://stake.com/_api/casino"]
 API_BASE     = API_BASES[0]  # auto-detected during connection test
 DB_PATH      = os.path.expanduser("~/.stake_autobot.db")
 CONFIG_PATH  = os.path.expanduser("~/.stake_autobot.json")
@@ -1316,20 +1322,21 @@ def api_test_connection() -> bool:
 
     if "403" in str(err):
         raise Exception(
-            "Cloudflare hard-banned this server's IP — even patched headless Chrome\n"
-            "  can't get cf_clearance ('Just a moment...' never resolves). The IP\n"
-            "  itself is the disqualifying signal; no in-process code change fixes it.\n"
-            "  Fix (in order of effort):\n"
-            "    A. Try patchright (better stealth than vanilla Playwright):\n"
-            "         pip install patchright && patchright install chromium\n"
-            "         (then re-run the bot)\n"
-            "    B. Install a VPN on this server so traffic exits a clean IP:\n"
-            "         apt install -y wireguard\n"
-            "         (use a Mullvad/ProtonVPN/IVPN config — most have residential exits)\n"
-            "    C. Set a residential proxy at the wizard's Proxy URL prompt:\n"
-            "         socks5://user:pass@residential-host:port\n"
-            "    D. Run from your local machine (your residential IP works fine):\n"
-            "         python3 stake.py"
+            "Cloudflare hard-banned this server's IP. The IP is the disqualifying signal\n"
+            "  ('Just a moment...' never resolves even from a real browser). Free fixes,\n"
+            "  in order of how likely they are to work:\n"
+            "    1. Cloudflare WARP (free, 30 sec setup):\n"
+            "         sudo bash warp-setup.sh\n"
+            "         WARP routes via Cloudflare's network which CF often trusts.\n"
+            "    2. Cloudflare Worker proxy (free, 5 min setup, 100K req/day):\n"
+            "         Deploy cloudflare-worker/proxy.js → re-run with:\n"
+            "         python3 stake.py --api-base https://<your-worker>.workers.dev\n"
+            "         Workers run on CF's own network — they bypass IP scoring entirely.\n"
+            "    3. Run from your local machine (free, your home IP works):\n"
+            "         git clone the repo and run python3 stake.py there.\n"
+            "    4. ProtonVPN free tier (free, residential exits in 3 countries):\n"
+            "         https://protonvpn.com/free-vpn/  → use the config with WireGuard.\n"
+            "  See README for details on each."
         )
     raise Exception(err or "All API domains failed")
 
@@ -3922,6 +3929,9 @@ def main():
                         help="Load a named preset and start (skips wizard)")
     parser.add_argument("--proxy", type=str, metavar="URL",
                         help="Proxy URL: http://user:pass@host:port or socks5://host:port")
+    parser.add_argument("--api-base", type=str, metavar="URL",
+                        help="Override stake.com base with a Cloudflare Worker proxy URL "
+                             "(e.g. https://my-bot.example.workers.dev). See cloudflare-worker/proxy.js.")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable debug logging (dev mode)")
 
@@ -3933,6 +3943,12 @@ def main():
     if args.proxy:
         state.proxy = args.proxy
         _recreate_http()
+
+    if args.api_base:
+        global API_BASES, API_BASE
+        API_BASES = [args.api_base.rstrip("/") + "/_api/casino"]
+        API_BASE = API_BASES[0]
+        console.print(f"[dim]API base override: {API_BASE}[/]")
 
     if args.daemon:
         args.resume = True
