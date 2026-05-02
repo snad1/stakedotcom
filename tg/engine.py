@@ -436,6 +436,58 @@ class BettingEngine:
             raise ConnectionError(f"HTTP {status} from {url}: {body}")
         return r.json()
 
+    async def _cf_reauth(self) -> bool:
+        """Re-solve Cloudflare mid-session. Tries new HTTP client, cached cookies, then FlareSolverr."""
+        game_info = GAMES[self.game]
+        endpoint = game_info["endpoint"]
+        resp_key = game_info["response_key"]
+        build = game_info["build_payload"]
+        saved = self.current_bet
+        self.current_bet = 0
+        payload = build(self)
+        self.current_bet = saved
+
+        def _check(data):
+            return data and (resp_key in data or
+                             (isinstance(data.get("data"), dict) and resp_key in data["data"]))
+
+        async def _try_all():
+            last_err = None
+            for base in API_BASES:
+                try:
+                    data = await self._api_post(base + endpoint, payload)
+                    if _check(data):
+                        return base, None
+                    last_err = f"Missing {resp_key}"
+                except Exception as e:
+                    last_err = str(e)
+            return None, last_err
+
+        await self._recreate_http()
+        base, err = await _try_all()
+        if base:
+            self._api_base = base
+            return True
+
+        if "403" in str(err) and self._cf_cache_load():
+            base2, err2 = await _try_all()
+            if base2:
+                self._api_base = base2
+                return True
+            err = err2
+
+        if "403" in str(err):
+            fs_ok = await self._check_flaresolverr_health()
+            if fs_ok:
+                for domain_base in API_BASES:
+                    site = domain_base.split("/_api")[0]
+                    if await self._solve_cloudflare(site):
+                        base3, err3 = await _try_all()
+                        if base3:
+                            self._api_base = base3
+                            return True
+        return False
+
     # ── API ──────────────────────────────────────────────
     async def api_get_balances(self) -> list:
         """Fetch all balances via GraphQL."""
@@ -556,12 +608,14 @@ class BettingEngine:
         payload = build(self)
         self.current_bet = saved
 
-        url = self._api_base + endpoint
-        try:
+        async def _do_post(u: str) -> Optional[dict]:
             t0 = time.time()
-            data = await self._api_post(url, payload)
+            d = await self._api_post(u, payload)
             self._last_api_ms = (time.time() - t0) * 1000
             self._consecutive_timeouts = 0
+            return d
+
+        def _parse(data: Optional[dict]) -> Optional[dict]:
             if data is None:
                 self._set_error("Empty response")
                 return None
@@ -581,9 +635,25 @@ class BettingEngine:
                 self._set_error("Empty response", f"Empty {resp_key}")
                 return None
             return parse(raw)
+
+        url = self._api_base + endpoint
+        try:
+            return _parse(await _do_post(url))
         except ConnectionError as e:
             err = str(e)
-            if "429" in err:
+            if "403" in err:
+                logger.warning("User %d: CF 403 during betting — re-authing", self.user_id)
+                if await self._cf_reauth():
+                    url = self._api_base + endpoint
+                    try:
+                        return _parse(await _do_post(url))
+                    except ConnectionError as e2:
+                        self._set_error("Connection error", str(e2)[:120])
+                    except Exception as e2:
+                        self._set_error("Bet failed", str(e2)[:120])
+                else:
+                    self._set_error("Cloudflare blocked", "CF 403 — all bypass attempts failed")
+            elif "429" in err:
                 self._set_error("Rate limited", "Rate limit 429")
             elif "insufficient" in err.lower() or "balance" in err.lower():
                 self._set_error("Insufficient balance")

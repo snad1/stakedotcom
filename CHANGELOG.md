@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.2 — Cloudflare 403 retry during active betting (2026-05-02)
+
+### Fixed
+
+- **CF 403 kills session mid-run** — When Cloudflare re-challenges during active betting, the session now automatically re-authenticates (new HTTP client → cached cookies → FlareSolverr) and retries the blocked bet once, instead of stopping the session. Handles CF cookie rotation without user intervention.
+
 ## v1.7.1 — Fix _safe_send infinite recursion (2026-05-02)
 
 ### Fixed
