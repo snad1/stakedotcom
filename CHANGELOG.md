@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.5 — Playwright error visibility + inline stealth (2026-05-02)
+
+### Fixed
+
+- **Playwright failures invisible** — Errors were logged at debug level and silently swallowed. Now surfaced to console (CLI) and logs (TG) so you can see exactly why Chromium launch / page navigation / cf_clearance wait is failing.
+- **`playwright-stealth` 2.x API mismatch** — The dependency in 2.0.3 changed its API and `stealth_sync`/`stealth_async` no longer exist. Replaced with inline `add_init_script` containing equivalent anti-detection patches (webdriver flag, plugins, languages, chrome.runtime, permissions API). Removes the `playwright-stealth` runtime dependency entirely.
+- **Cf_clearance wait window too short** — Bumped from 30s to 45s so slow Turnstile challenges have time to resolve.
+
 ## v1.7.4 — Playwright CF bypass for Turnstile/managed challenges (2026-05-02)
 
 ### Added

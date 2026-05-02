@@ -430,14 +430,38 @@ class BettingEngine:
         """Use Playwright headless browser to solve CF Turnstile/managed challenges."""
         try:
             from playwright.async_api import async_playwright
-        except ImportError:
+        except ImportError as e:
+            logger.warning("User %d: Playwright not installed: %s", self.user_id, e)
             return False
+
+        stealth_js = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', {
+    get: () => [{name: 'Chrome PDF Plugin'}, {name: 'Chrome PDF Viewer'}, {name: 'Native Client'}]
+});
+window.chrome = { runtime: {} };
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+    parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters)
+);
+"""
+
         try:
             async with async_playwright() as pw:
-                browser = await pw.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-                )
+                try:
+                    browser = await pw.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-setuid-sandbox",
+                              "--disable-dev-shm-usage",
+                              "--disable-blink-features=AutomationControlled"],
+                    )
+                except Exception as e:
+                    logger.warning("User %d: Chromium launch failed: %s", self.user_id, e)
+                    return False
+
                 context = await browser.new_context(
                     user_agent=(
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -446,31 +470,40 @@ class BettingEngine:
                     viewport={"width": 1280, "height": 800},
                     locale="en-US",
                 )
+                await context.add_init_script(stealth_js)
+                page = await context.new_page()
+
                 try:
-                    from playwright_stealth import stealth_async
-                    page = await context.new_page()
-                    await stealth_async(page)
-                except ImportError:
-                    page = await context.new_page()
+                    await page.goto(site_url, wait_until="domcontentloaded", timeout=45000)
+                except Exception as e:
+                    logger.warning("User %d: Playwright nav failed: %s", self.user_id, e)
+                    await browser.close()
+                    return False
 
-                await page.goto(site_url, wait_until="domcontentloaded", timeout=30000)
-
-                for _ in range(30):
+                for i in range(45):
                     cookies = await context.cookies()
                     cf = next((c for c in cookies if c["name"] == "cf_clearance"), None)
                     if cf:
                         self._cf_cookie_str = "; ".join(
                             f"{c['name']}={c['value']}" for c in cookies
                         )
-                        self._cf_user_agent = await page.evaluate("navigator.userAgent")
+                        try:
+                            self._cf_user_agent = await page.evaluate("navigator.userAgent")
+                        except Exception:
+                            pass
                         self._cf_cache_save()
+                        logger.info("User %d: got cf_clearance via Playwright (%ds)",
+                                    self.user_id, i + 1)
                         await browser.close()
                         return True
                     await asyncio.sleep(1)
 
+                logger.warning("User %d: Playwright timed out waiting for cf_clearance",
+                               self.user_id)
                 await browser.close()
         except Exception as e:
-            logger.debug("User %d: Playwright CF solve failed: %s", self.user_id, e)
+            logger.warning("User %d: Playwright error: %s: %s",
+                           self.user_id, type(e).__name__, e)
         return False
 
     async def _api_post(self, url: str, payload: dict) -> Optional[dict]:

@@ -132,58 +132,82 @@ def _playwright_available() -> bool:
     except ImportError:
         return False
 
+_STEALTH_INIT_JS = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', {
+    get: () => [{name: 'Chrome PDF Plugin'}, {name: 'Chrome PDF Viewer'}, {name: 'Native Client'}]
+});
+window.chrome = { runtime: {} };
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+    parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters)
+);
+"""
+
 def _solve_cf_playwright(site_url: str) -> bool:
     """Use Playwright headless browser to solve CF Turnstile/managed challenges."""
     global _cf_cookie_str, _cf_user_agent
     try:
-        import asyncio
         from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        console.print(f"  [red]Playwright not installed: {e}[/]")
+        return False
 
-        def _run():
-            global _cf_cookie_str, _cf_user_agent
-            with sync_playwright() as pw:
+    try:
+        with sync_playwright() as pw:
+            try:
                 browser = pw.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+                          "--disable-blink-features=AutomationControlled"],
                 )
-                context = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 800},
-                    locale="en-US",
-                )
-                # Apply stealth patches if available
-                try:
-                    from playwright_stealth import stealth_sync
-                    page = context.new_page()
-                    stealth_sync(page)
-                except ImportError:
-                    page = context.new_page()
+            except Exception as e:
+                console.print(f"  [red]Chromium launch failed: {e}[/]")
+                console.print("  [yellow]Run: playwright install chromium && playwright install-deps chromium[/]")
+                return False
 
-                page.goto(site_url, wait_until="domcontentloaded", timeout=30000)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="en-US",
+            )
+            context.add_init_script(_STEALTH_INIT_JS)
+            page = context.new_page()
 
-                # Wait up to 30s for cf_clearance to appear
-                for _ in range(30):
-                    cookies = context.cookies()
-                    cf = next((c for c in cookies if c["name"] == "cf_clearance"), None)
-                    if cf:
-                        _cf_cookie_str = "; ".join(
-                            f"{c['name']}={c['value']}" for c in cookies
-                        )
-                        _cf_user_agent = page.evaluate("navigator.userAgent")
-                        _cf_cache_save()
-                        browser.close()
-                        return True
-                    page.wait_for_timeout(1000)
-
+            try:
+                page.goto(site_url, wait_until="domcontentloaded", timeout=45000)
+            except Exception as e:
+                console.print(f"  [red]Page navigation failed: {e}[/]")
                 browser.close()
-            return False
+                return False
 
-        return _run()
+            # Wait up to 45s for cf_clearance to appear
+            for i in range(45):
+                cookies = context.cookies()
+                cf = next((c for c in cookies if c["name"] == "cf_clearance"), None)
+                if cf:
+                    _cf_cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+                    try:
+                        _cf_user_agent = page.evaluate("navigator.userAgent")
+                    except Exception:
+                        pass
+                    _cf_cache_save()
+                    console.print(f"  [green]Got cf_clearance via Playwright after {i+1}s[/]")
+                    browser.close()
+                    return True
+                page.wait_for_timeout(1000)
+
+            console.print("  [yellow]Playwright: timed out waiting for cf_clearance (45s)[/]")
+            browser.close()
+            return False
     except Exception as e:
-        logger.debug("Playwright CF solve failed: %s", e)
+        console.print(f"  [red]Playwright error: {type(e).__name__}: {e}[/]")
         return False
 
 # ===========================================================
