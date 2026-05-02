@@ -538,16 +538,39 @@ window.navigator.permissions.query = (parameters) => (
                            self.user_id, type(e).__name__, e)
         return False
 
+    @staticmethod
+    def _find_chrome_binary():
+        """Locate any Chrome/Chromium binary: system Chrome → Playwright bundled."""
+        for p in ("/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+                  "/usr/bin/chromium", "/usr/bin/chromium-browser",
+                  "/snap/bin/chromium"):
+            if os.path.exists(p):
+                return p
+        pw_cache = os.path.expanduser("~/.cache/ms-playwright")
+        if os.path.isdir(pw_cache):
+            for entry in sorted(os.listdir(pw_cache), reverse=True):
+                if entry.startswith("chromium"):
+                    for sub in ("chrome-linux/chrome", "chrome-linux/headless_shell"):
+                        p = os.path.join(pw_cache, entry, sub)
+                        if os.path.exists(p):
+                            return p
+        return None
+
     async def _solve_cf_nodriver(self, site_url: str) -> bool:
         """Use nodriver (undetected-chromedriver successor) — last-resort CF bypass."""
         try:
             import nodriver as uc
         except ImportError:
             return False
+        chrome_path = self._find_chrome_binary()
+        if not chrome_path:
+            logger.warning("User %d: nodriver — no Chrome/Chromium binary found", self.user_id)
+            return False
         browser = None
         try:
             browser = await uc.start(
                 headless=True,
+                browser_executable_path=chrome_path,
                 browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
             page = await browser.get(site_url)

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.7 — nodriver auto-detects Chromium binary (2026-05-02)
+
+### Fixed
+
+- **nodriver `FileNotFoundError`** — nodriver defaults to looking for system Google Chrome and fails on servers without it. Now searches in order: `/usr/bin/google-chrome*`, `/usr/bin/chromium*`, `/snap/bin/chromium`, then falls back to Playwright's bundled Chromium at `~/.cache/ms-playwright/chromium-*/chrome-linux/chrome`. So if Playwright is installed, nodriver works automatically without any extra Chrome install.
+
 ## v1.7.6 — nodriver Pass 6 + Playwright Turnstile click (2026-05-02)
 
 ### Added

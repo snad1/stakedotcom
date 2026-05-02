@@ -253,6 +253,23 @@ def _solve_cf_playwright(site_url: str) -> bool:
         return False
 
 
+def _find_chrome_binary() -> Optional[str]:
+    """Locate any Chrome/Chromium binary: system Chrome → Playwright bundled."""
+    for p in ("/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+              "/usr/bin/chromium", "/usr/bin/chromium-browser",
+              "/snap/bin/chromium"):
+        if os.path.exists(p):
+            return p
+    pw_cache = os.path.expanduser("~/.cache/ms-playwright")
+    if os.path.isdir(pw_cache):
+        for entry in sorted(os.listdir(pw_cache), reverse=True):
+            if entry.startswith("chromium"):
+                for sub in ("chrome-linux/chrome", "chrome-linux/headless_shell"):
+                    p = os.path.join(pw_cache, entry, sub)
+                    if os.path.exists(p):
+                        return p
+    return None
+
 def _solve_cf_nodriver(site_url: str) -> bool:
     """Use nodriver (undetected-chromedriver successor) — last-resort CF bypass."""
     global _cf_cookie_str, _cf_user_agent
@@ -262,12 +279,19 @@ def _solve_cf_nodriver(site_url: str) -> bool:
     except ImportError:
         return False
 
+    chrome_path = _find_chrome_binary()
+    if not chrome_path:
+        console.print("  [red]nodriver: no Chrome/Chromium binary found.[/]")
+        console.print("  [yellow]Install: apt install -y chromium  OR  install google-chrome-stable[/]")
+        return False
+
     async def _run():
         global _cf_cookie_str, _cf_user_agent
         browser = None
         try:
             browser = await uc.start(
                 headless=True,
+                browser_executable_path=chrome_path,
                 browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
             page = await browser.get(site_url)
