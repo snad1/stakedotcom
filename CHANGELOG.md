@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.7.3 — Cloudflare bypass improvements (2026-05-02)
+
+### Fixed
+
+- **Connection test used zero-amount bet** — Replaced with a lightweight GraphQL `AuthCheck` query (`user { id }`). Zero-amount bets to the casino endpoint trigger CF managed challenges; the GraphQL endpoint is lighter.
+- **CF bypass only tried one curl_cffi profile** — Added profile rotation (chrome120 → chrome116 → chrome110 → firefox → edge) before falling through to FlareSolverr. Different TLS fingerprints succeed against different CF rule sets.
+- **CF error message not actionable** — When all bypass attempts fail, the error now shows: `Cloudflare blocked — use /set proxy or /set cookie cf_clearance=VALUE`.
+- **`_recreate_http` always used "chrome" profile** — Now accepts `impersonate` parameter so profile rotation can drive it.
+
 ## v1.7.2 — Cloudflare 403 retry during active betting (2026-05-02)
 
 ### Fixed

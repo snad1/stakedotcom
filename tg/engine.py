@@ -256,7 +256,7 @@ class BettingEngine:
         self._task: Optional[asyncio.Task] = None
 
     # ── HTTP / Cloudflare ─────────────────────────────────
-    async def _recreate_http(self):
+    async def _recreate_http(self, impersonate: str = "chrome"):
         """Close and recreate the async HTTP client. Prefer curl_cffi for TLS fingerprint bypass."""
         try:
             if self._http:
@@ -269,7 +269,7 @@ class BettingEngine:
         except Exception:
             pass
         if _HAS_CFFI_ASYNC:
-            kwargs = {"impersonate": "chrome"}
+            kwargs = {"impersonate": impersonate}
             if self.proxy:
                 kwargs["proxy"] = self.proxy
             self._http = CffiAsyncSession(**kwargs)
@@ -278,7 +278,7 @@ class BettingEngine:
                 headers=self._headers(), timeout=REQUEST_TIMEOUT,
                 proxy=self.proxy if self.proxy else None,
             )
-        logger.info("User %d: HTTP client recreated", self.user_id)
+        logger.info("User %d: HTTP client recreated (%s)", self.user_id, impersonate)
 
     @staticmethod
     def _parse_streak_delay(value) -> tuple:
@@ -437,42 +437,40 @@ class BettingEngine:
         return r.json()
 
     async def _cf_reauth(self) -> bool:
-        """Re-solve Cloudflare mid-session. Tries new HTTP client, cached cookies, then FlareSolverr."""
-        game_info = GAMES[self.game]
-        endpoint = game_info["endpoint"]
-        resp_key = game_info["response_key"]
-        build = game_info["build_payload"]
-        saved = self.current_bet
-        self.current_bet = 0
-        payload = build(self)
-        self.current_bet = saved
+        """Re-solve Cloudflare mid-session. Profile rotation → cached cookies → FlareSolverr."""
+        query = """query AuthCheck { user { id __typename } }"""
+        payload = {"operationName": "AuthCheck", "query": query, "variables": {}}
 
         def _check(data):
-            return data and (resp_key in data or
-                             (isinstance(data.get("data"), dict) and resp_key in data["data"]))
+            return (data and isinstance(data.get("data"), dict)
+                    and data["data"].get("user") is not None)
 
         async def _try_all():
             last_err = None
             for base in API_BASES:
+                gql_url = base.split("/_api/casino")[0] + "/_api/graphql"
                 try:
-                    data = await self._api_post(base + endpoint, payload)
+                    data = await self._api_post(gql_url, payload)
                     if _check(data):
+                        self._api_base = base
                         return base, None
-                    last_err = f"Missing {resp_key}"
+                    last_err = f"Unexpected response from {gql_url}"
                 except Exception as e:
                     last_err = str(e)
             return None, last_err
 
-        await self._recreate_http()
-        base, err = await _try_all()
-        if base:
-            self._api_base = base
-            return True
+        # Try profile rotation first
+        for profile in ("chrome", "chrome120", "chrome116", "chrome110", "firefox", "edge"):
+            await self._recreate_http(impersonate=profile)
+            base, err = await _try_all()
+            if base:
+                return True
+            if "403" not in str(err):
+                break
 
         if "403" in str(err) and self._cf_cache_load():
             base2, err2 = await _try_all()
             if base2:
-                self._api_base = base2
                 return True
             err = err2
 
@@ -484,7 +482,6 @@ class BettingEngine:
                     if await self._solve_cloudflare(site):
                         base3, err3 = await _try_all()
                         if base3:
-                            self._api_base = base3
                             return True
         return False
 
@@ -530,30 +527,24 @@ class BettingEngine:
         return []
 
     async def _api_test_connection(self) -> bool:
-        """Test auth with a zero-bet. Tries all API bases, with CF bypass chain."""
-        game_info = GAMES[self.game]
-        build = game_info["build_payload"]
-        resp_key = game_info["response_key"]
-        endpoint = game_info["endpoint"]
-
-        saved = self.current_bet
-        self.current_bet = 0
-        payload = build(self)
-        self.current_bet = saved
+        """Test auth with a read-only GraphQL query. Tries all API bases with CF bypass chain."""
+        query = """query AuthCheck { user { id __typename } }"""
+        payload = {"operationName": "AuthCheck", "query": query, "variables": {}}
 
         def _check(data):
-            return data and (resp_key in data or
-                             (isinstance(data.get("data"), dict) and resp_key in data["data"]))
+            return (data and isinstance(data.get("data"), dict)
+                    and data["data"].get("user") is not None)
 
         async def _try_all():
             last_err = None
             for base in API_BASES:
-                url = base + endpoint
+                gql_url = base.split("/_api/casino")[0] + "/_api/graphql"
                 try:
-                    data = await self._api_post(url, payload)
+                    data = await self._api_post(gql_url, payload)
                     if _check(data):
+                        self._api_base = base
                         return base, None
-                    last_err = f"Missing {resp_key} from {url}"
+                    last_err = f"Auth check: unexpected response from {gql_url}"
                 except Exception as e:
                     last_err = str(e)
             return None, last_err
@@ -561,31 +552,46 @@ class BettingEngine:
         # Pass 1: direct
         base, err = await _try_all()
         if base:
-            self._api_base = base
             return True
 
         # Pass 2: cached CF cookies
         if "403" in str(err) and self._cf_cache_load():
             base2, err2 = await _try_all()
             if base2:
-                self._api_base = base2
                 return True
             err = err2
 
-        # Pass 3: FlareSolverr
+        # Pass 3: curl_cffi profile rotation (different TLS fingerprints)
+        if "403" in str(err) and _HAS_CFFI_ASYNC:
+            for profile in ("chrome120", "chrome116", "chrome110", "firefox", "edge"):
+                await self._recreate_http(impersonate=profile)
+                base3, err3 = await _try_all()
+                if base3:
+                    return True
+                if "403" not in str(err3):
+                    err = err3
+                    break
+                err = err3
+
+        # Pass 4: FlareSolverr
         if "403" in str(err):
             fs_ok = await self._check_flaresolverr_health()
             if fs_ok:
                 for domain_base in API_BASES:
                     site = domain_base.split("/_api")[0]
                     if await self._solve_cloudflare(site):
-                        base3, err3 = await _try_all()
-                        if base3:
-                            self._api_base = base3
+                        base4, err4 = await _try_all()
+                        if base4:
                             return True
-                        err = err3
+                        err = err4
 
-        self._set_error("All API domains failed", err or "All API domains failed")
+        if "403" in str(err):
+            self._set_error(
+                "Cloudflare blocked — use /set proxy or /set cookie cf_clearance=VALUE",
+                err or "CF 403 — all bypass attempts failed"
+            )
+        else:
+            self._set_error("Connection failed", err or "All API domains failed")
         return False
 
     async def _api_place_bet(self, amount: float) -> Optional[dict]:
