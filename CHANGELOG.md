@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.9 — nodriver hang protection + actionable CF block message (2026-05-02)
+
+### Fixed
+
+- **nodriver could hang the wizard indefinitely** — `uc.start()`, `browser.get()`, and `browser.cookies.get_all()` had no timeouts and could block forever if Chrome failed to launch or CDP became unresponsive. Now wrapped with `asyncio.wait_for` (20s start, 30s nav, 5s per cookie poll) plus a hard 120s outer timeout.
+- **"Cloudflare blocked" message wasn't actionable** — When all 6 bypass passes fail (which means CF has IP-banned the server), the error now explicitly says no code change can fix it and gives the two real solutions: run from a residential IP, or set a residential proxy in the wizard.
+
 ## v1.7.8 — Use Playwright API to locate Chromium for nodriver (2026-05-02)
 
 ### Fixed

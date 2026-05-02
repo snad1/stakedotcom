@@ -307,14 +307,20 @@ def _solve_cf_nodriver(site_url: str) -> bool:
         global _cf_cookie_str, _cf_user_agent
         browser = None
         try:
-            browser = await uc.start(
-                headless=True,
-                browser_executable_path=chrome_path,
-                browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
+            browser = await asyncio.wait_for(
+                uc.start(
+                    headless=True,
+                    browser_executable_path=chrome_path,
+                    browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
+                ),
+                timeout=20,
             )
-            page = await browser.get(site_url)
+            page = await asyncio.wait_for(browser.get(site_url), timeout=30)
             for i in range(45):
-                cookies = await browser.cookies.get_all()
+                try:
+                    cookies = await asyncio.wait_for(browser.cookies.get_all(), timeout=5)
+                except asyncio.TimeoutError:
+                    cookies = []
                 cf = next((c for c in cookies if c.name == "cf_clearance"), None)
                 if cf:
                     _cf_cookie_str = "; ".join(f"{c.name}={c.value}" for c in cookies)
@@ -336,7 +342,10 @@ def _solve_cf_nodriver(site_url: str) -> bool:
                     pass
 
     try:
-        return asyncio.run(_run())
+        return asyncio.run(asyncio.wait_for(_run(), timeout=120))
+    except asyncio.TimeoutError:
+        console.print("  [red]nodriver: hard 120s timeout — process was hanging[/]")
+        return False
     except Exception as e:
         console.print(f"  [red]nodriver error: {type(e).__name__}: {e}[/]")
         return False
@@ -1269,8 +1278,15 @@ def api_test_connection() -> bool:
 
     if "403" in str(err):
         raise Exception(
-            "Cloudflare blocked — server IP appears flagged. "
-            "Use --proxy with a residential proxy, or run from local machine."
+            "Cloudflare blocked this server's IP. CF detects datacenter IPs and refuses\n"
+            "  to issue cf_clearance even to a real headless browser (you'll see\n"
+            "  'Just a moment...' that never resolves). No code change can bypass this.\n"
+            "  Fix:\n"
+            "    A. Run from your local machine (residential IP works):\n"
+            "         git clone https://github.com/snad1/stakedotcom && cd stakedotcom\n"
+            "         python3 stake.py\n"
+            "    B. Set a residential proxy in the wizard's Proxy URL prompt:\n"
+            "         socks5://user:pass@residential-host:port"
         )
     raise Exception(err or "All API domains failed")
 

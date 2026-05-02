@@ -582,40 +582,54 @@ window.navigator.permissions.query = (parameters) => (
         if not chrome_path:
             logger.warning("User %d: nodriver — no Chrome/Chromium binary found", self.user_id)
             return False
-        browser = None
-        try:
-            browser = await uc.start(
-                headless=True,
-                browser_executable_path=chrome_path,
-                browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            page = await browser.get(site_url)
-            for i in range(45):
-                cookies = await browser.cookies.get_all()
-                cf = next((c for c in cookies if c.name == "cf_clearance"), None)
-                if cf:
-                    self._cf_cookie_str = "; ".join(f"{c.name}={c.value}" for c in cookies)
+
+        async def _run():
+            browser = None
+            try:
+                browser = await asyncio.wait_for(
+                    uc.start(
+                        headless=True,
+                        browser_executable_path=chrome_path,
+                        browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    ),
+                    timeout=20,
+                )
+                page = await asyncio.wait_for(browser.get(site_url), timeout=30)
+                for i in range(45):
                     try:
-                        self._cf_user_agent = await page.evaluate("navigator.userAgent")
+                        cookies = await asyncio.wait_for(browser.cookies.get_all(), timeout=5)
+                    except asyncio.TimeoutError:
+                        cookies = []
+                    cf = next((c for c in cookies if c.name == "cf_clearance"), None)
+                    if cf:
+                        self._cf_cookie_str = "; ".join(f"{c.name}={c.value}" for c in cookies)
+                        try:
+                            self._cf_user_agent = await page.evaluate("navigator.userAgent")
+                        except Exception:
+                            pass
+                        self._cf_cache_save()
+                        logger.info("User %d: got cf_clearance via nodriver (%ds)",
+                                    self.user_id, i + 1)
+                        return True
+                    await asyncio.sleep(1)
+                logger.warning("User %d: nodriver timed out", self.user_id)
+                return False
+            finally:
+                if browser:
+                    try:
+                        browser.stop()
                     except Exception:
                         pass
-                    self._cf_cache_save()
-                    logger.info("User %d: got cf_clearance via nodriver (%ds)",
-                                self.user_id, i + 1)
-                    return True
-                await asyncio.sleep(1)
-            logger.warning("User %d: nodriver timed out", self.user_id)
+
+        try:
+            return await asyncio.wait_for(_run(), timeout=120)
+        except asyncio.TimeoutError:
+            logger.warning("User %d: nodriver hard 120s timeout — was hanging", self.user_id)
             return False
         except Exception as e:
             logger.warning("User %d: nodriver error: %s: %s",
                            self.user_id, type(e).__name__, e)
             return False
-        finally:
-            if browser:
-                try:
-                    browser.stop()
-                except Exception:
-                    pass
 
     async def _api_post(self, url: str, payload: dict) -> Optional[dict]:
         if _HAS_CFFI_ASYNC:
