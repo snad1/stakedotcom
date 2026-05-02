@@ -539,19 +539,35 @@ window.navigator.permissions.query = (parameters) => (
         return False
 
     @staticmethod
-    def _find_chrome_binary():
-        """Locate any Chrome/Chromium binary: system Chrome → Playwright bundled."""
+    async def _find_chrome_binary():
+        """Locate any Chrome/Chromium binary: system Chrome → Playwright API → cache search."""
         for p in ("/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
                   "/usr/bin/chromium", "/usr/bin/chromium-browser",
                   "/snap/bin/chromium"):
             if os.path.exists(p):
                 return p
-        pw_cache = os.path.expanduser("~/.cache/ms-playwright")
-        if os.path.isdir(pw_cache):
-            for entry in sorted(os.listdir(pw_cache), reverse=True):
-                if entry.startswith("chromium"):
-                    for sub in ("chrome-linux/chrome", "chrome-linux/headless_shell"):
-                        p = os.path.join(pw_cache, entry, sub)
+        try:
+            from playwright.async_api import async_playwright
+            async with async_playwright() as pw:
+                path = pw.chromium.executable_path
+                if path and os.path.exists(path):
+                    return path
+        except Exception:
+            pass
+        cache_roots = [
+            os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+            os.path.expanduser("~/.cache/ms-playwright"),
+            "/root/.cache/ms-playwright",
+            "/usr/local/share/ms-playwright",
+        ]
+        for root in cache_roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for entry in sorted(os.listdir(root), reverse=True):
+                if "chromium" in entry.lower():
+                    for sub in ("chrome-linux/chrome", "chrome-linux/headless_shell",
+                                "chrome-linux64/chrome", "chrome/chrome"):
+                        p = os.path.join(root, entry, sub)
                         if os.path.exists(p):
                             return p
         return None
@@ -562,7 +578,7 @@ window.navigator.permissions.query = (parameters) => (
             import nodriver as uc
         except ImportError:
             return False
-        chrome_path = self._find_chrome_binary()
+        chrome_path = await self._find_chrome_binary()
         if not chrome_path:
             logger.warning("User %d: nodriver — no Chrome/Chromium binary found", self.user_id)
             return False

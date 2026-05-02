@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.8 — Use Playwright API to locate Chromium for nodriver (2026-05-02)
+
+### Fixed
+
+- **`_find_chrome_binary` filesystem search missed Playwright's Chromium** — Replaced with `playwright.chromium.executable_path` API call which always returns the correct path. Filesystem search kept as last-resort fallback, now also covers `PLAYWRIGHT_BROWSERS_PATH` env var, `/usr/local/share/ms-playwright`, and the newer `chrome-linux64/` and `chromium_headless_shell-*` directory layouts.
+
 ## v1.7.7 — nodriver auto-detects Chromium binary (2026-05-02)
 
 ### Fixed
