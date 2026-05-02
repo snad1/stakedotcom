@@ -6,4 +6,4 @@ python-telegram-bot>=20.0
 python-jose[cryptography]>=3.3.0
 casino-shared @ git+ssh://git@github.com/snad1/casino-shared.git
 playwright
-playwright-stealth
+nodriver

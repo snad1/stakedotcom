@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.7.6 — nodriver Pass 6 + Playwright Turnstile click (2026-05-02)
+
+### Added
+
+- **`nodriver` Pass 6** — Last-resort CF bypass using `nodriver` (the maintained successor to `undetected-chromedriver`). It uses raw Chrome DevTools Protocol so it doesn't carry Playwright's automation signatures. Triggered when Playwright Pass 5 also fails.
+- **Playwright Turnstile click** — If the passive 15s wait doesn't yield `cf_clearance`, the bot now scans frames for the Turnstile iframe and clicks the verification checkbox before extending the wait by 30s.
+- **Diagnostic on Playwright timeout** — Page title and body preview are printed/logged so you can see what CF is actually showing (still a challenge page vs. an outright block).
+- **`--headless=new`** — Switched to Chrome's new headless mode which is significantly harder to detect than the legacy headless mode.
+
+### Changed
+
+- **Removed `playwright-stealth`** — Its 2.x API broke compatibility; replaced with inline `add_init_script` patches.
+
 ## v1.7.5 — Playwright error visibility + inline stealth (2026-05-02)
 
 ### Fixed

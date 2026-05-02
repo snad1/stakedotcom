@@ -148,7 +148,7 @@ window.navigator.permissions.query = (parameters) => (
 """
 
 def _solve_cf_playwright(site_url: str) -> bool:
-    """Use Playwright headless browser to solve CF Turnstile/managed challenges."""
+    """Use Playwright with new headless mode + Turnstile click. Best for managed challenges."""
     global _cf_cookie_str, _cf_user_agent
     try:
         from playwright.sync_api import sync_playwright
@@ -161,8 +161,12 @@ def _solve_cf_playwright(site_url: str) -> bool:
             try:
                 browser = pw.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
-                          "--disable-blink-features=AutomationControlled"],
+                    args=[
+                        "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+                        "--disable-blink-features=AutomationControlled",
+                        "--headless=new",  # newer headless mode, harder to detect
+                        "--disable-features=IsolateOrigins,site-per-process",
+                    ],
                 )
             except Exception as e:
                 console.print(f"  [red]Chromium launch failed: {e}[/]")
@@ -176,6 +180,7 @@ def _solve_cf_playwright(site_url: str) -> bool:
                 ),
                 viewport={"width": 1280, "height": 800},
                 locale="en-US",
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
             )
             context.add_init_script(_STEALTH_INIT_JS)
             page = context.new_page()
@@ -187,10 +192,39 @@ def _solve_cf_playwright(site_url: str) -> bool:
                 browser.close()
                 return False
 
-            # Wait up to 45s for cf_clearance to appear
-            for i in range(45):
+            def _check_cookies():
                 cookies = context.cookies()
                 cf = next((c for c in cookies if c["name"] == "cf_clearance"), None)
+                return cf, cookies
+
+            # Phase 1: passive wait (15s) — many CF challenges auto-resolve
+            for _ in range(15):
+                cf, cookies = _check_cookies()
+                if cf:
+                    break
+                page.wait_for_timeout(1000)
+
+            # Phase 2: try clicking Turnstile checkbox if visible
+            cf, cookies = _check_cookies()
+            if not cf:
+                try:
+                    iframes = page.frames
+                    for frame in iframes:
+                        if "challenges.cloudflare" in (frame.url or "") or "turnstile" in (frame.url or "").lower():
+                            try:
+                                checkbox = frame.locator("input[type=checkbox]")
+                                if checkbox.count() > 0:
+                                    checkbox.first.click(timeout=5000)
+                                    console.print("  [dim]Clicked Turnstile checkbox[/]")
+                                    break
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # Phase 3: extended wait (30s more)
+            for i in range(30):
+                cf, cookies = _check_cookies()
                 if cf:
                     _cf_cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
                     try:
@@ -198,16 +232,71 @@ def _solve_cf_playwright(site_url: str) -> bool:
                     except Exception:
                         pass
                     _cf_cache_save()
-                    console.print(f"  [green]Got cf_clearance via Playwright after {i+1}s[/]")
+                    console.print(f"  [green]Got cf_clearance via Playwright[/]")
                     browser.close()
                     return True
                 page.wait_for_timeout(1000)
 
-            console.print("  [yellow]Playwright: timed out waiting for cf_clearance (45s)[/]")
+            # Diagnostic: what's the page actually showing?
+            try:
+                title = page.title()
+                body = page.evaluate("document.body ? document.body.innerText.slice(0, 300) : ''")
+                console.print(f"  [yellow]Playwright timed out. Page title: {title!r}[/]")
+                if body:
+                    console.print(f"  [dim]Body preview: {body[:200]}...[/]")
+            except Exception:
+                pass
             browser.close()
             return False
     except Exception as e:
         console.print(f"  [red]Playwright error: {type(e).__name__}: {e}[/]")
+        return False
+
+
+def _solve_cf_nodriver(site_url: str) -> bool:
+    """Use nodriver (undetected-chromedriver successor) — last-resort CF bypass."""
+    global _cf_cookie_str, _cf_user_agent
+    try:
+        import asyncio
+        import nodriver as uc
+    except ImportError:
+        return False
+
+    async def _run():
+        global _cf_cookie_str, _cf_user_agent
+        browser = None
+        try:
+            browser = await uc.start(
+                headless=True,
+                browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            page = await browser.get(site_url)
+            for i in range(45):
+                cookies = await browser.cookies.get_all()
+                cf = next((c for c in cookies if c.name == "cf_clearance"), None)
+                if cf:
+                    _cf_cookie_str = "; ".join(f"{c.name}={c.value}" for c in cookies)
+                    try:
+                        _cf_user_agent = await page.evaluate("navigator.userAgent")
+                    except Exception:
+                        pass
+                    _cf_cache_save()
+                    console.print(f"  [green]Got cf_clearance via nodriver after {i+1}s[/]")
+                    return True
+                await asyncio.sleep(1)
+            console.print("  [yellow]nodriver: timed out waiting for cf_clearance[/]")
+            return False
+        finally:
+            if browser:
+                try:
+                    browser.stop()
+                except Exception:
+                    pass
+
+    try:
+        return asyncio.run(_run())
+    except Exception as e:
+        console.print(f"  [red]nodriver error: {type(e).__name__}: {e}[/]")
         return False
 
 # ===========================================================
@@ -1119,9 +1208,27 @@ def api_test_connection() -> bool:
                     return True
                 err = err5
 
+    # Pass 6: nodriver (most aggressive CF bypass — patched Chrome via CDP)
+    if "403" in str(err):
+        try:
+            import nodriver  # noqa: F401
+            for domain_base in API_BASES:
+                site = domain_base.split("/_api")[0]
+                console.print(f"  [yellow]Solving Cloudflare via nodriver for {site}...[/yellow]")
+                if _solve_cf_nodriver(site):
+                    _recreate_http()
+                    base6, err6 = _try_all_bases()
+                    if base6:
+                        API_BASE = base6
+                        return True
+                    err = err6
+        except ImportError:
+            console.print("  [dim]nodriver not installed (skip). To enable: pip install nodriver[/]")
+
     if "403" in str(err):
         raise Exception(
-            "Cloudflare blocked — try: pip install playwright playwright-stealth && playwright install chromium"
+            "Cloudflare blocked — server IP appears flagged. "
+            "Use --proxy with a residential proxy, or run from local machine."
         )
     raise Exception(err or "All API domains failed")
 
