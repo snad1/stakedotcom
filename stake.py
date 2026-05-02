@@ -148,13 +148,23 @@ window.navigator.permissions.query = (parameters) => (
 """
 
 def _solve_cf_playwright(site_url: str) -> bool:
-    """Use Playwright with new headless mode + Turnstile click. Best for managed challenges."""
+    """Use patchright (preferred) or Playwright with new headless mode + Turnstile click."""
     global _cf_cookie_str, _cf_user_agent
+    sync_playwright = None
+    backend = None
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as e:
-        console.print(f"  [red]Playwright not installed: {e}[/]")
-        return False
+        from patchright.sync_api import sync_playwright as _spw
+        sync_playwright = _spw
+        backend = "patchright"
+    except ImportError:
+        try:
+            from playwright.sync_api import sync_playwright as _spw
+            sync_playwright = _spw
+            backend = "playwright"
+        except ImportError as e:
+            console.print(f"  [red]Playwright not installed: {e}[/]")
+            return False
+    console.print(f"  [dim]Using {backend} backend[/]")
 
     try:
         with sync_playwright() as pw:
@@ -1306,15 +1316,20 @@ def api_test_connection() -> bool:
 
     if "403" in str(err):
         raise Exception(
-            "Cloudflare blocked this server's IP. CF detects datacenter IPs and refuses\n"
-            "  to issue cf_clearance even to a real headless browser (you'll see\n"
-            "  'Just a moment...' that never resolves). No code change can bypass this.\n"
-            "  Fix:\n"
-            "    A. Run from your local machine (residential IP works):\n"
-            "         git clone https://github.com/snad1/stakedotcom && cd stakedotcom\n"
-            "         python3 stake.py\n"
-            "    B. Set a residential proxy in the wizard's Proxy URL prompt:\n"
-            "         socks5://user:pass@residential-host:port"
+            "Cloudflare hard-banned this server's IP — even patched headless Chrome\n"
+            "  can't get cf_clearance ('Just a moment...' never resolves). The IP\n"
+            "  itself is the disqualifying signal; no in-process code change fixes it.\n"
+            "  Fix (in order of effort):\n"
+            "    A. Try patchright (better stealth than vanilla Playwright):\n"
+            "         pip install patchright && patchright install chromium\n"
+            "         (then re-run the bot)\n"
+            "    B. Install a VPN on this server so traffic exits a clean IP:\n"
+            "         apt install -y wireguard\n"
+            "         (use a Mullvad/ProtonVPN/IVPN config — most have residential exits)\n"
+            "    C. Set a residential proxy at the wizard's Proxy URL prompt:\n"
+            "         socks5://user:pass@residential-host:port\n"
+            "    D. Run from your local machine (your residential IP works fine):\n"
+            "         python3 stake.py"
         )
     raise Exception(err or "All API domains failed")
 

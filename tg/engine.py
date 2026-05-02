@@ -427,12 +427,22 @@ class BettingEngine:
         return False
 
     async def _solve_cf_playwright(self, site_url: str) -> bool:
-        """Use Playwright with new headless mode + Turnstile click."""
+        """Use patchright (preferred) or Playwright with new headless mode + Turnstile click."""
+        async_playwright = None
+        backend = None
         try:
-            from playwright.async_api import async_playwright
-        except ImportError as e:
-            logger.warning("User %d: Playwright not installed: %s", self.user_id, e)
-            return False
+            from patchright.async_api import async_playwright as _apw
+            async_playwright = _apw
+            backend = "patchright"
+        except ImportError:
+            try:
+                from playwright.async_api import async_playwright as _apw
+                async_playwright = _apw
+                backend = "playwright"
+            except ImportError as e:
+                logger.warning("User %d: Playwright not installed: %s", self.user_id, e)
+                return False
+        logger.info("User %d: Playwright backend = %s", self.user_id, backend)
 
         stealth_js = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });

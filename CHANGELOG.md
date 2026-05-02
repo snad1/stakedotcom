@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.7.11 — patchright backend + WireGuard helper (2026-05-02)
+
+### Added
+
+- **`patchright` auto-detected as Playwright backend** — When `patchright` is installed (`pip install patchright && patchright install chromium`), the Playwright bypass pass uses it automatically instead of vanilla Playwright. Patchright applies `rebrowser-patches` which fix the `Runtime.Enable` CDP leak and other automation signatures CF detects in vanilla Playwright. Vanilla Playwright is the fallback if patchright isn't installed.
+- **`wireguard-setup.sh`** — Helper script that installs WireGuard and brings up a tunnel from a provider config. Use this when CF has IP-banned the server: route all traffic through Mullvad/ProtonVPN/IVPN's residential exits, then re-run the bot.
+
+### Changed
+
+- **Final CF-blocked error now lists 4 ordered fixes** — patchright (cheapest), VPN (next), residential proxy, run locally.
+
 ## v1.7.10 — Patch nodriver CDP cookie schema mismatch (2026-05-02)
 
 ### Fixed
