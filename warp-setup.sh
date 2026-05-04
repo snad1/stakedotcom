@@ -58,9 +58,16 @@ done
 # Make sure WARP is disconnected before we reconfigure
 warp-cli disconnect 2>/dev/null || true
 
-if ! warp-cli account 2>/dev/null | grep -q "Account type"; then
+if ! warp-cli registration show >/dev/null 2>&1; then
     echo "Registering free WARP account..."
-    warp-cli registration new
+    if ! warp-cli registration new 2>&1 | tee /tmp/warp-reg.log | grep -q "Success"; then
+        if grep -q "Old registration is still around" /tmp/warp-reg.log; then
+            echo "Stale registration detected — deleting and retrying..."
+            warp-cli registration delete 2>/dev/null || true
+            warp-cli registration new
+        fi
+    fi
+    rm -f /tmp/warp-reg.log
 fi
 
 # CRITICAL: switch to proxy mode BEFORE connecting, so WARP never captures all traffic.

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.15 — `warp-setup.sh` handles stale registration (2026-05-04)
+
+### Fixed
+
+- **`Old registration is still around` blocked re-runs** — Detects the existing-registration error, runs `warp-cli registration delete`, retries. Also uses `warp-cli registration show` (not `account`) to check for an existing valid registration.
+
 ## v1.7.14 — `warp-setup.sh` ensures warp-svc daemon is running (2026-05-04)
 
 ### Fixed
