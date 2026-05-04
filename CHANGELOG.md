@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.14 — `warp-setup.sh` ensures warp-svc daemon is running (2026-05-04)
+
+### Fixed
+
+- **`warp-cli` fails with "No such file or directory" when daemon stopped** — If the WARP daemon was previously disabled (e.g. during SSH lockout recovery), `warp-cli registration new` couldn't reach it. Script now `systemctl enable warp-svc && systemctl start warp-svc` and waits up to 15s for the daemon socket before continuing.
+
 ## v1.7.13 — `warp-setup.sh` now uses proxy mode (SSH-safe) (2026-05-02)
 
 ### Fixed

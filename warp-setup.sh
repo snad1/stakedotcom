@@ -43,6 +43,18 @@ if ! command -v warp-cli >/dev/null 2>&1; then
     apt install -y cloudflare-warp
 fi
 
+# Ensure the WARP daemon is enabled and running — warp-cli can't talk to it otherwise
+echo "Ensuring warp-svc is running..."
+systemctl enable warp-svc 2>/dev/null || true
+systemctl start warp-svc
+# Wait for the daemon socket to appear
+for i in {1..15}; do
+    if warp-cli status >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
 # Make sure WARP is disconnected before we reconfigure
 warp-cli disconnect 2>/dev/null || true
 
