@@ -47,7 +47,6 @@ active_engines: Dict[int, Dict[int, BettingEngine]] = {}
 _engine_chat_ids: Dict[int, int] = {}  # user_id → chat_id for resume
 _next_slot: Dict[int, int] = {}  # user_id → next slot number
 
-MAX_SESSIONS = 5  # max concurrent sessions per user
 
 # ── Recurring bet state ─────────────────────────────────
 # recurring_state[user_id][slot] = {"delay": int, "chat_id": int, "config": dict, "timer_task": Task|None}
@@ -744,12 +743,6 @@ async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /bet ─────────────────────────────────────────────────
 async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    running = _get_running(user_id)
-
-    if len(running) >= MAX_SESSIONS:
-        await update.message.reply_text(
-            f"Max {MAX_SESSIONS} concurrent sessions. /stop a session first.")
-        return
 
     config = load_user_config(user_id)
     if not config.get("access_token"):
@@ -932,12 +925,6 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
     if old_slot not in user_rec:
         return  # cancelled while waiting
 
-    running = _get_running(user_id)
-    if len(running) >= MAX_SESSIONS:
-        await _safe_send(app, 
-            chat_id, "Recurring restart skipped — max sessions reached.")
-        user_rec.pop(old_slot, None)
-        return
 
     tier = get_user_tier(user_id)
     min_delay = TIERS.get(tier, 1.0)
