@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.16 — bet_delay is a minimum-interval, not a sleep-before (2026-05-11)
+
+### Changed
+
+- **`bet_delay` semantics** — Previously: `sleep(bet_delay)` before each bet, so cycle = `bet_delay + api_time`. Now: minimum interval since the previous bet *started*, so cycle = `max(bet_delay, api_time)`. With delay=1s and api=50ms, you get a clean 1 bet/sec; with api=1500ms there's no extra sleep so the bot keeps up. More predictable pace.
+
 ## v1.7.15 — `warp-setup.sh` handles stale registration (2026-05-04)
 
 ### Fixed
