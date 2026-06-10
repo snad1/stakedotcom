@@ -394,19 +394,35 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.path.exists(ctl_path):
         await update.message.reply_text(f"{CTL_NAME} not found in PATH.")
         return
+    if not shutil.which("systemd-run"):
+        await update.message.reply_text("systemd-run not found — update manually via SSH.")
+        return
+    log_file = f"/tmp/{CTL_NAME}-update.log"
+    cmd = [
+        "systemd-run", "--user", "--collect", "--no-block",
+        "--", "bash", "-c",
+        f"echo \"=== Update via /update at $(date -Is) ===\" >> {log_file} 2>&1; "
+        f"sleep 2; {ctl_path} update >> {log_file} 2>&1",
+    ]
     try:
-        subprocess.Popen(
-            ["systemd-run", "--user", "--collect",
-             "--", "bash", "-c", f"sleep 2 && {ctl_path} update"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "no output").strip()[:300]
+            logger.error("cmd_update: systemd-run rc=%d stderr=%s stdout=%s",
+                         result.returncode, result.stderr, result.stdout)
+            await update.message.reply_text(
+                f"❌ systemd-run failed (rc={result.returncode}): `{err}`",
+                parse_mode="Markdown")
+            return
         await update.message.reply_text(
-            "🔄 Update started — bot will restart in ~2s.")
+            f"🔄 Update started — bot will restart in ~2s.\n"
+            f"Logs: `cat {log_file}`",
+            parse_mode="Markdown")
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("⏱ systemd-run timed out (>10s).")
     except Exception as e:
         logger.error("cmd_update error: %s", e, exc_info=True)
-        msg = f"Failed to launch update: `{e}`" if APP_ENV != "production" else "Update launch failed."
+        msg = f"Failed: `{type(e).__name__}: {e}`" if APP_ENV != "production" else "Update launch failed."
         await update.message.reply_text(msg, parse_mode="Markdown")
 
 

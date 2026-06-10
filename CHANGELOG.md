@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.19 — /update reports real errors + writes update log (2026-06-10)
+
+### Fixed
+
+- **/update silently failed when systemd-run errored** — Previous `subprocess.Popen` with `stderr=DEVNULL` swallowed failures. Now uses `subprocess.run --no-block` synchronously, captures stdout/stderr, surfaces real errors to Telegram. Update output goes to `/tmp/stakectl-update.log` so you can review what happened: `cat /tmp/stakectl-update.log`.
+
 ## v1.7.18 — /update Telegram command for self-update (2026-06-10)
 
 ### Added
