@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.20 — /update cd's into repo dir before running ctl (2026-06-11)
+
+### Fixed
+
+- **/update failed with "No stake.py in current directory"** — `systemd-run` spawns the bash command with cwd=/ (not the bot's repo dir). The `stakectl update` script looks for the bot py file in cwd to copy. Now `cd /root/stake && stakectl update` is the bash command. Override via `BOT_REPO_DIR` env var if your layout is different.
+
 ## v1.7.19 — /update reports real errors + writes update log (2026-06-10)
 
 ### Fixed
