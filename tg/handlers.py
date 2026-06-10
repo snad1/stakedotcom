@@ -12,8 +12,10 @@ Stake-specific differences from wolfbet:
 import os
 import json
 import time
+import shutil
 import asyncio
 import sqlite3
+import subprocess
 from datetime import datetime
 from typing import Dict
 
@@ -370,6 +372,44 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /config ──────────────────────────────────────────────
+CTL_NAME = "stakectl"
+DEFAULT_OWNER_ID = 680974641
+
+
+def _is_owner(user_id: int) -> bool:
+    """Telegram user must match TG_OWNER_ID (env var) or the default owner."""
+    owner = os.environ.get("TG_OWNER_ID")
+    if owner and owner.isdigit():
+        return user_id == int(owner)
+    return user_id == DEFAULT_OWNER_ID
+
+
+async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pull latest code + restart the bot (owner only)."""
+    user_id = update.effective_user.id
+    if not _is_owner(user_id):
+        await update.message.reply_text("Owner only.")
+        return
+    ctl_path = shutil.which(CTL_NAME) or f"/root/.local/bin/{CTL_NAME}"
+    if not os.path.exists(ctl_path):
+        await update.message.reply_text(f"{CTL_NAME} not found in PATH.")
+        return
+    try:
+        subprocess.Popen(
+            ["systemd-run", "--user", "--collect",
+             "--", "bash", "-c", f"sleep 2 && {ctl_path} update"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        await update.message.reply_text(
+            "🔄 Update started — bot will restart in ~2s.")
+    except Exception as e:
+        logger.error("cmd_update error: %s", e, exc_info=True)
+        msg = f"Failed to launch update: `{e}`" if APP_ENV != "production" else "Update launch failed."
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
+
 async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     config = load_user_config(user_id)

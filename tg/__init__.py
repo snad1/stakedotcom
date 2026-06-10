@@ -1,3 +1,3 @@
 """Stake Telegram Bot — Multi-tenant auto-betting via Telegram."""
 
-VERSION = "1.7.17"
+VERSION = "1.7.18"
