@@ -32,6 +32,16 @@ def _fmti(n) -> str:
     return f"{int(n):,}"
 
 
+def _safe_code(s) -> str:
+    """Escape a string for safe interpolation INSIDE a Markdown V1 code span.
+
+    Only `` ` `` is reserved inside ``…``; *, _, [ are literal. A stray backtick
+    in a user-rule description or engine status string breaks the surrounding
+    code entity and Telegram silently rejects the message.
+    """
+    return str(s).replace("`", "'") if s is not None else ""
+
+
 def format_full_config(s: dict) -> list:
     """Return full config as list of formatted lines. Used by status, stop, and session-start."""
     lines = []
@@ -174,9 +184,9 @@ def format_status(s: dict) -> str:
         lines.append("")
         lines.append(f"\U0001f4dc *Rules ({len(rules)})*")
         for i, desc in enumerate(rules, 1):
-            lines.append(f"  {i}. `{desc}`")
+            lines.append(f"  {i}. `{_safe_code(desc)}`")
 
-    lines += ["", f"`{s['status']}`"]
+    lines += ["", f"`{_safe_code(s['status'])}`"]
 
     return "\n".join(lines)
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.9.7 — Fix: `/status` silently failing on Markdown parse error (2026-06-17)
+
+### Fixed
+
+- **`/status` returns nothing in Telegram** when a rule description or engine status string contains an unbalanced Markdown character. `format_status` wraps user/external strings inside Markdown V1 code spans (`` `…` ``); a stray backtick splits the entity and Telegram silently rejects the message. Fixed at the render boundary — `_safe_code(s)` escapes backticks in the two leaky fields (rule descriptions, trailing engine status). Added `safe_reply_markdown(...)` wrapper for `/status` and `/monitor`; enhanced `_safe_send` and the monitor-refresh `edit_text` paths to retry as plain text on parse-error `BadRequest`. The user always sees the message; technical detail is logged server-side only.
+
 ## v1.9.6 — Fix: SQLite cross-thread error in _get_conn (defensive) (2026-06-17)
 
 ### Fixed

@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from . import VERSION
@@ -890,8 +891,12 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _safe_send(app, chat_id, text, **kwargs):
-    """Engine-driven send that swallows flood/network errors to avoid unraised Task exceptions."""
-    from telegram.error import RetryAfter, NetworkError, TimedOut, BadRequest
+    """Engine-driven send that swallows flood/network errors to avoid unraised Task exceptions.
+
+    On a Markdown parse error, retries once as plain text so the user always
+    sees the notification — preventing silent /status-style outages.
+    """
+    from telegram.error import RetryAfter, NetworkError, TimedOut
     try:
         await app.bot.send_message(chat_id, text, **kwargs)
     except RetryAfter as e:
@@ -899,7 +904,35 @@ async def _safe_send(app, chat_id, text, **kwargs):
     except (NetworkError, TimedOut) as e:
         logger.warning("Telegram network — dropping notification: %s", e)
     except BadRequest as e:
+        msg = str(e).lower()
+        if "parse" in msg or "entity" in msg:
+            logger.warning("Markdown parse failed (%s); resending notification as plain text", e)
+            kwargs.pop("parse_mode", None)
+            try:
+                await app.bot.send_message(chat_id, text, **kwargs)
+                return
+            except (RetryAfter, NetworkError, TimedOut, BadRequest) as e2:
+                logger.warning("Plain-text retry also failed: %s", e2)
+                return
         logger.warning("Telegram rejected notification: %s", e)
+
+
+async def safe_reply_markdown(reply_target, text, **kwargs):
+    """Reply with parse_mode=Markdown; on parse failure, retry as plain text.
+
+    Telegram silently rejects messages with unbalanced Markdown entities;
+    /status looks dead from the user's side. This wrapper guarantees the
+    user always sees the content (formatting falls back to literal *foo*).
+    """
+    try:
+        return await reply_target.reply_text(text, parse_mode="Markdown", **kwargs)
+    except BadRequest as e:
+        msg = str(e).lower()
+        if "parse" in msg or "entity" in msg:
+            logger.warning("Markdown parse failed (%s); resending reply as plain text", e)
+            kwargs.pop("parse_mode", None)
+            return await reply_target.reply_text(text, **kwargs)
+        raise
 
 
 def _log_task_exception(task: asyncio.Task):
@@ -1320,7 +1353,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("Refresh", callback_data=f"refresh_status:{slot}"),
         InlineKeyboardButton("Stop", callback_data=f"stop_session:{slot}"),
     ]])
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    await safe_reply_markdown(update.message, text, reply_markup=keyboard)
 
 
 # ── /monitor ─────────────────────────────────────────────
@@ -1352,7 +1385,7 @@ async def cmd_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("Stop Monitor", callback_data=f"stop_monitor:{slot}"),
         InlineKeyboardButton("Stop Session", callback_data=f"stop_session:{slot}"),
     ]])
-    msg = await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    msg = await safe_reply_markdown(update.message, text, reply_markup=keyboard)
 
     task = asyncio.create_task(
         _monitor_loop(msg, user_id, slot, interval))
@@ -1400,6 +1433,13 @@ async def _monitor_loop(msg, user_id: int, slot: int, interval: int):
             ]])
             try:
                 await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            except BadRequest as e:
+                m = str(e).lower()
+                if "parse" in m or "entity" in m:
+                    try:
+                        await msg.edit_text(text, reply_markup=keyboard)
+                    except Exception:
+                        pass
             except Exception:
                 pass
     except asyncio.CancelledError:
@@ -1520,6 +1560,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except BadRequest as e:
+            m = str(e).lower()
+            if "parse" in m or "entity" in m:
+                try:
+                    await query.edit_message_text(text, reply_markup=keyboard)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1538,6 +1585,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
             try:
                 await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            except BadRequest as e:
+                m = str(e).lower()
+                if "parse" in m or "entity" in m:
+                    try:
+                        await query.edit_message_text(text, reply_markup=keyboard)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         else:
@@ -1561,6 +1615,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except BadRequest as e:
+            m = str(e).lower()
+            if "parse" in m or "entity" in m:
+                try:
+                    await query.edit_message_text(text, reply_markup=keyboard)
+                except Exception:
+                    pass
         except Exception:
             pass
         task = asyncio.create_task(
