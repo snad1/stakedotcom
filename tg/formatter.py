@@ -159,7 +159,7 @@ def format_status(s: dict) -> str:
         f"  Now:   `{rb:.1f}` bps / `{rbm:.0f}` bpm  (last 60s)",
         f"  Avg:   `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm  (session)",
         f"  Range: `{lw_bps}-{pk_bps}` bps / `{lw_bpm}-{pk_bpm}` bpm",
-        f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg",
+        f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg / `{s.get('api_peak_ms', 0):.0f}ms` peak",
         f"  Cycle: `{s.get('cycle_ms', 0):.0f}ms`/bet  (1000/{max(s.get('cycle_ms', 1), 1):.0f} = `{(1000.0 / max(s.get('cycle_ms', 1), 1)):.2f}` bps)",
         f"  Overhead: `{s.get('overhead_ms', 0):.0f}ms`/bet  (engine + scheduler)",
     ]

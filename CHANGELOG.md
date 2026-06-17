@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.9.3 — API peak time on the dashboard (2026-06-17)
+
+### Added
+
+- **`API: X last / Y avg / Z peak`** — third field tracks the slowest single API response observed this session. Permanently records spikes so users can see WHY `Cycle` is elevated above `bet_delay`.
+
 ## v1.9.2 — Cycle metric: full per-bet time (bps reciprocal) (2026-06-17)
 
 ### Added
