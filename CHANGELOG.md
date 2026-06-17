@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.9.8 — Fix: `/status` rendering as plain text — `bet_delay` opened an unclosed italic entity (2026-06-17)
+
+### Fixed
+
+- **`/status` rendered as PLAIN TEXT** (literal `*Session #X*`, `*Balance*`, `` `…` `` visible) because the v1.9.7 fallback was firing every invocation. Root cause: the literal token `bet_delay` on the "API stable" line sat OUTSIDE any code span — Markdown V1 read the `_` as the start of an italic entity, never found the closing `_`, and rejected the message. Renamed to `bet delay` (space, not underscore) — same meaning, no Markdown bomb. The v1.9.7 fallback remains in place as the safety net.
+
 ## v1.9.7 — Fix: `/status` silently failing on Markdown parse error (2026-06-17)
 
 ### Fixed
