@@ -1567,6 +1567,14 @@ window.navigator.permissions.query = (parameters) => (
             "overhead_ms": self._cycle_overhead_ms,
             "cycle_ms": self._cycle_ms,
         }
+        # Efficiency = recent bps / theoretical max bps (capped at 100%).
+        # theoretical max = 1 / max(bet_delay, api_avg) — whichever bounds the cycle.
+        api_avg_s = ((self._api_ms_total / self._api_ms_count) / 1000.0) if self._api_ms_count > 0 else 0
+        cycle_floor = max(self.bet_delay, api_avg_s)
+        theoretical_max_bps = (1.0 / cycle_floor) if cycle_floor > 0 else 0
+        efficiency_pct = (self.recent_bps / theoretical_max_bps * 100) if theoretical_max_bps > 0 else 0
+        status["theoretical_max_bps"] = theoretical_max_bps
+        status["efficiency_pct"] = min(100.0, efficiency_pct)
         self._status_cache = status
         self._status_cache_ts = now_mono
         return status
