@@ -234,6 +234,8 @@ class BettingEngine:
         self._api_ms_total         = 0.0
         self._api_ms_count         = 0
         self.peak_api_ms: float    = 0.0  # max single-bet API response time this session
+        self._api_samples: deque   = deque(maxlen=200)  # ring buffer for p50/median calc
+        self._on_target_count: int = 0  # bets where api_ms ≤ bet_delay (the happy path)
 
         # ── strategy internals ──
         self.dalembert_unit  = 0
@@ -922,6 +924,9 @@ window.navigator.permissions.query = (parameters) => (
             self._last_api_ms = (time.time() - t0) * 1000
             if self._last_api_ms > self.peak_api_ms:
                 self.peak_api_ms = self._last_api_ms
+            self._api_samples.append(self._last_api_ms)
+            if self.bet_delay > 0 and self._last_api_ms <= self.bet_delay * 1000:
+                self._on_target_count += 1
             self._consecutive_timeouts = 0
             return d
 
@@ -1567,6 +1572,14 @@ window.navigator.permissions.query = (parameters) => (
             "overhead_ms": self._cycle_overhead_ms,
             "cycle_ms": self._cycle_ms,
         }
+        # API median (p50) and on-target % (api ≤ bet_delay). Explains the
+        # Efficiency ceiling: 95% on-target → ~95% efficiency is the upper bound.
+        p50 = (sorted(self._api_samples)[len(self._api_samples) // 2]
+               if self._api_samples else 0)
+        on_target_pct = ((self._on_target_count / self._api_ms_count) * 100
+                         if self._api_ms_count > 0 and self.bet_delay > 0 else None)
+        status["api_p50_ms"] = p50
+        status["on_target_pct"] = on_target_pct
         # Efficiency = recent bps / theoretical max bps (capped at 100%).
         # theoretical max = 1 / max(bet_delay, api_avg) — whichever bounds the cycle.
         api_avg_s = ((self._api_ms_total / self._api_ms_count) / 1000.0) if self._api_ms_count > 0 else 0

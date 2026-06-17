@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.9.5 — API stable: median + on-target % (2026-06-17)
+
+### Added
+
+- **`API stable: Xms median / Y% on-target`** — median = typical API time (unbiased by spikes); on-target % = bets where API ≤ bet_delay. Explains the Efficiency ceiling: bps deficit ≈ (100% − on_target%).
+
 ## v1.9.4 — Efficiency % indicator (2026-06-17)
 
 ### Added

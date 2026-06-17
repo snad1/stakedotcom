@@ -155,11 +155,14 @@ def format_status(s: dict) -> str:
     lw_bpm = int(s.get("low_bpm", 0))
     rb = s.get("recent_bps", s["bps"])
     rbm = s.get("recent_bpm", s["bpm"])
+    ot = s.get("on_target_pct")
+    ot_str = f"{ot:.0f}%" if ot is not None else "n/a"
     lines += [
         f"  Now:   `{rb:.1f}` bps / `{rbm:.0f}` bpm  (last 60s)",
         f"  Avg:   `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm  (session)",
         f"  Range: `{lw_bps}-{pk_bps}` bps / `{lw_bpm}-{pk_bpm}` bpm",
         f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg / `{s.get('api_peak_ms', 0):.0f}ms` peak",
+        f"  API stable: `{s.get('api_p50_ms', 0):.0f}ms` median / `{ot_str}` on-target  (API ≤ bet_delay)",
         f"  Cycle: `{s.get('cycle_ms', 0):.0f}ms`/bet  (1000/{max(s.get('cycle_ms', 1), 1):.0f} = `{(1000.0 / max(s.get('cycle_ms', 1), 1)):.2f}` bps)",
         f"  Efficiency: `{s.get('efficiency_pct', 0):.0f}%`  (max `{s.get('theoretical_max_bps', 0):.2f}` bps @ delay={s.get('bet_delay', 0):.3f}s)",
         f"  Overhead: `{s.get('overhead_ms', 0):.0f}ms`/bet  (engine + scheduler)",
