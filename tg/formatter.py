@@ -160,6 +160,7 @@ def format_status(s: dict) -> str:
         f"  Avg:   `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm  (session)",
         f"  Range: `{lw_bps}-{pk_bps}` bps / `{lw_bpm}-{pk_bpm}` bpm",
         f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg",
+        f"  Overhead: `{s.get('overhead_ms', 0):.0f}ms`/bet  (engine + scheduler)",
     ]
 
     # custom rules

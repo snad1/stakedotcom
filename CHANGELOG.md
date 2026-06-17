@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.9.1 — Per-cycle overhead diagnostic + get_status() cache (2026-06-17)
+
+### Added
+
+- **`Overhead: Xms/bet`** on the dashboard — exp-smoothed time per bet OUTSIDE of `bet_delay` and the API call. Healthy = ~5–15ms; 50ms+ = investigate.
+- **`get_status()` cache (250ms TTL)** — eliminates the brief per-second bucket dip at milestones.
+
 ## v1.9.0 — Sliding-window BPS + non-blocking SQLite writes (2026-06-17)
 
 ### Added
