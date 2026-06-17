@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.8.0 — Auto-revive: systemd retry-forever + external stall watchdog (2026-06-17)
+
+### Added
+
+- **`Restart=always` + `StartLimitIntervalSec=0`** on both CLI and TG bot services. Bot now restarts after every exit (not just non-zero), and systemd never stops retrying after N quick failures.
+- **External stall watchdog timer** — A new `stake-tg-watchdog.timer` fires every 2 minutes and runs a bash check: if `/tmp/stake-tg.heartbeat` is missing or older than 180s, it forces `systemctl restart stake-tg`. Catches the stuck-but-alive case (process running, event loop frozen) that `Restart=` can't catch.
+- **Heartbeat task in the bot** — `_heartbeat_loop()` runs as an asyncio background task started from `post_init`, writing a fresh mtime to the heartbeat file every 30 seconds.
+
+Result: if the bot crashes, systemd brings it back in 10s. If the bot stalls, the watchdog brings it back within ~3 minutes. No more SSH-and-restart.
+
 ## v1.7.20 — /update cd's into repo dir before running ctl (2026-06-11)
 
 ### Fixed

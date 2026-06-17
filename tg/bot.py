@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Stake Telegram Bot — entry point and Application wiring."""
 
+import asyncio
 import atexit
 import os
 import signal
 import sys
+import time
 
 from telegram import BotCommand
 from telegram.error import RetryAfter, NetworkError, TimedOut
@@ -25,6 +27,20 @@ from .handlers import (
 )
 
 _resume_saved = False
+HEARTBEAT_FILE = "/tmp/stake-tg.heartbeat"
+
+
+async def _heartbeat_loop():
+    """Write a fresh mtime to HEARTBEAT_FILE every 30s so the external
+    watchdog timer knows the bot's event loop is still alive."""
+    while True:
+        try:
+            with open(HEARTBEAT_FILE, "w") as f:
+                f.write(str(int(time.time())))
+        except Exception as e:
+            logger.warning("Heartbeat write failed: %s", e)
+        await asyncio.sleep(30)
+
 
 def _save_once():
     """Ensure resume state is saved exactly once on shutdown."""
@@ -89,6 +105,8 @@ def main():
             BotCommand("delsession",  "Delete a session by ID"),
         ])
         logger.info("Bot commands registered with Telegram")
+        # Start watchdog heartbeat
+        asyncio.create_task(_heartbeat_loop())
         # Resume any engines saved from graceful shutdown
         await load_resume_state(application)
 
