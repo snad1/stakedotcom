@@ -989,9 +989,16 @@ window.navigator.permissions.query = (parameters) => (
 
     # ── DB ───────────────────────────────────────────────
     def _get_conn(self) -> sqlite3.Connection:
-        """Return persistent DB connection, creating if needed."""
+        """Return persistent DB connection, creating if needed.
+
+        Opens with check_same_thread=False directly (not via shared db_connect)
+        so the engine survives a stale casino-shared install. The connection
+        is reused across asyncio.to_thread() calls; the engine owns it.
+        """
         if self._db_connection is None:
-            self._db_connection = db_connect(self.db_path)
+            self._db_connection = sqlite3.connect(
+                self.db_path, timeout=5, check_same_thread=False)
+            self._db_connection.execute("PRAGMA journal_mode=WAL")
         return self._db_connection
 
     def _close_conn(self):

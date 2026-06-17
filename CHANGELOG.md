@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.9.6 — Fix: SQLite cross-thread error in _get_conn (defensive) (2026-06-17)
+
+### Fixed
+
+- **`DB flush_bets failed: SQLite objects created in a thread can only be used in that same thread.`** — `_get_conn` now opens directly with `sqlite3.connect(..., check_same_thread=False)` instead of via shared `db_connect`, so a stale pip-installed casino-shared can't reintroduce the bug.
+
 ## v1.9.5 — API stable: median + on-target % (2026-06-17)
 
 ### Added
