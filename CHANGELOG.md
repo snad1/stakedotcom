@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.9.0 — Sliding-window BPS + non-blocking SQLite writes (2026-06-17)
+
+### Added
+
+- **`Now` bps (sliding 60s window)** alongside the existing cumulative `Avg`. Dashboard now shows BOTH so you can tell what the bot is doing RIGHT NOW vs. the lifetime average.
+
+### Changed
+
+- **DB writes no longer block the event loop.** `_flush_bets`, `_db_save_session`, and `cleanup_live_bets` (if present) now run via `asyncio.to_thread`. Inline batch-size flush trigger removed — flushes are now driven exclusively by `_periodic_save` every 30s. Shared `db_connect` opens with `check_same_thread=False` so the connection is safe to use from worker threads.
+
+Result: multiple concurrent sessions now scale closer to single-session throughput, and the dashboard's `Now` number reflects current speed rather than session average.
+
 ## v1.8.0 — Auto-revive: systemd retry-forever + external stall watchdog (2026-06-17)
 
 ### Added

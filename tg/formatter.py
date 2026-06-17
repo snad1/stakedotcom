@@ -153,8 +153,11 @@ def format_status(s: dict) -> str:
     lw_bps = int(s.get("low_bps", 0))
     pk_bpm = int(s.get("peak_bpm", 0))
     lw_bpm = int(s.get("low_bpm", 0))
+    rb = s.get("recent_bps", s["bps"])
+    rbm = s.get("recent_bpm", s["bpm"])
     lines += [
-        f"  Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm",
+        f"  Now:   `{rb:.1f}` bps / `{rbm:.0f}` bpm  (last 60s)",
+        f"  Avg:   `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm  (session)",
         f"  Range: `{lw_bps}-{pk_bps}` bps / `{lw_bpm}-{pk_bpm}` bpm",
         f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg",
     ]
@@ -212,7 +215,7 @@ def format_stop(s: dict, reason: str) -> str:
         f"{config_lines}\n"
         f"\n"
         f"\u23f1 Uptime: `{s['uptime']}`\n"
-        f"Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm"
+        f"Avg speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm"
     )
 
 
