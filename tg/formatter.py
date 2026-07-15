@@ -172,11 +172,13 @@ def format_status(s: dict) -> str:
         f"  Avg:   `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm  (session)",
         f"  Range: `{lw_bps}-{pk_bps}` bps / `{lw_bpm}-{pk_bpm}` bpm",
         f"  API: `{s.get('api_ms', 0):.0f}ms` last / `{s.get('api_avg_ms', 0):.0f}ms` avg / `{s.get('api_peak_ms', 0):.0f}ms` peak",
-        f"  API stable: `{s.get('api_p50_ms', 0):.0f}ms` median / `{ot_str}` on-target  (API ≤ bet delay)",
         f"  Cycle: `{s.get('cycle_ms', 0):.0f}ms`/bet  (1000/{max(s.get('cycle_ms', 1), 1):.0f} = `{(1000.0 / max(s.get('cycle_ms', 1), 1)):.2f}` bps)",
-        f"  Efficiency: `{s.get('efficiency_pct', 0):.0f}%`  (max `{s.get('theoretical_max_bps', 0):.2f}` bps @ delay={s.get('bet_delay', 0):.3f}s)",
-        f"  Overhead: `{s.get('overhead_ms', 0):.0f}ms`/bet  (engine + scheduler)",
     ]
+    if s.get("bet_delay", 0) > 0:
+        lines += [
+            f"  API stable: `{s.get('api_p50_ms', 0):.0f}ms` median / `{ot_str}` on-target  (API ≤ bet delay)",
+            f"  Efficiency: `{s.get('efficiency_pct', 0):.0f}%`  (max `{s.get('theoretical_max_bps', 0):.2f}` bps @ delay={s.get('bet_delay', 0):.3f}s)",
+        ]
 
     # custom rules
     rules = s.get("rules", [])
@@ -196,6 +198,7 @@ def format_stop(s: dict, reason: str) -> str:
     p = s["profit"]
     ps = "+" if p >= 0 else ""
     pe = _pnl_emoji(p)
+    stop_emoji = "✅" if p >= 0 else "\U0001f6d1"  # ✅ profit end, 🛑 loss end
 
     avg = p / s["bets"] if s["bets"] > 0 else 0
     avg_s = "+" if avg >= 0 else ""
@@ -207,7 +210,7 @@ def format_stop(s: dict, reason: str) -> str:
 
     config_lines = "\n".join(format_full_config(s))
     return (
-        f"\U0001f6d1 *Session #{s['session_id']} ended* ({game})\n"
+        f"{stop_emoji} *Session #{s['session_id']} ended* ({game})\n"
         f"Reason: _{reason}_\n"
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\U0001f4b0 *Balance*\n"

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.9.10 — `/status` speed block trimmed (2026-06-17)
+
+### Changed
+
+- **Removed `Overhead` line** from the `/status` speed block — rarely actionable at a glance, adds noise.
+- **`API stable` and `Efficiency` now render only when `bet_delay > 0`.** With no delay set, the theoretical-max reference is meaningless and median-vs-target has no target — both lines were pure clutter. When the user does set a delay, both lines render as before.
+
+## v1.9.9 — Session-ended notification: green ✅ on profit, red 🛑 on loss (2026-06-17)
+
+### Changed
+
+- **`Session #X ended` notification now leads with `✅`** when the session ended with `profit >= 0`, keeping `🛑` for `profit < 0`. Previously every stop-notification opened with `🛑` regardless of outcome — a `max_profit` hit still triggered a red-icon push. Leading emoji is now driven by the sign of `s["profit"]`; every other line is unchanged.
+
 ## v1.9.8 — Fix: `/status` rendering as plain text — `bet_delay` opened an unclosed italic entity (2026-06-17)
 
 ### Fixed
