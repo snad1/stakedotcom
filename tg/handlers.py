@@ -210,7 +210,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/monitor — Auto-updating status (default 5s)\n"
         "/stats — Session history\n"
         "/session — Detailed session report\n"
-        "/lastbets — Recent bets\n\n"
+        "/lastbets — Recent bets\n"
+        "/diagnose — Bottleneck analysis (top blocker + advice)\n"
+        "/analytics — Lifetime analytics (per-game, per-strategy, top-5)\n\n"
         "*Rules*\n"
         "/rules — List current rules\n"
         "/addrule — Add rule (JSON)\n"
@@ -1641,6 +1643,143 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /stats ───────────────────────────────────────────────
+async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """v1.10.0 — top-blocker analysis."""
+    user_id = update.effective_user.id
+    running = _get_running(user_id)
+    if not running:
+        await update.message.reply_text(
+            "No session running. Use /bet to start one.", parse_mode="Markdown")
+        return
+    slot, engine, err = _resolve_engine(user_id, context.args or [])
+    if err:
+        await update.message.reply_text(err); return
+
+    st = engine.get_status()
+    api_p50 = float(st.get("api_p50_ms") or 0)
+    overhead = float(st.get("overhead_ms") or 0)
+    delay_ms = float(getattr(engine, "bet_delay", 0) or 0) * 1000
+    bps = float(st.get("bets_per_second") or 0)
+    cycle_ms = api_p50 + overhead + delay_ms
+
+    blockers = [("Network / API latency", api_p50),
+                ("CLI overhead",           overhead),
+                ("User-configured delay",  delay_ms)]
+    if all(v <= 0 for _, v in blockers):
+        await update.message.reply_text(
+            f"*💡 Diagnose (slot #{slot})*\n\n_Not enough timing data yet — let a session run 20+ bets._",
+            parse_mode="Markdown"); return
+    top_name, top_val = max(blockers, key=lambda x: x[1])
+
+    advice = []
+    if top_name == "Network / API latency" and api_p50 >= 100:
+        advice.append("• Try a proxy closer to the API or a faster VPS.")
+    elif top_name == "User-configured delay" and delay_ms > 10:
+        advice.append(f"• You have bet\\_delay={engine.bet_delay:.3f}s. Drop it with `/tweak delay=0`.")
+    elif top_name == "CLI overhead" and overhead > 30:
+        advice.append("• CLI overhead high. Check disk I/O + CPU on host.")
+    if not advice:
+        advice.append("• Nothing obvious. Session is running near its ceiling.")
+
+    lines = [
+        f"*💡 Diagnose (slot #{slot})*", "",
+        f"Game: `{st.get('game', '?')}`  ·  Strategy: `{st.get('strategy', '?')}`",
+        f"Actual: `{bps:.1f}` BPS",
+        (f"Cycle: api\\_p50=`{api_p50:.0f}ms` + overhead=`{overhead:.0f}ms` "
+         f"+ delay=`{delay_ms:.0f}ms` = `{cycle_ms:.0f}ms/bet`"),
+        "", f"*Top blocker:* {top_name} (`{top_val:.0f}ms`)",
+        "", "*Advice:*",
+    ] + advice
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """v1.10.0 — lifetime analytics."""
+    user_id = update.effective_user.id
+    db_path = user_db_path(user_id)
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No session history yet."); return
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        lifetime = conn.execute("""
+            SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
+                   COALESCE(SUM(losses),0), COALESCE(SUM(wagered),0),
+                   COALESCE(SUM(profit),0), COALESCE(MAX(profit),0),
+                   COALESCE(MIN(profit),0),
+                   SUM(CASE WHEN profit>=0 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN profit<0  THEN 1 ELSE 0 END)
+            FROM sessions
+        """).fetchone()
+        by_game = conn.execute("""
+            SELECT COALESCE(game,'?'), COUNT(*), COALESCE(SUM(total_bets),0),
+                   COALESCE(SUM(wins),0), COALESCE(SUM(losses),0),
+                   COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
+            FROM sessions GROUP BY game ORDER BY 6 DESC
+        """).fetchall()
+        by_strat = conn.execute("""
+            SELECT COALESCE(strategy,'?'), COUNT(*), COALESCE(SUM(total_bets),0),
+                   COALESCE(SUM(wins),0), COALESCE(SUM(losses),0),
+                   COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
+            FROM sessions GROUP BY strategy ORDER BY 6 DESC
+        """).fetchall()
+        top_best = conn.execute("""
+            SELECT id, COALESCE(game,'?'), COALESCE(strategy,'?'),
+                   COALESCE(total_bets,0), COALESCE(profit,0)
+            FROM sessions ORDER BY profit DESC LIMIT 5
+        """).fetchall()
+        top_worst = conn.execute("""
+            SELECT id, COALESCE(game,'?'), COALESCE(strategy,'?'),
+                   COALESCE(total_bets,0), COALESCE(profit,0)
+            FROM sessions ORDER BY profit ASC LIMIT 5
+        """).fetchall()
+    finally:
+        conn.close()
+
+    (sess_total, bets_total, wins_total, losses_total,
+     wagered_total, profit_total, best_p, worst_p, in_prof, in_loss) = lifetime
+    if sess_total == 0:
+        await update.message.reply_text("No sessions in the DB yet."); return
+    wr = (wins_total / bets_total * 100) if bets_total > 0 else 0
+    ps = "+" if profit_total >= 0 else ""
+
+    lines = [
+        "*📈 Lifetime analytics*", "",
+        f"Sessions: `{sess_total}` (`{in_prof or 0}` in profit / `{in_loss or 0}` in loss)",
+        f"Bets: `{bets_total:,}`  ·  Win rate: `{wr:.1f}%`",
+        f"P/L: `{ps}{profit_total:.8f}`  ·  Wagered: `{wagered_total:.8f}`",
+        f"Best: `+{best_p:.8f}`  ·  Worst: `{worst_p:.8f}`",
+    ]
+    if by_game:
+        lines += ["", "*🎲 By game*"]
+        for g, n, b, w, l, p, wag in by_game:
+            gr = f"{w/b*100:.1f}%" if b > 0 else "—"
+            sp = "+" if p >= 0 else ""
+            lines.append(f"`{g}`  ·  {n} sess  ·  {b} bets  ·  {gr}  ·  `{sp}{p:.8f}`")
+    if by_strat:
+        lines += ["", "*🎯 By strategy*"]
+        for s, n, b, w, l, p, wag in by_strat:
+            gr = f"{w/b*100:.1f}%" if b > 0 else "—"
+            sp = "+" if p >= 0 else ""
+            lines.append(f"`{s}`  ·  {n} sess  ·  {b} bets  ·  {gr}  ·  `{sp}{p:.8f}`")
+    if top_best:
+        lines += ["", "*🏆 Top 5 best sessions*"]
+        for i, g, s, b, p in top_best:
+            lines.append(f"#{i}  `{g}`  `{s}`  {b} bets  `+{p:.8f}`")
+    if top_worst:
+        lines += ["", "*💀 Top 5 worst sessions*"]
+        for i, g, s, b, p in top_worst:
+            lines.append(f"#{i}  `{g}`  `{s}`  {b} bets  `{p:.8f}`")
+
+    text = "\n".join(lines)
+    if len(text) <= 4096:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    else:
+        mid = text.find("*🏆")
+        await update.message.reply_text(text[:mid], parse_mode="Markdown")
+        await update.message.reply_text(text[mid:], parse_mode="Markdown")
+
+
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db_path = user_db_path(user_id)

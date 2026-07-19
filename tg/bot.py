@@ -17,7 +17,7 @@ from . import VERSION
 from .handlers import (
     cmd_start, cmd_help, cmd_settoken, cmd_benchmark, cmd_balance, cmd_update, cmd_config,
     cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_tweak, cmd_pause, cmd_resume,
-    cmd_status, cmd_monitor, cmd_stats, cmd_lastbets,
+    cmd_status, cmd_monitor, cmd_stats, cmd_lastbets, cmd_diagnose, cmd_analytics,
     cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
     cmd_session, cmd_web,
@@ -138,6 +138,8 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("monitor", cmd_monitor))
     app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("diagnose", cmd_diagnose))
+    app.add_handler(CommandHandler("analytics", cmd_analytics))
     app.add_handler(CommandHandler("lastbets", cmd_lastbets))
     app.add_handler(CommandHandler("session", cmd_session))
     app.add_handler(CommandHandler("rules", cmd_rules))

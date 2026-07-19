@@ -1,5 +1,21 @@
 # Changelog
 
+## CLI v1.8.0 / TG v1.10.0 — WolfBet hardening subset ported (2026-07-19)
+
+Same portable subset as the other 4 sibling bots (cryptogames, duckdice, shuffle, goated). No bet-loop change. Cloudflare Worker proxy, warp-setup, wireguard-setup, and `web/` all untouched.
+
+- **SQLite PRAGMAs** on both CLI `_db_conn` and TG `_get_conn` (synchronous=NORMAL, busy_timeout=5000, cache_size=-32000, temp_store=MEMORY on top of the existing `journal_mode=WAL`). Mirrors wolfbet v2.27.0. 30–40 ms per-commit fsync savings on SSD; WAL-safe.
+- **`Restart=on-failure`** in `install.sh` for both the daemon and TG units (was `Restart=always`). Mirrors wolfbet v2.28.1.
+- **Uptime pause bookkeeping** — new `session_bet_ended_at` + `session_pause_started_at` fields on `BettingEngine`. `pause()` freezes, `resume()` clears. `get_status()` uses frozen bet-end for uptime. `_db_save_session(final=True)` writes frozen `ended_at` during pauses. Emits `uptime_sec` + `pause_remaining_sec` on the status dict. Mirrors wolfbet v2.28.4.
+- **Live monitor** — sparkline preserved (dice + limbo history unchanged); config-progress row `CFG …` added immediately after. `bets_avail` budget shifts from `term_h - 10` to `term_h - 11`.
+- **State-file monitor** — old placeholder `" P/L —"` replaced by the same config-progress row.
+- Shared `_build_config_progress_row(d)` + `_pct_color()`: `Ms` / `MaxP` / `MaxL` / `MaxB` / `MaxW` / `MinBal` / `Rec` progress segments. Green <80%, yellow ≥80%, bold_red ≥95%. Fallback `CFG — no goals set` when nothing armed. Mirrors wolfbet v2.30.0.
+- **TG `/diagnose`** — top-blocker analysis + advice, or `not enough data` fallback.
+- **TG `/analytics`** — lifetime + by-game + by-strategy + top-5 best/worst.
+- **First test suite** — `tests/test_portability_v1.py` — 21 tests covering all of the above.
+
+`VERSION` `1.7.0` → `1.8.0`. `tg/__init__.py` `1.9.10` → `1.10.0`. `stakectl` unchanged.
+
 ## v1.9.10 — `/status` speed block trimmed (2026-06-17)
 
 ### Changed
