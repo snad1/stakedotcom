@@ -48,11 +48,11 @@ def _mk_engine(db):
 
 # ── VERSION ───────────────────────────────────────────────
 def test_cli_version():
-    assert st.VERSION == "1.8.0"
+    assert st.VERSION == "1.9.0"
 
 
 def test_tg_version():
-    assert tg.VERSION == "1.10.0"
+    assert tg.VERSION == "1.11.0"
 
 
 # ── PRAGMAs ───────────────────────────────────────────────
@@ -236,3 +236,106 @@ def test_help_mentions_new_commands():
     src = inspect.getsource(tg_handlers.cmd_help)
     assert "/diagnose" in src
     assert "/analytics" in src
+
+
+# ── Date-range stats (v1.9.0 / TG v1.11.0) ───────────────
+def test_stats_date_window_unit():
+    clause, params, label = st._stats_date_window()
+    assert clause == "" and params == [] and label == ""
+
+    clause, params, label = st._stats_date_window(since="2026-08-01")
+    assert "started_at >= ?" in clause
+    assert params == ["2026-08-01"]
+    assert "2026-08-01" in label
+
+    _, params, _ = st._stats_date_window(until="2026-08-15")
+    assert params == ["2026-08-15T23:59:59"]
+
+    _, params, _ = st._stats_date_window(until="2026-08-15T06:00:00")
+    assert params == ["2026-08-15T06:00:00"]
+
+
+def _seed_stats_db(monkeypatch, tmp_path):
+    fd, db = tempfile.mkstemp(prefix="st_stats_", suffix=".db")
+    os.close(fd); os.remove(db)
+    monkeypatch.setattr(st, "DB_PATH", db)
+    from core.database import init_db
+    init_db(db)
+    conn = sqlite3.connect(db)
+    for i, started in enumerate(
+        ["2026-08-01T10:00:00", "2026-08-10T12:00:00", "2026-08-15T20:00:00"], 1
+    ):
+        conn.execute(
+            "INSERT INTO sessions (id, started_at, currency, game, strategy, "
+            "base_bet, multiplier, total_bets, wins, losses, profit, wagered) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (i, started, "usdt", "limbo", "Flat", 0.0001, 2.0,
+             100 * i, 50 * i, 50 * i, 0.001 * i, 0.01 * i))
+    conn.commit(); conn.close()
+    return db
+
+
+def test_stats_since_filters_listing_and_totals(monkeypatch, tmp_path, capsys):
+    db = _seed_stats_db(monkeypatch, tmp_path)
+    try:
+        st.cmd_stats(since="2026-08-10")
+        out = capsys.readouterr().out
+        assert "Session #3" in out and "Session #2" in out
+        assert "Session #1" not in out
+        assert "Range Totals" in out
+        assert "2026-08-10" in out
+    finally:
+        os.remove(db)
+
+
+def test_stats_window_bare_until_inclusive_and_combined(monkeypatch, tmp_path, capsys):
+    db = _seed_stats_db(monkeypatch, tmp_path)
+    try:
+        st.cmd_stats(until="2026-08-15")
+        out = capsys.readouterr().out
+        assert "Session #3" in out and "Session #1" in out
+
+        capsys.readouterr()
+        st.cmd_stats(since="2026-08-02", until="2026-08-15")
+        out = capsys.readouterr().out
+        assert "Session #2" in out and "Session #3" in out
+        assert "Session #1" not in out
+    finally:
+        os.remove(db)
+
+
+def test_stats_no_filter_unchanged(monkeypatch, tmp_path, capsys):
+    db = _seed_stats_db(monkeypatch, tmp_path)
+    try:
+        st.cmd_stats()
+        out = capsys.readouterr().out
+        assert "Session #1" in out and "Session #2" in out and "Session #3" in out
+        assert "All-Time Totals" in out
+        assert "last 20" in out
+    finally:
+        os.remove(db)
+
+
+def test_since_until_are_modifiers_not_commands():
+    """--since/--until must sit on the standalone parser, never inside the
+    mutually-exclusive group where --stats lives."""
+    src = inspect.getsource(st)
+    assert re.search(r'parser\.add_argument\("--since"', src)
+    assert re.search(r'parser\.add_argument\("--until"', src)
+    assert not re.search(r'group\.add_argument\("--since"', src)
+    assert not re.search(r'group\.add_argument\("--until"', src)
+    assert "cmd_stats(since=args.since, until=args.until)" in src
+
+
+def test_tg_analytics_threads_where():
+    src = inspect.getsource(tg_handlers.cmd_analytics)
+    assert "context.args" in src
+    assert src.count("{where}") >= 5
+    assert "Range' if args_ else 'Lifetime'" in src
+
+
+def test_stakectl_stats_passes_args():
+    with open(os.path.join(_ROOT, "stakectl")) as f:
+        src = f.read()
+    assert '--stats "$@"' in src
+    assert 'cmd_stats "${@:2}"' in src

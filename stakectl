@@ -43,7 +43,7 @@ usage() {
     echo "    stakectl tmux        Run monitor in a detachable tmux session"
     echo ""
     echo "  DATA:"
-    echo "    stakectl stats       Show all-time session statistics"
+    echo "    stakectl stats       Show session statistics (--since/--until DATE to filter)"
     echo "    stakectl session ID  Full stats + streak distribution for a session"
     echo "    stakectl presets     List saved presets"
     echo "    stakectl update      Update bot from current directory"
@@ -174,7 +174,7 @@ cmd_tmux() {
 }
 
 cmd_stats() {
-    "$PYTHON" "$BOT" --stats
+    "$PYTHON" "$BOT" --stats "$@"
 }
 
 cmd_session() {
@@ -522,7 +522,7 @@ case "${1:-}" in
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;
     tmux)         cmd_tmux ;;
-    stats)        cmd_stats ;;
+    stats)        cmd_stats "${@:2}" ;;
     session)      cmd_session "${2:-}" ;;
     presets)      cmd_presets ;;
     update)       cmd_update ;;

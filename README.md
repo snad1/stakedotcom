@@ -1,4 +1,4 @@
-# Stake AutoBot v1.8.0 + Telegram Bot v1.10.0
+# Stake AutoBot v1.9.0 + Telegram Bot v1.11.0
 
 High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard **and a Telegram bot**. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
@@ -250,6 +250,7 @@ python3 stake.py --stop            # Stop a running daemon
 python3 stake.py --setup-only      # Run wizard, save config, don't start
 python3 stake.py --list-presets    # Show saved presets
 python3 stake.py --stats           # Show all session history + totals + uptime
+python3 stake.py --stats --since 2026-08-01 --until 2026-08-15  # Date-windowed stats
 python3 stake.py --last-bets N     # Show last N bets across sessions
 python3 stake.py --session-bets N  # Full stats + streak distribution for session N
 ```
@@ -271,7 +272,7 @@ stakectl logs           # Stream live logs
 stakectl logs-full      # Show last 200 log lines
 stakectl interactive    # Start daemon + attach monitor
 stakectl tmux           # Monitor in detachable tmux session
-stakectl stats          # View all-time statistics
+stakectl stats          # View all-time statistics (--since/--until DATE to filter)
 stakectl session ID     # Full stats + streak distribution
 stakectl presets        # List saved presets
 stakectl update         # Update bot from current directory

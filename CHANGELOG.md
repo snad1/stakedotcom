@@ -1,5 +1,16 @@
 # Changelog
 
+## CLI v1.9.0 / TG v1.11.0 — Date-range stats + analytics (2026-08-15)
+
+Mirrors wolfbet v2.30.9 / TG v1.19.0. No bet-loop change. Cloudflare Worker proxy, warp-setup, wireguard-setup, and `web/` all untouched.
+
+- **CLI `--stats --since/--until DATE`** — new `_stats_date_window()` helper builds an optional `WHERE started_at` clause over the sessions table. Bare dates (`YYYY-MM-DD`) or full ISO timestamps; a bare `--until` is extended to end-of-day so the day is inclusive. Both the session listing and the totals query honor the window; headers show the window and switch to `Range Totals`. Filtered runs bump the listing limit from 20 to 50. `--since`/`--until` sit on the standalone parser (never the mutually-exclusive command group), so `--stats --since 2026-08-14` parses cleanly.
+- **`stakectl stats`** — now forwards extra args (`stakectl stats --since 2026-08-01 --until 2026-08-15`); usage line updated.
+- **TG `/analytics [SINCE] [UNTIL]`** — optional date window across all five analytics queries (lifetime, by-game, by-strategy, top-5 best, top-5 worst). Header shows `Range analytics` + window when filtered, `Lifetime analytics` otherwise. Usage hint on >2 args; `/help` documents the date form.
+- **Tests** — `tests/test_portability_v1.py` grows 7 date-window tests (helper unit cases, seeded-DB functional filtering incl. inclusive bare `--until`, no-filter regression, argparse-placement source check, TG source check, stakectl pass-through). Version assertions bumped.
+
+`VERSION` `1.8.0` → `1.9.0`. `tg/__init__.py` `1.10.0` → `1.11.0`.
+
 ## CLI v1.8.0 / TG v1.10.0 — WolfBet hardening subset ported (2026-07-19)
 
 Same portable subset as the other 4 sibling bots (cryptogames, duckdice, shuffle, goated). No bet-loop change. Cloudflare Worker proxy, warp-setup, wireguard-setup, and `web/` all untouched.
