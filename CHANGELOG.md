@@ -1,5 +1,15 @@
 # Changelog
 
+## CLI v1.9.1 / TG v1.11.1 — casino-shared over HTTPS (2026-11-13)
+
+Mirrors wolfbet v2.16.11 (casino-shared dependency installs over HTTPS). No bot behaviour change.
+
+- **`requirements.txt`, `web/requirements.txt`: `casino-shared` via `git+https://github.com/snad1/casino-shared.git` instead of `git+ssh://`.** The repo is public, so pip fetches it anonymously; fresh servers no longer need a GitHub SSH key to run `install.sh`.
+- **`stakectl update`** reinstalls casino-shared from the same HTTPS URL (it used `git+ssh` too).
+- **Pinned to casino-shared `v0.2.0`** (`@v0.2.0`): the WolfBet sync helpers (`shared.core` session rules, stats, diagnostics, net, lanes and `sessions.lane`). `stakectl update` still reinstalls the latest `main`, as `wolfctl` does.
+
+`VERSION` `1.9.0` → `1.9.1`. `tg/__init__.py` `1.11.0` → `1.11.1`.
+
 ## CLI v1.9.0 / TG v1.11.0 — Date-range stats + analytics (2026-08-15)
 
 Mirrors wolfbet v2.30.9 / TG v1.19.0. No bet-loop change. Cloudflare Worker proxy, warp-setup, wireguard-setup, and `web/` all untouched.
