@@ -1,5 +1,20 @@
 # Changelog
 
+## TG v1.12.0 — Streak reset, delay caps, analytics window (2026-11-14)
+
+Mirrors WolfBet TG 1.20.0: v2.30.6 (delay cap), v2.32.0 (streak reset), v2.32.1 (insufficient balance terminal), v2.33.0 (time-of-day window). CLI unchanged. Cloudflare bypass chain unchanged.
+
+- **Streak reset** — `/set srloss N` (alias `streakreset`, `off` to disable) stops the session on the first win after N+ consecutive losses, only while profit ≥ 0. Stake has no balance in the bet reply, so the check uses the engine's locally tracked profit. The bot then starts a new session (new `sessions` row) after `/set srdelay S` (alias `streakresetdelay`, default 600 s, 5–86400), **even when `recurring` is off**. Live `/set srloss|srdelay` carries into the next cycle; the bumped `base_bet` is kept and `next_profit_milestone` re-arms from `profit_threshold`. Uses `shared.core.session_rules` (`record_outcome`, `streak_reset_triggered`, `STREAK_RESET_REASON`).
+- **Cloudflare across a restart** — a streak-reset restart goes through the existing `_recurring_restart` path: the new engine's `start()` tries the direct AuthCheck, then the cached `cf_cookies.json`, before any solver, so it does not force a new CF solve. A CF 403 during the next cycle still goes through `_cf_reauth`.
+- **Delay caps** — `/set recdelay` and `/set srdelay` clamp to 5..86400 and tell you when they clamp. A saved `recurring_delay` above 24 h is capped at the restart.
+- **`/tweak`** gains `srloss` (live on the running engine) and `srdelay` / `recdelay` (saved; apply at the next stop).
+- **`/config`, `/status`, stop message** show `Streak reset … / SR nL→Ss` when set; `/help` lists the keys; web settings page lists `streak_reset_losses` / `streak_reset_delay`; both keys are in `CONFIG_KEYS` (presets) and the `/resume` snapshot.
+- **`/analytics`** builds its window with `shared.core.stats.stats_date_window`: `/analytics 2026-11-13 14:00` now starts at 14:00 instead of matching the whole day (`' ' < 'T'`). A time token after a date joins it, since Telegram splits on spaces. Bad bounds print the usage.
+- **Fix: insufficient-balance match.** The bet `errors` path and the `ConnectionError` path (HTTP 400) stopped the session on any message containing "balance" (`"insufficient" or "balance"`), the same bug as goated and shuffle. They now match "insufficient" only. Insufficient balance stays terminal: no recurring or streak-reset restart.
+- Tests: `tests/test_wolfbet_sync_e2.py` (32); fake gains `api_error_balance` (HTTP 200 `errors`) and `http_error_balance` (HTTP 400). `test_portability_v1.py` version pin and the `/analytics` source check updated for the shared helper.
+
+`tg/__init__.py` `1.11.1` → `1.12.0`.
+
 ## CLI v1.9.1 / TG v1.11.1 — casino-shared over HTTPS (2026-11-13)
 
 Mirrors wolfbet v2.16.11 (casino-shared dependency installs over HTTPS). No bot behaviour change.

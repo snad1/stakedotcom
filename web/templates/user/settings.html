@@ -61,7 +61,7 @@
             <div>
                 <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-3">Stop Conditions</h3>
                 <div class="grid grid-cols-2 gap-x-8 gap-y-2">
-                    {% for key in ['max_profit', 'max_loss', 'max_bets', 'max_wins', 'stop_on_balance'] %}
+                    {% for key in ['max_profit', 'max_loss', 'max_bets', 'max_wins', 'stop_on_balance', 'streak_reset_losses', 'streak_reset_delay'] %}
                     <div class="flex justify-between py-2 border-b border-gray-100 dark:border-gray-700">
                         <span class="text-sm text-gray-500 dark:text-gray-400">{{ key }}</span>
                         <span class="text-sm font-mono text-gray-900 dark:text-gray-100">{{ config.get(key, '—') or '—' }}</span>
