@@ -11,6 +11,11 @@ from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
 from logging.handlers import TimedRotatingFileHandler
+from shared.core.session_rules import (
+    RECURRING_DELAY_MAX, clamp, parse_streak_delay, record_outcome,
+    restart_delay_for, should_restart, streak_delay_for,
+    streak_reset_stop_reason, streak_reset_triggered, streakbet_loss_factor,
+)
 try:
     import readline
 except ImportError:
@@ -406,7 +411,7 @@ STATE_PATH   = os.path.expanduser("~/.stake_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.9.1"
+VERSION      = "1.10.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -462,6 +467,12 @@ def _gen_identifier() -> str:
     return "".join(random.choices(chars, k=21))
 
 
+def _nested_result(data) -> float:
+    """Fallback for replies that carry the roll only under ``state.result``."""
+    st = data.get("state")
+    return st.get("result", 0) if isinstance(st, dict) else 0
+
+
 # -- LIMBO --
 def _limbo_payload(st):
     return {
@@ -473,7 +484,7 @@ def _limbo_payload(st):
 
 def _limbo_parse(data):
     payout_mult = float(data.get("payoutMultiplier", 0))
-    result = float(data.get("resultMultiplier", data.get("result", 0)))
+    result = float(data.get("resultMultiplier", data.get("result", _nested_result(data))))
     return {
         "amount": float(data.get("amount", 0)),
         "payout": float(data.get("payout", 0)),
@@ -499,7 +510,7 @@ def _dice_payload(st):
 
 def _dice_parse(data):
     payout_mult = float(data.get("payoutMultiplier", 0))
-    result = float(data.get("resultTarget", data.get("result", 0)))
+    result = float(data.get("resultTarget", data.get("result", _nested_result(data))))
     return {
         "amount": float(data.get("amount", 0)),
         "payout": float(data.get("payout", 0)),
@@ -588,7 +599,48 @@ _CONFIG_KEYS = [
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "profit_increment", "profit_threshold", "proxy",
+    # v1.10.0 — WolfBet v2.16.0 / v2.28.2 / v2.32.0 session behaviour
+    "recurring", "recurring_delay", "streak_reset_losses", "streak_reset_delay",
+    "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
+    "basebet_pct", "milestone_bets", "milestone_wins", "milestone_losses",
+    "milestone_profit",
 ]
+
+# Stored as "N:X" strings (None when off), held as (N, X) tuples in state.
+_STREAK_TUPLE_KEYS = ["streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss"]
+# Delays clamped to 0..RECURRING_DELAY_MAX on load (WolfBet v2.30.6).
+_DELAY_KEYS = ["recurring_delay", "streak_reset_delay"]
+
+def _config_value(k: str):
+    """State value as written to the config / preset file."""
+    v = getattr(state, k)
+    if k in _STREAK_TUPLE_KEYS:
+        n, x = v
+        return f"{n}:{x}" if n > 0 else None
+    return v
+
+def _set_config_value(k: str, v):
+    """Apply one value read from the config / preset file to state."""
+    if k in _STREAK_TUPLE_KEYS:
+        v = parse_streak_delay(v)
+        if k == "streakbet_loss" and v[0] == 0:
+            v = (0, 1.0)                 # off: neutral factor, same as the default
+    elif k in _DELAY_KEYS:
+        v, msg = clamp(k, float(v or 0), 0.0, RECURRING_DELAY_MAX)
+        if msg:
+            logger.warning(msg)
+    setattr(state, k, v)
+
+def _apply_loaded(data: dict, keys: list):
+    """Set every present key, then re-arm what depends on them."""
+    for k in keys:
+        if k in data:
+            _set_config_value(k, data[k])
+    state.current_bet = state.base_bet
+    if state.profit_threshold:
+        state.next_profit_milestone = state.profit_threshold
+    if state.custom_rules_text:
+        state.custom_rules = _load_rules_from_text(state.custom_rules_text)
 
 def _mask_key(key: str) -> str:
     """Mask token/key for safe logging: show first 8 + last 4 chars."""
@@ -597,7 +649,7 @@ def _mask_key(key: str) -> str:
     return f"{key[:8]}...{key[-4:]}"
 
 def save_config():
-    data = {k: getattr(state, k) for k in _CONFIG_KEYS}
+    data = {k: _config_value(k) for k in _CONFIG_KEYS}
     fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
@@ -609,17 +661,62 @@ def load_config() -> bool:
     try:
         with open(CONFIG_PATH) as f:
             data = json.load(f)
-        for k in _CONFIG_KEYS:
-            if k in data:
-                setattr(state, k, data[k])
-        state.current_bet = state.base_bet
-        if state.profit_threshold:
-            state.next_profit_milestone = state.profit_threshold
-        if state.custom_rules_text:
-            state.custom_rules = _load_rules_from_text(state.custom_rules_text)
+        _apply_loaded(data, _CONFIG_KEYS)
         return True
     except Exception:
         return False
+
+# Keys SIGHUP may change on a running bot (WolfBet v2.28.3). Everything else
+# (credentials, currency, game, multiplier, strategy, base bet) needs a restart.
+_LIVE_RELOAD_KEYS = [
+    "recurring", "recurring_delay", "streak_reset_losses", "streak_reset_delay",
+    "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
+    "bet_delay", "basebet_pct",
+    "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
+    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
+    "profit_increment", "profit_threshold", "proxy", "custom_rules_text",
+]
+
+def _reload_live_config() -> dict:
+    """Re-read CONFIG_PATH and apply only live-safe keys. Returns {key: (old, new)}."""
+    try:
+        with open(CONFIG_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    changed = {}
+    with state.lock:
+        for k in _LIVE_RELOAD_KEYS:
+            if k not in data:
+                continue
+            old = getattr(state, k)
+            _set_config_value(k, data[k])
+            new = getattr(state, k)
+            if new != old:
+                changed[k] = (old, new)
+            if k == "profit_threshold" and k in changed and new:
+                state.next_profit_milestone = new
+    skipped = [k for k in _CONFIG_KEYS
+               if k not in _LIVE_RELOAD_KEYS and k in data and data[k] != _config_value(k)]
+    if skipped:
+        logger.warning("live reload: skipped %d unsafe field(s) — restart daemon to apply: %s",
+                       len(skipped), ", ".join(skipped))
+    if "custom_rules_text" in changed:
+        state.custom_rules = _load_rules_from_text(state.custom_rules_text)
+    if "proxy" in changed:
+        _recreate_http()
+    return changed
+
+def _sig_reload(sig, frame):
+    try:
+        changed = _reload_live_config()
+        if changed:
+            logger.warning("SIGHUP: reloaded %d live field(s): %s",
+                           len(changed), ", ".join(changed))
+        else:
+            logger.warning("SIGHUP: no live-safe changes to apply")
+    except Exception as e:
+        logger.error("SIGHUP reload failed: %s", e)
 
 # ===========================================================
 #  PRESETS
@@ -630,6 +727,10 @@ _PRESET_KEYS = [
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "profit_increment", "profit_threshold",
+    "recurring", "recurring_delay", "streak_reset_losses", "streak_reset_delay",
+    "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
+    "basebet_pct", "milestone_bets", "milestone_wins", "milestone_losses",
+    "milestone_profit",
 ]
 
 def _load_all_presets() -> dict:
@@ -648,22 +749,14 @@ def _save_all_presets(presets: dict):
 
 def save_preset(name: str):
     presets = _load_all_presets()
-    presets[name] = {k: getattr(state, k) for k in _PRESET_KEYS}
+    presets[name] = {k: _config_value(k) for k in _PRESET_KEYS}
     _save_all_presets(presets)
 
 def load_preset(name: str) -> bool:
     presets = _load_all_presets()
     if name not in presets:
         return False
-    data = presets[name]
-    for k in _PRESET_KEYS:
-        if k in data:
-            setattr(state, k, data[k])
-    state.current_bet = state.base_bet
-    if state.profit_threshold:
-        state.next_profit_milestone = state.profit_threshold
-    if state.custom_rules_text:
-        state.custom_rules = _load_rules_from_text(state.custom_rules_text)
+    _apply_loaded(presets[name], _PRESET_KEYS)
     return True
 
 def delete_preset(name: str) -> bool:
@@ -1156,6 +1249,28 @@ class BotState:
         self.profit_threshold    : Optional[float] = None
         self.next_profit_milestone: float = 0.0
 
+        # -- v1.10.0: WolfBet session behaviour (v2.16.0 .. v2.32.0) --
+        self.streak_delay_loss: tuple = (0, 0.0)   # (N, sec): sleep after every N-loss streak
+        self.streak_delay_win : tuple = (0, 0.0)
+        self.streak_delay_bets: tuple = (0, 0.0)   # every N bets
+        self.streakbet_loss   : tuple = (0, 1.0)   # (N, mult): next bet x mult every N losses
+        self.basebet_pct      : float = 0.0        # base bet = balance x pct, re-checked every 10 bets
+        self.milestone_bets   : int   = 100
+        self.milestone_wins   : int   = 0
+        self.milestone_losses : int   = 0
+        self.milestone_profit : float = 0.0
+        self._last_profit_milestone: float = 0.0
+        self.recurring        : bool  = False      # restart a new session after a safe stop
+        self.recurring_delay  : float = 60.0
+        self.streak_reset_losses: Optional[int] = None  # stop+restart after N losses then a win
+        self.streak_reset_delay : float = 600.0
+        self.last_broken_loss_streak: int = 0
+        # pause between cycles: uptime freezes at the bet end
+        self.session_bet_ended_at    : Optional[float] = None
+        self.session_pause_started_at: Optional[float] = None
+        self.session_pause_total     : float = 0.0
+        self.run_started_at          : float = time.time()   # never reset across cycles
+
         # -- strategy internal state --
         self.dalembert_unit = 0
         self.paroli_count   = 0
@@ -1364,6 +1479,17 @@ def api_place_bet(amount: float) -> Optional[dict]:
             with state.lock:
                 state.last_error = "Empty response (proxy timeout?)"
             return None
+        # HTTP-200 error envelope: not a bet (was booked as a 0-amount loss).
+        errors = data.get("errors") or data.get("error")
+        if errors:
+            logger.error("Bet API error: %s", str(errors)[:300])
+            with state.lock:
+                if "insufficient" in str(errors).lower():
+                    state.last_error = "Insufficient balance"
+                    state._insufficient_balance = True
+                else:
+                    state.last_error = f"API error: {str(errors)[:120]}"
+            return None
         raw = data.get(resp_key, data)
         if not raw:
             logger.error("Empty response from %s: %s", url, data)
@@ -1380,7 +1506,7 @@ def api_place_bet(amount: float) -> Optional[dict]:
             logger.warning("RATE LIMIT 429")
             with state.lock:
                 state.last_error = "Rate limit 429 -- backing off..."
-        elif "insufficient" in err.lower() or "balance" in err.lower():
+        elif "insufficient" in err.lower():
             logger.warning("INSUFFICIENT BALANCE")
             with state.lock:
                 state.last_error = "Insufficient balance"
@@ -1455,7 +1581,99 @@ def should_stop() -> tuple:
         return True, f"Max wins reached: {state.wins}"
     if state.stop_on_balance is not None and b <= state.stop_on_balance:
         return True, f"Balance floor hit: {b:.8f}"
+    if streak_reset_triggered(state.current_streak, state.last_broken_loss_streak,
+                              state.streak_reset_losses, p):
+        return True, streak_reset_stop_reason(state.last_broken_loss_streak)
     return False, ""
+
+def _apply_basebet_pct() -> bool:
+    """Set base bet to balance x basebet_pct. True when it changed (WolfBet v2.16.0)."""
+    if state.basebet_pct <= 0 or state.current_balance <= 0:
+        return False
+    new_base = round(state.current_balance * state.basebet_pct, 8)
+    if new_base <= 0 or abs(new_base - state.base_bet) < 1e-12:
+        return False
+    with state.lock:
+        state.base_bet = new_base
+        state.current_bet = new_base
+    logger.info("BASEBET_PCT: base_bet -> %.8f", new_base)
+    return True
+
+def _check_milestone(last_bet_state: str) -> Optional[str]:
+    """Milestone text when one is crossed on this bet, else None (WolfBet v2.16.0)."""
+    if state.milestone_bets and state.total_bets % state.milestone_bets == 0:
+        return f"{state.total_bets} bets"
+    if (state.milestone_wins and last_bet_state == "win"
+            and state.wins % state.milestone_wins == 0):
+        return f"{state.wins} wins"
+    if (state.milestone_losses and last_bet_state != "win"
+            and state.losses % state.milestone_losses == 0):
+        return f"{state.losses} losses"
+    if state.milestone_profit and state.milestone_profit > 0:
+        crossed = int(state.profit / state.milestone_profit) * state.milestone_profit
+        if crossed > state._last_profit_milestone:
+            state._last_profit_milestone = crossed
+            return f"{crossed:.8f} profit"
+    return None
+
+def _refresh_balance():
+    """Read the real balance once via GraphQL UserBalances; keep the local one on failure.
+
+    Stake returns no balance in the bet reply, so the CLI tracks it locally;
+    each new cycle starts from the account's real balance.
+    """
+    for b in api_get_balances():
+        if b["currency"] == state.currency:
+            with state.lock:
+                state.current_balance = b["amount"]
+            return
+
+def _reset_session_for_recurring(delay: float) -> bool:
+    """Close-out pause, then open a new sessions row (WolfBet v2.16.0 / v2.28.4).
+
+    The caller has already saved the old row. Uptime freezes at the bet end
+    during the pause. The pause is interruptible by [Q] / SIGTERM
+    (``state.running`` False); then no new row is opened and False is returned.
+    """
+    bet_end = time.time()
+    with state.lock:
+        state.session_bet_ended_at = bet_end
+        state.session_pause_started_at = bet_end
+        state.session_pause_total = delay
+    remaining = delay
+    while remaining > 0 and state.running:
+        state.status = f"Recurring pause {remaining:.0f}s before next cycle..."
+        step = min(1.0, remaining)
+        time.sleep(step)
+        remaining -= step
+    if not state.running:
+        return False
+    _refresh_balance()
+    with state.lock:
+        state.session_bet_ended_at = None
+        state.session_pause_started_at = None
+        state.start_balance = state.highest_balance = state.lowest_balance = state.current_balance
+        state.session_id = _db_start_session()
+        state.session_start = time.time()
+        state.total_bets = state.wins = state.losses = 0
+        state.wagered = state.profit = 0.0
+        state.current_streak = state.max_win_streak = state.max_loss_streak = 0
+        state.last_broken_loss_streak = 0
+        state.highest_bet = state.highest_win = state.biggest_loss = 0.0
+        state.recent_bets.clear()
+        state.profit_history.clear()
+        state.profit_history.append(0.0)
+        state.current_bet = state.base_bet          # bumped base kept
+        state.dalembert_unit = state.paroli_count = 0
+        state._last_profit_milestone = 0.0
+        if state.profit_threshold:
+            state.next_profit_milestone = state.profit_threshold
+        state.consecutive_errors = 0
+        state.backoff_delay = 1.0
+        state.last_error = ""
+        state.status = f"Recurring restart -- session #{state.session_id}"
+    logger.info("Recurring restart: session #%s", state.session_id)
+    return True
 
 # ===========================================================
 #  BETTING LOOP  (runs in background thread)
@@ -1471,10 +1689,30 @@ def betting_loop():
 
         stop, reason = should_stop()
         if stop:
+            if (not state._insufficient_balance
+                    and should_restart(reason, state.profit, state.recurring,
+                                       state.streak_reset_losses)):
+                logger.info("Cycle end (%s) -- restarting", reason)
+                _db_save_session()
+                if _reset_session_for_recurring(
+                        restart_delay_for(reason, state.recurring_delay, state.streak_reset_delay)):
+                    last_result = "none"
+                    continue
+                break
             state.running = False
             state.status  = f"STOPPED: {reason}"
             _db_save_session()
             break
+
+        sd = streak_delay_for(state.current_streak, state.total_bets,
+                              state.streak_delay_loss, state.streak_delay_win,
+                              state.streak_delay_bets)
+        if sd > 0:
+            state.status = f"Streak delay {sd:.2f}s (streak {state.current_streak})"
+            time.sleep(sd)
+
+        if state.basebet_pct > 0 and state.total_bets > 0 and state.total_bets % 10 == 0:
+            _apply_basebet_pct()
 
         if state.bet_delay > 0:
             time.sleep(state.bet_delay)
@@ -1516,17 +1754,18 @@ def betting_loop():
             state.profit         += raw_profit
             state.current_balance = new_balance
 
+            state.current_streak, broken = record_outcome(state.current_streak, bet_state == "win")
+            if broken is not None:
+                state.last_broken_loss_streak = broken
             if bet_state == "win":
                 state.wins += 1
                 if raw_profit > state.highest_win:
                     state.highest_win = raw_profit
-                state.current_streak = max(state.current_streak, 0) + 1
                 state.max_win_streak = max(state.max_win_streak, state.current_streak)
             else:
                 state.losses += 1
                 if amount_used > state.biggest_loss:
                     state.biggest_loss = amount_used
-                state.current_streak = min(state.current_streak, 0) - 1
                 state.max_loss_streak = max(state.max_loss_streak, abs(state.current_streak))
 
             if amount_used > state.highest_bet:
@@ -1604,6 +1843,11 @@ def betting_loop():
             )
             state.last_error = ""
 
+            ms = _check_milestone(bet_state)
+            if ms:
+                state.status = f"Milestone: {ms}"
+                logger.info("MILESTONE: %s", ms)
+
         _db_save_bet(result, raw_profit, new_balance)
 
         # Rule-Based: apply custom rules after bet
@@ -1613,6 +1857,9 @@ def betting_loop():
         # calculate next bet — no cap, API rejects if insufficient balance
         raw_next  = compute_next_bet(bet_state)
         next_bet  = max(state.base_bet, raw_next)
+        sb_factor = streakbet_loss_factor(state.current_streak, state.streakbet_loss)
+        if sb_factor != 1.0:
+            next_bet = max(state.base_bet, next_bet * sb_factor)
         if 0 < next_bet < MIN_BET:
             next_bet = MIN_BET
         state.current_bet = next_bet
@@ -1688,7 +1935,7 @@ def _db_save_session():
                 peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
             WHERE id=?
         """, (
-            datetime.now().isoformat(),
+            datetime.fromtimestamp(state.session_bet_ended_at or time.time()).isoformat(),
             state.total_bets, state.wins, state.losses,
             state.profit, state.wagered, state.current_balance,
             state.max_win_streak, state.max_loss_streak,
@@ -1769,7 +2016,21 @@ def _save_state_file():
             "profit_threshold": state.profit_threshold,
             "rule_count": len(state.custom_rules) if state.strategy_key == "7" else 0,
             "rule_descriptions": [r.description for r in state.custom_rules] if state.strategy_key == "7" else [],
-            "uptime_sec": int(time.time() - state.session_start),
+            "next_profit_milestone": state.next_profit_milestone,
+            "recurring": state.recurring,
+            "recurring_delay_sec": int(state.recurring_delay),
+            "streak_reset_losses": state.streak_reset_losses,
+            "streak_reset_delay_sec": int(state.streak_reset_delay),
+            "streak_delay_loss": _config_value("streak_delay_loss"),
+            "streak_delay_win": _config_value("streak_delay_win"),
+            "streak_delay_bets": _config_value("streak_delay_bets"),
+            "streakbet_loss": _config_value("streakbet_loss"),
+            "basebet_pct": state.basebet_pct or None,
+            "milestone_bets": state.milestone_bets or None,
+            "milestone_wins": state.milestone_wins or None,
+            "milestone_losses": state.milestone_losses or None,
+            "milestone_profit": state.milestone_profit or None,
+            **_uptime_fields(),
             "status": state.status,
             "last_error": state.last_error,
             "updated_at": datetime.now().isoformat(),
@@ -1779,6 +2040,18 @@ def _save_state_file():
             json.dump(data, f, indent=2)
     except Exception:
         pass
+
+def _uptime_fields() -> dict:
+    """Uptime freezes at the bet end during a cycle pause (WolfBet v2.28.4)."""
+    now = time.time()
+    return {
+        "uptime_sec": int((state.session_bet_ended_at or now) - state.session_start),
+        "run_uptime_sec": int(now - state.run_started_at),
+        "pause_remaining_sec": (
+            max(0, int(state.session_pause_total - (now - state.session_pause_started_at)))
+            if state.session_pause_started_at else 0),
+        "pause_total_sec": int(state.session_pause_total),
+    }
 
 def _cleanup_state_file():
     for p in (STATE_PATH, PID_PATH):
@@ -1849,13 +2122,16 @@ def _build_config_progress_row(d: dict) -> str:
     profit_threshold = d.get("profit_threshold")
     profit_increment = d.get("profit_increment")
     if profit_threshold and profit_increment is not None:
-        last_ms = float(d.get("last_profit_milestone", 0.0) or 0.0)
-        next_ms = last_ms + float(profit_threshold)
-        profit  = float(d.get("profit", 0.0) or 0.0)
-        pct = max(0.0, min(100.0, (profit / next_ms * 100) if next_ms > 0 else 0.0))
+        # Per-window progress toward the next bump (WolfBet v2.30.1 / v2.30.7).
+        threshold    = float(profit_threshold)
+        next_ms      = float(d.get("next_profit_milestone") or threshold)
+        window_start = max(0.0, next_ms - threshold)
+        profit       = float(d.get("profit", 0.0) or 0.0)
+        progress     = max(0.0, profit - window_start)
+        pct = min(100.0, progress / threshold * 100) if threshold > 0 else 0.0
         segments.append(
             f"{_a('dim','Ms')} "
-            f"{_a(_pct_color(pct), f'+{max(0.0, profit):.8f}/{next_ms:.8f} ({pct:.0f}%)')}"
+            f"{_a(_pct_color(pct), f'+{progress:.8f}/{threshold:.8f} ({pct:.0f}%)')}"
         )
 
     max_profit = d.get("max_profit")
@@ -1909,9 +2185,21 @@ def _build_config_progress_row(d: dict) -> str:
         delay = int(d.get("recurring_delay_sec", 0) or 0)
         segments.append(f"{_a('dim','Rec')} {_a('cyan', f'on({delay}s)')}")
 
+    if d.get("streak_reset_losses"):
+        n = int(d.get("streak_reset_losses") or 0)
+        sr_delay = int(d.get("streak_reset_delay_sec", 0) or 0)
+        segments.append(f"{_a('dim','SR')} {_a('cyan', f'{n}L→{sr_delay}s')}")
+
     if not segments:
         return f" {_a('dim','CFG')}  {_a('dim','─')}  {_a('dim','no goals set')}"
     return " " + _a("dim", "CFG") + "  " + "  ".join(segments)
+
+
+def _pause_label(d: dict) -> str:
+    """Cycle-pause header text: remaining / total."""
+    left = int(d.get("pause_remaining_sec", 0) or 0)
+    total = int(d.get("pause_total_sec") or d.get("recurring_delay_sec", 0) or 0)
+    return f"◐ PAUSED {timedelta(seconds=left)}/{timedelta(seconds=total)}"
 
 
 def _state_dict_from_botstate() -> dict:
@@ -1920,14 +2208,16 @@ def _state_dict_from_botstate() -> dict:
         "profit": state.profit,
         "profit_threshold": getattr(state, "profit_threshold", None),
         "profit_increment": getattr(state, "profit_increment", None),
-        "last_profit_milestone": getattr(state, "last_profit_milestone", 0.0),
+        "next_profit_milestone": state.next_profit_milestone,
         "max_profit": getattr(state, "max_profit", None),
         "max_loss": getattr(state, "max_loss", None),
         "max_bets": getattr(state, "max_bets", None),
         "max_wins": getattr(state, "max_wins", None),
         "stop_on_balance": getattr(state, "stop_on_balance", None),
-        "recurring": getattr(state, "recurring", False),
-        "recurring_delay_sec": getattr(state, "recurring_delay", 0),
+        "recurring": state.recurring,
+        "recurring_delay_sec": int(state.recurring_delay),
+        "streak_reset_losses": state.streak_reset_losses,
+        "streak_reset_delay_sec": int(state.streak_reset_delay),
         "total_bets": state.total_bets,
         "wins": state.wins,
         "current_balance": state.current_balance,
@@ -1952,8 +2242,11 @@ def build_dashboard_screen() -> str:
         lines.append(_CLR_EOL)
 
     # -- Row 1: Header --
-    uptime = str(timedelta(seconds=int(time.time() - state.session_start)))
-    if state.running and not state.paused:
+    up = _uptime_fields()
+    uptime = str(timedelta(seconds=up["uptime_sec"]))
+    if state.running and up["pause_remaining_sec"] > 0:
+        st_ind = _a("bold_cyan", _pause_label(up))
+    elif state.running and not state.paused:
         st_ind = _a("bold_green", "* LIVE")
     elif state.paused:
         st_ind = _a("bold_yellow", "* PAUSED")
@@ -1961,8 +2254,9 @@ def build_dashboard_screen() -> str:
         st_ind = _a("bold_red", "* STOPPED")
 
     game_info = _game_info_str()
+    run_seg = f"  Run {timedelta(seconds=up['run_uptime_sec'])}"
     add(f"{_a('dim_magenta', '--- ')}{_a('bold_cyan', f'Stake v{VERSION}')}"
-        f"{_a('white', f'  #{state.session_id}  {uptime}')}  {st_ind} "
+        f"{_a('white', f'  #{state.session_id}  {uptime}{run_seg}')}  {st_ind} "
         f"{_a('dim', f'  {game_info}')}"
         f"{_a('dim_magenta', ' ' + '-' * max(0, term_w - 80))}")
 
@@ -3453,15 +3747,19 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
         game_info = f"Limbo {mult}x target"
 
     # Row 1: Header
-    if pid_alive and not paused:
+    if pid_alive and int(d.get("pause_remaining_sec", 0) or 0) > 0:
+        st_ind = _a("bold_cyan", _pause_label(d))
+    elif pid_alive and not paused:
         st_ind = _a("bold_green", "* LIVE")
     elif pid_alive and paused:
         st_ind = _a("bold_yellow", "* PAUSED")
     else:
         st_ind = _a("bold_red", "* STOPPED")
 
+    run_seg = (f"  Run {timedelta(seconds=int(d['run_uptime_sec']))}"
+               if d.get("run_uptime_sec") is not None else "")
     add(f"{_a('dim_magenta', '--- ')}{_a('bold_cyan', f'Stake v{VERSION}')}"
-        f"{_a('white', f'  #{sid}  {uptime}')}  {st_ind} "
+        f"{_a('white', f'  #{sid}  {uptime}{run_seg}')}  {st_ind} "
         f"{_a('dim', f'  {game_info}')}"
         f"{_a('dim_magenta', ' ' + '-' * max(0, term_w - 80))}")
 
@@ -3751,8 +4049,17 @@ def cmd_status():
     elif sk in ("3", "5"):
         strat_str += f"  [dim](win mult: {d.get('win_mult', '?')}x)[/]"
 
+    uptime_txt = uptime
+    if int(d.get("pause_remaining_sec", 0) or 0) > 0:
+        left = timedelta(seconds=int(d["pause_remaining_sec"]))
+        total = timedelta(seconds=int(d.get("pause_total_sec", 0) or 0))
+        uptime_txt += f"  · Recurring pause: {left} remaining / {total} total"
     rows = [
-        ("Uptime",         uptime),
+        ("Uptime",         uptime_txt),
+    ]
+    if d.get("run_uptime_sec") is not None:
+        rows.append(("Running for", str(timedelta(seconds=int(d["run_uptime_sec"])))))
+    rows += [
         ("Game",           game_info),
         ("Currency",       d.get("currency", "?").upper()),
         ("Strategy",       strat_str),
@@ -3807,6 +4114,11 @@ def cmd_status():
     pt = d.get("profit_threshold")
     if pi and pt:
         rows.append(("Profit Bump",   f"+{pi:.8f} every {pt} profit"))
+    if d.get("recurring"):
+        rows.append(("Recurring", f"on, {d.get('recurring_delay_sec', 0)}s pause"))
+    if d.get("streak_reset_losses"):
+        rows.append(("Streak Reset", f"{d['streak_reset_losses']} losses then win → "
+                                     f"{d.get('streak_reset_delay_sec', 0)}s pause"))
 
     rows += [
         ("Last Status",    d.get("status", "")[:80]),
@@ -4151,6 +4463,7 @@ def main():
 
     state.session_id    = _db_start_session()
     state.session_start = time.time()
+    state.run_started_at = state.session_start
     state.initial_multiplier = state.multiplier_target
     state.running       = True
 
@@ -4188,6 +4501,8 @@ def main():
             state.paused = False
             state.status = "Resumed (remote)"
         signal.signal(signal.SIGUSR2, _sig_resume)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _sig_reload)
 
     t_bet = threading.Thread(target=betting_loop, daemon=True, name="BettingLoop")
     t_bet.start()
