@@ -1,5 +1,33 @@
 # Changelog
 
+## CLI v1.13.0 — Parallel lanes (2026-11-14)
+
+Mirrors WolfBet CLI v2.35.0 (parallel lanes) and v2.36.0 (`lane_split`); where the two differ, v2.36.0 code wins. Lane helpers come from `shared.core.lanes` (casino-shared 0.2.0). TG unchanged. Cloudflare bypass chain unchanged.
+
+- **Lanes.** N independent bot processes on one account: `stake.py --daemon --resume --lane K` (1–10). Each lane has its own session, chain, counters, stops, pauses and recurring / streak-reset cycle. The config file, CF cookie cache and stats DB are shared. Lane 1 keeps the classic state / pid paths, systemd unit and config writes. Lane K > 1 uses `~/.stake_autobot_live.laneK.json` / `~/.stake_autobot.laneK.pid` and logs with a `[LK]` prefix. `--lane K` is applied before any command, so `--status` / `--monitor` / `--stop` / `--diagnose` act on that lane. Lane K's first bet waits `(K−1)·2 s`.
+- **DB.** New `sessions` rows carry `lane`.
+- **Money split** (`lanes.split`, `--config-set lane_split=MODE`):
+  - `none` (default): full base bet, no lane budget.
+  - `budget`: each lane may risk balance ÷ lanes.
+  - `bet`: base bet and `basebet_pct` ÷ lanes. A lane's own `base_bet` override is never divided; a split that rounds to 0 stays full.
+  - `both`: `bet` and `budget` together.
+
+  With a budget, the share is fixed at lane start from the account balance (GraphQL `UserBalances`; a `--preset` run fetches it when a budget is on). Stake's bet reply has no balance, so lane equity = share + the lane's profit across its sessions. The lane stops with `Lane budget exceeded (next bet …, lane equity …)` when the next bet is larger than its equity. That stop never restarts. The streak-reset chain-depth warning uses the lane share in `budget` / `both`. `save_config` writes the full base bet back when the split one is untouched.
+- **Per-lane overrides.** `--config-set lanes=N`, `laneK.key=value` and `laneK.key=default` (also `unset` / `inherit`) write `lanes.count` / `lanes.overrides`. Values go through the normal `--config-set` validation (aliases; `mult` re-derives the dice target). Shared-only keys are refused per lane (exit 2): `access_token`, `lockdown_token`, `cookie`, `currency`, `game`, `proxy`, `purge_days`, `db_write_mode`. The Cloudflare worker / WARP / solver settings are CLI flags and env vars (`--api-base`, `STAKE_API_BASE`, `FLARESOLVERR_URL`), not config keys, so every lane shares them. `save_config` keeps the `lanes` block; a lane ≥ 2 never writes the base config; SIGHUP reload merges the lane's overrides. A `laneK.*` change SIGHUPs that lane; a base `--config-set` SIGHUPs every running lane. `--config-show` prints the lane count, split mode and overrides. A `--preset` run uses the saved lane count and split, but no lane overrides.
+- **`--lanes-status`.** One row per lane state file (state, session, uptime, run, profit, lane equity, bps), plus total bps and P/L.
+- **`--benchmark [N] --lanes M`.** Runs the read-only GraphQL `UserBalances` probe at 1..M concurrent clients. Each client has its own curl_cffi session with the cached CF cookies and the proxy. It prints req/s, scaling vs 1 lane, p50, ok, 429 and 403 per row, then `recommend_lanes`: the highest count where each step adds ≥ 30 % req/s with no 429. No bets, and no CF solvers.
+- **Shared Cloudflare cookie cache.** `~/.stake_cf_cookies.json` is now written atomically (tmp file + `os.replace`, mode 0600), so a lane never reads a half-written file. CF passes 2–6 of the connection test (cache, TLS profiles, FlareSolverr, Playwright, nodriver) now run as `_cf_reauth`, unchanged, under an `fcntl` lock on `~/.stake_cf_cookies.json.lock`. Only one lane solves the challenge. A lane that waited for the lock re-reads the cache in pass 2 and reuses the first lane's cookies. The lock covers start-up re-auth only: a 403 during betting still only backs off, as before.
+- **Monitor `S` / systemd.** The stop uses this lane's unit (`stake` or `stake-lane@K`), so systemd does not respawn a managed lane. WolfBet checks the lane-1 unit only; this is a small deviation, same as goated.
+- **N/A:**
+  - Soft pacing from quota headers: Stake sends none, so each lane keeps its 429 backoff.
+  - The cross-lane `/auto/start` lock: Stake has no server-side auto-bet.
+  - `pipeline_depth` as a forbidden key: no pipeline.
+
+  `stakectl lanes` and the `stake-lane@.service` template come with E7.
+- Tests: `tests/test_wolfbet_sync_e5_lanes.py` (61). They include two lanes in threads on one fake account, and two lanes hitting a CF 403 together with one re-auth. `test_portability_v1.py` pins 1.13.0.
+
+`VERSION` `1.12.0` → `1.13.0`.
+
 ## CLI v1.12.0 — Observability, diagnostics, retention, async writer, live editing (2026-11-14)
 
 Mirrors WolfBet CLI v2.17.0 (API timing + on-target %), v2.18.0 (wizard Step 5b + preset keys), v2.19.0 (`T` tweak / `_apply_mutation`), v2.22.1 (risky-config hints), v2.25.0 (`--config-show` / `--config-set` / `--version`), v2.26.0 (proxy, `purge_days`, `--cleanup`), v2.26.1 (`--benchmark`, `--diagnose`), v2.27.0 (async bet writer), v2.28.1 (monitor footer hints, systemd-aware stop), v2.28.3 (config-set → SIGHUP), v2.30.3–v2.30.6 (windowed metrics, clamp messages) and v2.32.1 (`martingale_chain_depth` warning). TG unchanged. Cloudflare bypass chain unchanged. Uses `shared.core.diagnostics`, `shared.core.net` and `shared.core.database`.

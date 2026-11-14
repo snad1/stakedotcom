@@ -7,6 +7,7 @@
 """
 
 import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, re, math, queue
+import fcntl
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
@@ -20,7 +21,12 @@ from shared.core.stats import fmt_duration, sessions_time_span, stats_date_windo
 from shared.core.database import ensure_sessions_lane, cleanup_old_bets, cleanup_live_bets
 from shared.core.diagnostics import percentile, benchmark_verdict
 from shared.core.net import validate_proxy, mask_proxy
-from shared.core.lanes import LANES_MAX, validate_lane
+from shared.core.lanes import (
+    LANES_MAX, LANE_SPLIT_HELP, LANE_UNSET_VALUES,
+    lane_path, validate_lane, lanes_count, lane_split, lane_config,
+    lane_overrides, split_budget_on, split_bet_divisor, split_lane_pairs,
+    check_lane_keys, lane_share, lane_equity, lane_budget_exceeded, recommend_lanes,
+)
 try:
     import readline
 except ImportError:
@@ -104,17 +110,42 @@ def _cf_cache_load() -> bool:
         return False
 
 def _cf_cache_save():
-    """Save CF cookies to disk for reuse across restarts."""
+    """Save CF cookies to disk for reuse across restarts and lanes.
+
+    v1.13.0: written atomically (tmp + os.replace) because parallel lanes
+    read this file while another lane may be writing it.
+    """
+    tmp = f"{CF_CACHE_PATH}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
-        fd = os.open(CF_CACHE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump({
                 "cookie_str": _cf_cookie_str,
                 "user_agent": _cf_user_agent,
                 "timestamp": time.time(),
             }, f)
+        os.replace(tmp, CF_CACHE_PATH)
     except Exception:
-        pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+class _cf_reauth_lock:
+    """v1.13.0 — cross-lane (cross-process) lock around Cloudflare re-auth:
+    an fcntl lock file next to CF_CACHE_PATH, so only one lane runs the CF
+    solvers at a time; a lane that waited then finds the fresh cookies."""
+    def __enter__(self):
+        self._fd = os.open(f"{CF_CACHE_PATH}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self._fd)
+        return False
 
 def _flaresolverr_available() -> bool:
     try:
@@ -427,7 +458,7 @@ STATE_PATH   = os.path.expanduser("~/.stake_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.12.0"
+VERSION      = "1.13.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -444,6 +475,37 @@ _log_handler.setFormatter(logging.Formatter(
     "%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
 ))
 logger.addHandler(_log_handler)
+
+# ===========================================================
+#  PARALLEL LANES  (v1.13.0, wolfbet v2.35.0 / v2.36.0)
+# ===========================================================
+# A lane is one bot process with its own session, chain, counters, stops and
+# pauses. Lane 1 keeps the classic paths; lanes 2..N run side by side on the
+# same account, config file, CF cookie cache and stats DB (`--lane K`).
+# Helpers: shared.core.lanes.
+_BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH
+
+# Never overridable per lane: credentials, account, network and storage
+# settings. The Cloudflare worker / WARP / solver settings are CLI flags and
+# env vars (--api-base, STAKE_API_BASE, FLARESOLVERR_URL), not config keys,
+# so they are shared by construction.
+_LANE_FORBIDDEN_KEYS = frozenset({
+    "access_token", "lockdown_token", "cookie", "currency", "game",
+    "proxy", "purge_days", "db_write_mode",
+})
+
+def _apply_lane(lane) -> None:
+    """Switch this process to lane `lane`: state/pid paths + `[LK]` log prefix.
+    Raises ValueError outside 1..LANES_MAX."""
+    global STATE_PATH, PID_PATH
+    lane = validate_lane(lane)
+    state.lane = lane
+    if lane > 1:
+        STATE_PATH = lane_path(_BASE_STATE_PATH, lane)
+        PID_PATH = lane_path(_BASE_PID_PATH, lane)
+        _log_handler.setFormatter(logging.Formatter(
+            f"%(asctime)s  %(levelname)-7s  [L{lane}] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"))
 
 CURRENCIES = ["btc", "eth", "ltc", "doge", "trx", "bch", "xrp", "usdt", "bnb", "ada", "matic"]
 
@@ -681,11 +743,40 @@ def _mask_key(key: str) -> str:
     return f"{key[:8]}...{key[-4:]}"
 
 def save_config():
+    if state.lane > 1:
+        # v1.13.0 (wolfbet v2.35.0) — a lane's state holds base + its overrides;
+        # writing it back would leak them into the shared base config.
+        logger.info("save_config skipped on lane %d (base config is lane 1's)", state.lane)
+        return
     data = {k: _config_value(k) for k in _CONFIG_KEYS}
+    # v1.13.0 (wolfbet v2.36.0) — an untouched split base bet is saved as the full one.
+    if state.base_bet_split is not None and state.base_bet == state.base_bet_split:
+        data["base_bet"] = state.base_bet_disk
+    # v1.13.0 (wolfbet v2.35.0) — keep the lanes block (count, split, overrides).
+    try:
+        with open(CONFIG_PATH) as f:
+            old = json.load(f)
+        if isinstance(old, dict) and "lanes" in old:
+            data["lanes"] = old["lanes"]
+    except (OSError, ValueError):
+        pass
     fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
     logger.info("Config saved (token=%s)", _mask_key(data.get("access_token", "")))
+
+def _apply_lane_config(data: dict) -> dict:
+    """v1.13.0 (wolfbet v2.35.0 / v2.36.0) — read the lane count and split mode
+    and return the config this lane runs: base + its overrides + bet split."""
+    state.lanes_count = lanes_count(data)
+    state.lane_split = lane_split(data)
+    merged, warning = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS)
+    if warning:
+        logger.warning(warning)
+    state.base_bet_disk = data.get("base_bet")
+    state.base_bet_split = (merged.get("base_bet")
+                            if merged.get("base_bet") != data.get("base_bet") else None)
+    return merged
 
 def load_config() -> bool:
     if not os.path.exists(CONFIG_PATH):
@@ -693,7 +784,7 @@ def load_config() -> bool:
     try:
         with open(CONFIG_PATH) as f:
             data = json.load(f)
-        _apply_loaded(data, _CONFIG_KEYS)
+        _apply_loaded(_apply_lane_config(data), _CONFIG_KEYS)
     except Exception:
         return False
     # v1.12.0 fix: the saved proxy only reached the HTTP client by accident
@@ -723,6 +814,8 @@ def _reload_live_config() -> dict:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — this lane's overrides + bet split.
+    data = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS)[0]
     changed = {}
     with state.lock:
         for k in _LIVE_RELOAD_KEYS:
@@ -1327,6 +1420,17 @@ class BotState:
         self.session_pause_total     : float = 0.0
         self.run_started_at          : float = time.time()   # never reset across cycles
 
+        # -- v1.13.0 parallel lanes (wolfbet v2.35.0 / v2.36.0) --
+        # lane_share None = no split budget. lane_run_profit carries the
+        # lane's result across its sessions (recurring / streak-reset cycles).
+        self.lane            = 1
+        self.lanes_count     = 1
+        self.lane_split      = "none"     # see LANE_SPLIT_MODES
+        self.lane_share      : Optional[float] = None
+        self.lane_run_profit = 0.0
+        self.base_bet_disk   = None       # base_bet as saved in the config file
+        self.base_bet_split  = None       # this lane's split base bet (None = no split)
+
         # -- strategy internal state --
         self.dalembert_unit = 0
         self.paroli_count   = 0
@@ -1481,10 +1585,15 @@ def _check_risky_config() -> list:
             "No `max_loss` set -- Martingale-style strategies can drain balance "
             "on a bad streak. Consider `maxloss <amount>` (T hotkey or --config-set)."
         )
-    depth = martingale_chain_depth(state.current_balance, state.base_bet, loss_mult)
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — with a split budget a lane may
+    # only risk its share of the balance.
+    split = split_budget_on(state.lanes_count, state.lane_split)
+    bank = state.current_balance / state.lanes_count if split else state.current_balance
+    depth = martingale_chain_depth(bank, state.base_bet, loss_mult)
     if sk in _DOUBLING_KEYS and state.streak_reset_losses and state.max_loss is None and depth:
         warnings.append(
-            f"Streak reset with no `max_loss`: balance covers a {depth}-loss chain. "
+            f"Streak reset with no `max_loss`: {'lane share' if split else 'balance'} "
+            f"covers a {depth}-loss chain. "
             f"Loss {depth + 1} in a row ends the session with insufficient balance."
         )
     if sk == "3" and state.max_profit is None:
@@ -1822,6 +1931,74 @@ def _api_post(url: str, payload: dict, base: str = None) -> Optional[dict]:
         raise ConnectionError(f"HTTP {r.status_code} from {url}: {body}")
     return r.json()
 
+def _cf_reauth(try_all_bases, err):
+    """Cloudflare passes 2-6 of api_test_connection (cache, TLS profiles,
+    FlareSolverr, Playwright, nodriver), unchanged. Returns (base, None) on
+    success or (None, last error). The caller holds _cf_reauth_lock."""
+    _try_all_bases = try_all_bases
+    # Pass 2: cached CF cookies
+    if "403" in str(err) and _cf_cache_load():
+        console.print("  [yellow]Using cached CF cookies...[/yellow]")
+        base2, err2 = _try_all_bases()
+        if base2:
+            return base2, None
+        err = err2
+
+    # Pass 3: curl_cffi profile rotation
+    if "403" in str(err) and _HAS_CFFI:
+        for profile in ("chrome120", "chrome116", "chrome110", "firefox", "edge"):
+            console.print(f"  [yellow]Trying TLS profile: {profile}...[/yellow]")
+            _recreate_http(impersonate=profile)
+            base3, err3 = _try_all_bases()
+            if base3:
+                return base3, None
+            if "403" not in str(err3):
+                err = err3
+                break
+            err = err3
+
+    # Pass 4: FlareSolverr / Byparr
+    if "403" in str(err) and _flaresolverr_available():
+        for domain_base in API_BASES:
+            site = domain_base.split("/_api")[0]
+            console.print(f"  [yellow]Solving Cloudflare via FlareSolverr for {site}...[/yellow]")
+            if _solve_cloudflare(site):
+                _recreate_http()  # clear stale CF cookies from session
+                base4, err4 = _try_all_bases()
+                if base4:
+                    return base4, None
+                err = err4
+
+    # Pass 5: Playwright (handles Turnstile / managed challenges)
+    if "403" in str(err) and _playwright_available():
+        for domain_base in API_BASES:
+            site = domain_base.split("/_api")[0]
+            console.print(f"  [yellow]Solving Cloudflare via Playwright for {site}...[/yellow]")
+            if _solve_cf_playwright(site):
+                _recreate_http()
+                base5, err5 = _try_all_bases()
+                if base5:
+                    return base5, None
+                err = err5
+
+    # Pass 6: nodriver (most aggressive CF bypass — patched Chrome via CDP)
+    if "403" in str(err):
+        try:
+            import nodriver  # noqa: F401
+            for domain_base in API_BASES:
+                site = domain_base.split("/_api")[0]
+                console.print(f"  [yellow]Solving Cloudflare via nodriver for {site}...[/yellow]")
+                if _solve_cf_nodriver(site):
+                    _recreate_http()
+                    base6, err6 = _try_all_bases()
+                    if base6:
+                        return base6, None
+                    err = err6
+        except ImportError:
+            console.print("  [dim]nodriver not installed (skip). To enable: pip install nodriver[/]")
+
+    return None, err
+
 def api_test_connection() -> bool:
     """Test auth with a read-only GraphQL query. CF bypass: profile rotation → cache → FlareSolverr."""
     global API_BASE
@@ -1851,71 +2028,15 @@ def api_test_connection() -> bool:
         API_BASE = base
         return True
 
-    # Pass 2: cached CF cookies
-    if "403" in str(err) and _cf_cache_load():
-        console.print("  [yellow]Using cached CF cookies...[/yellow]")
-        base2, err2 = _try_all_bases()
-        if base2:
-            API_BASE = base2
-            return True
-        err = err2
-
-    # Pass 3: curl_cffi profile rotation
-    if "403" in str(err) and _HAS_CFFI:
-        for profile in ("chrome120", "chrome116", "chrome110", "firefox", "edge"):
-            console.print(f"  [yellow]Trying TLS profile: {profile}...[/yellow]")
-            _recreate_http(impersonate=profile)
-            base3, err3 = _try_all_bases()
-            if base3:
-                API_BASE = base3
-                return True
-            if "403" not in str(err3):
-                err = err3
-                break
-            err = err3
-
-    # Pass 4: FlareSolverr / Byparr
-    if "403" in str(err) and _flaresolverr_available():
-        for domain_base in API_BASES:
-            site = domain_base.split("/_api")[0]
-            console.print(f"  [yellow]Solving Cloudflare via FlareSolverr for {site}...[/yellow]")
-            if _solve_cloudflare(site):
-                _recreate_http()  # clear stale CF cookies from session
-                base4, err4 = _try_all_bases()
-                if base4:
-                    API_BASE = base4
-                    return True
-                err = err4
-
-    # Pass 5: Playwright (handles Turnstile / managed challenges)
-    if "403" in str(err) and _playwright_available():
-        for domain_base in API_BASES:
-            site = domain_base.split("/_api")[0]
-            console.print(f"  [yellow]Solving Cloudflare via Playwright for {site}...[/yellow]")
-            if _solve_cf_playwright(site):
-                _recreate_http()
-                base5, err5 = _try_all_bases()
-                if base5:
-                    API_BASE = base5
-                    return True
-                err = err5
-
-    # Pass 6: nodriver (most aggressive CF bypass — patched Chrome via CDP)
+    # Passes 2-6 re-authenticate with Cloudflare. v1.13.0: parallel lanes share
+    # the cookie cache, so they run one lane at a time; a lane that waited for
+    # the lock re-reads the cache in pass 2 and reuses the first lane's cookies.
     if "403" in str(err):
-        try:
-            import nodriver  # noqa: F401
-            for domain_base in API_BASES:
-                site = domain_base.split("/_api")[0]
-                console.print(f"  [yellow]Solving Cloudflare via nodriver for {site}...[/yellow]")
-                if _solve_cf_nodriver(site):
-                    _recreate_http()
-                    base6, err6 = _try_all_bases()
-                    if base6:
-                        API_BASE = base6
-                        return True
-                    err = err6
-        except ImportError:
-            console.print("  [dim]nodriver not installed (skip). To enable: pip install nodriver[/]")
+        with _cf_reauth_lock():
+            base, err = _cf_reauth(_try_all_bases, err)
+        if base:
+            API_BASE = base
+            return True
 
     if "403" in str(err):
         raise Exception(
@@ -2072,13 +2193,34 @@ def should_stop() -> tuple:
     if streak_reset_triggered(state.current_streak, state.last_broken_loss_streak,
                               state.streak_reset_losses, p):
         return True, streak_reset_stop_reason(state.last_broken_loss_streak)
+    # v1.13.0 (wolfbet v2.35.0) — split budget: a lane may only risk its share.
+    # Not on the restart whitelist, so the lane stops for good.
+    over, reason = lane_budget_exceeded(state.current_bet, lane_equity_now())
+    if over:
+        return True, reason
     return False, ""
+
+def lane_equity_now() -> Optional[float]:
+    """Money this lane may still risk: share + its result so far. None = no split.
+    Stake's bet reply carries no balance, so equity comes from lane profit."""
+    return lane_equity(state.lane_share, state.lane_run_profit, state.profit)
+
+def _init_lane_budget() -> None:
+    """v1.13.0 (wolfbet v2.35.0) — fix this lane's share of the balance at bot
+    start. The balance is the account's, read via GraphQL UserBalances."""
+    state.lane_share = lane_share(state.current_balance, state.lanes_count, state.lane_split)
+    if state.lane_share is not None:
+        logger.warning("LANE %d/%d  share=%.8f of balance %.8f",
+                       state.lane, state.lanes_count, state.lane_share,
+                       state.current_balance)
 
 def _apply_basebet_pct() -> bool:
     """Set base bet to balance x basebet_pct. True when it changed (WolfBet v2.16.0)."""
     if state.basebet_pct <= 0 or state.current_balance <= 0:
         return False
-    new_base = round(state.current_balance * state.basebet_pct, 8)
+    # v1.13.0 (wolfbet v2.36.0) — bet split divides by the lane count.
+    new_base = round(state.current_balance * state.basebet_pct
+                     / split_bet_divisor(state.lanes_count, state.lane_split), 8)
     if new_base <= 0 or abs(new_base - state.base_bet) < 1e-12:
         return False
     with state.lock:
@@ -2141,6 +2283,8 @@ def _reset_session_for_recurring(delay: float) -> bool:
         state.session_bet_ended_at = None
         state.session_pause_started_at = None
         state.start_balance = state.highest_balance = state.lowest_balance = state.current_balance
+        # v1.13.0 (wolfbet v2.35.0) — lane equity carries the lane's result.
+        state.lane_run_profit += state.profit
         state.session_id = _db_start_session()
         state.session_start = time.time()
         state.total_bets = state.wins = state.losses = 0
@@ -2375,12 +2519,13 @@ def _db_start_session() -> int:
     c = conn.cursor()
     c.execute("""
         INSERT INTO sessions
-            (started_at, currency, game, strategy, base_bet, multiplier, start_balance)
-        VALUES (?,?,?,?,?,?,?)
+            (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane)
+        VALUES (?,?,?,?,?,?,?,?)
     """, (
         datetime.now().isoformat(),
         state.currency, state.game, state.strategy,
         state.base_bet, state.multiplier_target, state.start_balance,
+        state.lane,
     ))
     conn.commit()
     sid = c.lastrowid
@@ -2643,6 +2788,12 @@ def _save_state_file():
             "db_writer_stats":     dict(_bet_writer_stats),
             "db_writer_queue":     _bet_write_queue.qsize(),
             "purge_days":          state.purge_days,
+            # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — parallel lanes
+            "lane":                state.lane,
+            "lanes_count":         state.lanes_count,
+            "lane_share":          state.lane_share,
+            "lane_split":          state.lane_split,
+            "lane_equity":         lane_equity_now(),
             **_uptime_fields(),
             "status": state.status,
             "last_error": state.last_error,
@@ -4708,6 +4859,10 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
 
 SYSTEMD_UNIT = "stake"   # stakectl's $SERVICE
 
+def _service_unit() -> str:
+    """systemd unit of this lane: stake (lane 1) or stake-lane@K (v1.13.0)."""
+    return SYSTEMD_UNIT if state.lane <= 1 else f"{SYSTEMD_UNIT}-lane@{state.lane}"
+
 def _is_systemd_managed(pid) -> bool:
     """True when pid runs inside the stake systemd unit (Linux /proc cgroup check).
 
@@ -4718,7 +4873,7 @@ def _is_systemd_managed(pid) -> bool:
         return False
     try:
         with open(f"/proc/{pid}/cgroup") as f:
-            return f"/{SYSTEMD_UNIT}.service" in f.read()
+            return f"/{_service_unit()}.service" in f.read()
     except OSError:
         return False
 
@@ -4728,7 +4883,7 @@ def _stop_daemon(pid) -> str:
     if _is_systemd_managed(pid):
         try:
             import subprocess as _sp
-            _sp.run(["systemctl", "--user", "stop", SYSTEMD_UNIT], check=False, timeout=10)
+            _sp.run(["systemctl", "--user", "stop", _service_unit()], check=False, timeout=10)
             return "systemd"
         except Exception:
             pass
@@ -4852,6 +5007,67 @@ def cmd_monitor():
 
 
 # ── cmd_status ────────────────────────────────────────────
+def _read_lane_states() -> list:
+    """v1.13.0 (wolfbet v2.35.0) — [(lane, state-dict | None, alive)] for lanes
+    1..LANES_MAX that have a state file."""
+    out = []
+    for k in range(1, LANES_MAX + 1):
+        path = lane_path(_BASE_STATE_PATH, k)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            out.append((k, None, False))
+            continue
+        alive = False
+        try:
+            if d.get("pid"):
+                os.kill(int(d["pid"]), 0)
+                alive = True
+        except (OSError, ValueError, TypeError):
+            pass
+        out.append((k, d, alive))
+    return out
+
+
+def cmd_lanes_status():
+    """v1.13.0 (wolfbet v2.35.0) — one row per lane + totals. No Pace column:
+    Stake sends no rate-limit quota headers, so there is no soft pacing."""
+    rows = _read_lane_states()
+    if not rows:
+        console.print("[yellow]No lane state files found.[/]")
+        return
+    t = Table(title="Parallel lanes", title_style="bold cyan", box=box.SIMPLE)
+    for col in ("Lane", "State", "Session", "Uptime", "Run", "Profit", "Equity", "bps"):
+        t.add_column(col, justify="left" if col == "State" else "right")
+    tot_bps = tot_profit = 0.0
+    for k, d, alive in rows:
+        if d is None:
+            t.add_row(str(k), "[red]unreadable[/]", *["-"] * 6)
+            continue
+        p = float(d.get("profit", 0) or 0)
+        bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
+        eq = d.get("lane_equity")
+        tot_profit += p
+        tot_bps += bps
+        st = "[green]LIVE[/]" if alive else "[red]STOPPED[/]"
+        if alive and int(d.get("pause_remaining_sec", 0) or 0) > 0:
+            st = "[cyan]PAUSED[/]"
+        run = d.get("run_uptime_sec")
+        t.add_row(str(k), st, f"#{d.get('session_id', '?')}",
+                  str(timedelta(seconds=int(d.get("uptime_sec", 0) or 0))),
+                  fmt_duration(run) if run is not None else "-",
+                  f"[{'green' if p >= 0 else 'red'}]{p:+.8f}[/]",
+                  f"{eq:.8f}" if isinstance(eq, (int, float)) else "-",
+                  f"{bps:.1f}")
+    console.print(t)
+    console.print(f"  [dim]Total:[/] [bold]{tot_bps:.1f}[/] bps   "
+                  f"[dim]session P/L[/] [{'green' if tot_profit >= 0 else 'red'}]{tot_profit:+.8f}[/]   "
+                  f"[dim]lanes live[/] {sum(1 for _, _, a in rows if a)}/{len(rows)}")
+
+
 def cmd_status():
     if not os.path.exists(STATE_PATH):
         console.print("[yellow]No running session found.[/]")
@@ -5511,6 +5727,18 @@ def cmd_config_show():
                       f"[dim]mode={oct(st.st_mode & 0o777)}  size={st.st_size}B[/]")
     except OSError:
         pass
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — lane count, split mode, overrides.
+    raw = _read_config_raw() or {}
+    n_lanes, mode = lanes_count(raw), lane_split(raw)
+    console.print(f"\n[dim]Lanes:[/] [bold]{n_lanes}[/]  [dim]split:[/] [bold]{mode}[/]"
+                  + (f"  [dim]({LANE_SPLIT_HELP[mode]})[/]" if n_lanes > 1 else ""))
+    for lane in range(2, LANES_MAX + 1):
+        ov = lane_overrides(raw, lane, _LANE_FORBIDDEN_KEYS)
+        if ov:
+            parts = ", ".join(
+                f"{k}={_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}"
+                for k, v in sorted(ov.items()))
+            console.print(f"  [magenta]lane{lane}[/] overrides: {parts}")
     console.print("[dim]Tweak with:[/] [cyan]python3 stake.py --config-set KEY=VALUE ...[/]")
 
 
@@ -5538,6 +5766,20 @@ def cmd_config_set(pairs: list):
             console.print("[dim]  Credentials are set in the wizard (python3 stake.py --setup-only), "
                           "never in shell history / process args.[/]")
             sys.exit(2)
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — lanes=N, lane_split=MODE and
+    # laneK.key=value write the lanes block directly.
+    try:
+        pairs, per_lane, count, split = split_lane_pairs(pairs)
+    except ValueError as e:
+        console.print(f"[red]Invalid --config-set argument:[/] {e}")
+        sys.exit(2)
+    if per_lane or count is not None or split is not None:
+        console.print(Rule("[bold cyan]Lane config updated[/]"))
+        rc = _cmd_config_set_lanes(per_lane, count, split)
+        if rc:
+            sys.exit(rc)
+        if not pairs:
+            return
     try:
         parsed = _parse_config_set_pairs(pairs)
     except ValueError as e:
@@ -5582,6 +5824,119 @@ def cmd_config_set(pairs: list):
         console.print("[dim]Daemon reloaded live config.[/]")
     except (OSError, ValueError):
         console.print("[dim]Daemon PID stale; changes apply on next start.[/]")
+    finally:
+        # v1.13.0 (wolfbet v2.35.0) — the base config is shared: reload lanes 2..N too.
+        n_lanes = _signal_lane_daemons(range(2, LANES_MAX + 1))
+        if n_lanes:
+            console.print(f"[dim]{n_lanes} more lane(s) reloaded live config.[/]")
+
+
+def _read_config_raw() -> Optional[dict]:
+    try:
+        with open(CONFIG_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_config_raw(data: dict) -> None:
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _lane_override_changes(lane_pairs: list):
+    """v1.13.0 (wolfbet v2.35.0) — validate laneK.* pairs through the normal
+    mutation path. Returns (sets, removals): sets = {key: config-file value},
+    including derived fields (dice_target after multiplier); removals = keys
+    whose override goes away (value default / unset / inherit)."""
+    removals, to_set = set(), []
+    for pair in lane_pairs:
+        k, v = pair.split("=", 1)
+        canon = _TWEAK_ALIAS.get(k.strip().lower(), k.strip().lower())
+        check_lane_keys([canon], _LANE_FORBIDDEN_KEYS)
+        if v.strip().lower() in LANE_UNSET_VALUES:
+            removals.add(canon)
+        else:
+            to_set.append(pair)
+    parsed = _parse_config_set_pairs(to_set) if to_set else {}
+    check_lane_keys(parsed, _LANE_FORBIDDEN_KEYS)
+    if not load_config():
+        raise ValueError("No config saved yet -- run the wizard first.")
+    before = {k: _config_value(k) for k in _CONFIG_KEYS}
+    _apply_mutation(parsed)
+    changes = {k: _config_value(k) for k in _CONFIG_KEYS if _config_value(k) != before[k]}
+    for k in parsed:   # same value as base still pins the override
+        changes.setdefault(k, _config_value(k))
+    check_lane_keys(changes, _LANE_FORBIDDEN_KEYS)
+    return changes, removals
+
+
+def _signal_lane_daemons(lanes=None) -> int:
+    """SIGHUP every running lane daemon (or just `lanes`). Returns count signalled."""
+    if not hasattr(signal, "SIGHUP"):
+        return 0
+    n = 0
+    for k in (lanes or range(1, LANES_MAX + 1)):
+        try:
+            with open(lane_path(_BASE_PID_PATH, k)) as f:
+                os.kill(int(f.read().strip()), signal.SIGHUP)
+            n += 1
+        except (OSError, ValueError):
+            continue
+    return n
+
+
+def _cmd_config_set_lanes(per_lane: dict, count, split=None) -> int:
+    """Write lanes.count / lanes.split / lanes.overrides[K]; SIGHUP touched lanes."""
+    raw = _read_config_raw()
+    if raw is None:
+        console.print("[yellow]No config saved yet -- run the wizard first.[/]")
+        return 1
+    lanes = raw.get("lanes") if isinstance(raw.get("lanes"), dict) else {}
+    raw["lanes"] = lanes
+    overrides = lanes.get("overrides") if isinstance(lanes.get("overrides"), dict) else {}
+    lanes["overrides"] = overrides
+    if count is not None:
+        old = lanes.get("count", 1)
+        lanes["count"] = count
+        console.print(f"  [yellow]lanes[/]: [dim]{old}[/]  ->  [green]{count}[/]")
+    if split is not None:
+        old = lane_split(raw)
+        lanes["split"] = split
+        console.print(f"  [yellow]lane_split[/]: [dim]{old}[/]  ->  [green]{split}[/]  "
+                      f"[dim]({LANE_SPLIT_HELP[split]})[/]")
+    for lane, lane_pairs in sorted(per_lane.items()):
+        try:
+            sets, removals = _lane_override_changes(lane_pairs)
+        except ValueError as e:
+            console.print(f"[red]Invalid lane{lane} override:[/] {e}")
+            return 2
+        ov = overrides.setdefault(str(lane), {})
+        for k in sorted(removals):
+            ov.pop(k, None)
+            console.print(f"  [yellow]lane{lane}.{k}[/]: [dim]override removed (uses base)[/]")
+        for k, v in sets.items():
+            ov[k] = v
+            shown = parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v
+            console.print(f"  [yellow]lane{lane}.{k}[/]  ->  [green]{_fmt_config_value(k, shown)}[/]")
+        if not ov:
+            overrides.pop(str(lane), None)
+    _write_config_raw(raw)
+    console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
+    if per_lane:
+        n = _signal_lane_daemons(sorted(per_lane))
+        if n:
+            console.print(f"[dim]{n} running lane(s) reloaded live config "
+                          "(restart-only fields apply on the next start).[/]")
+    if count is not None:
+        console.print(f"[dim]Start lanes 2..{count} with [cyan]python3 stake.py --daemon --resume "
+                      "--lane K[/] (restart running lanes so each recomputes its budget share).[/]")
+    elif split is not None:
+        console.print("[dim]lane_split applies on the next lane start -- run "
+                      "[cyan]stakectl restart[/].[/]")
+    return 0
 
 
 # ===========================================================
@@ -5626,12 +5981,85 @@ def _retention_worker():
 # ===========================================================
 #  BPS DIAGNOSTICS  (WolfBet v2.26.1: --benchmark, --diagnose)
 # ===========================================================
-def cmd_benchmark(n=None, proxy=None):
+def _bench_session():
+    """A fresh HTTP client like the live one: one per benchmark lane (v1.13.0)."""
+    if _HAS_CFFI:
+        return cffi_requests.Session(impersonate="chrome", proxy=state.proxy or None)
+    return requests.Session()
+
+
+def _bench_lanes(n: int, lanes: int) -> dict:
+    """`lanes` clients, each in its own thread with its own session, fire n
+    read-only UserBalances calls at once. Returns rps, p50 and status counts."""
+    lock = threading.Lock()
+    samples, counts = [], {"ok": 0, "total": 0, "s429": 0, "s403": 0}
+
+    def worker():
+        sess = _bench_session()
+        for _ in range(n):
+            t0 = time.perf_counter()
+            try:
+                r = sess.post(_gql_url(), headers=_headers(), json=_user_balances_payload(),
+                              timeout=15)
+                code = r.status_code
+            except Exception:
+                code = None
+            ms = (time.perf_counter() - t0) * 1000
+            with lock:
+                counts["total"] += 1
+                if code == 200:
+                    counts["ok"] += 1
+                    samples.append(ms)
+                elif code == 429:
+                    counts["s429"] += 1
+                elif code == 403:
+                    counts["s403"] += 1
+
+    t0 = time.perf_counter()
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(lanes)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    wall = max(time.perf_counter() - t0, 1e-9)
+    samples.sort()
+    return {"rps": counts["ok"] / wall, "p50": percentile(samples, 0.50), **counts}
+
+
+def cmd_benchmark_lanes(n: int, lanes: int):
+    """v1.13.0 (wolfbet v2.35.0 `--benchmark --lanes M`) — probe at 1..M
+    concurrent clients and recommend a lane count. Read-only, no CF solver."""
+    lanes = max(2, min(LANES_MAX, int(lanes)))
+    console.print(f"[dim]Benchmarking {n} x GraphQL UserBalances per client at 1..{lanes} "
+                  f"concurrent clients (proxy={mask_proxy(state.proxy)}) ...[/]")
+    rows = {k: _bench_lanes(n, k) for k in range(1, lanes + 1)}
+    tbl = Table(title="Concurrent lanes", title_style="bold cyan", box=box.SIMPLE)
+    for col in ("lanes", "req/s", "x1 lane", "p50 ms", "ok", "429", "403"):
+        tbl.add_column(col, justify="right")
+    base = rows[1]["rps"]
+    for k, r in rows.items():
+        tbl.add_row(str(k), f"{r['rps']:.1f}", f"{r['rps'] / base:.2f}" if base else "-",
+                    f"{r['p50']:.0f}", f"{r['ok']}/{r['total']}",
+                    f"[red]{r['s429']}[/]" if r["s429"] else "0",
+                    f"[yellow]{r['s403']}[/]" if r["s403"] else "0")
+    console.print(tbl)
+    if not base:
+        console.print("[red]No successful requests. Check tokens, proxy and network.[/]")
+        sys.exit(1)
+    best = recommend_lanes(base, {k: r for k, r in rows.items() if k > 1})
+    console.print(f"[bold green]Recommended lanes: {best}[/]  [dim](the highest count where "
+                  "each step adds >= 30% req/s with no 429)[/]")
+    if any(r["s403"] for r in rows.values()):
+        console.print("[yellow]Some requests got 403 (Cloudflare). Start the bot once so it "
+                      "solves CF and caches cookies, then re-run.[/]")
+
+
+def cmd_benchmark(n=None, proxy=None, lanes=None):
     """N read-only GraphQL UserBalances calls through the live client: no bets, no DB.
 
     Uses the same CF-aware session, headers, cached CF cookies and proxy as
     the bet path. It does not run the CF solver chain: a 403 counts as a
-    failed sample.
+    failed sample. With lanes > 1 it probes concurrent clients instead.
     """
     n = 20 if n is None else int(n)
     n = max(3, min(200, n))
@@ -5642,6 +6070,9 @@ def cmd_benchmark(n=None, proxy=None):
         state.proxy = proxy
         _recreate_http()
     _cf_cache_load()
+    if lanes is not None and int(lanes) > 1:
+        cmd_benchmark_lanes(n, lanes)
+        return
     console.print(f"[dim]Benchmarking {n} x GraphQL UserBalances at {_gql_url()} "
                   f"(proxy={mask_proxy(state.proxy)}) ...[/]")
     samples, statuses, failures = [], [], 0
@@ -5839,6 +6270,8 @@ def main():
                             "(default 20, clamped 3-200). No bets placed.")
     group.add_argument("--diagnose", action="store_true",
                        help="Bottleneck analysis of the running session (reads the state file)")
+    group.add_argument("--lanes-status", action="store_true",
+                       help="One row per running lane (state, session, profit, equity, bps) + totals")
     # Modifiers, not commands: they combine WITH --stats / --analytics, so they
     # stay outside the mutually-exclusive group (WolfBet v2.30.9).
     parser.add_argument("--since", metavar="DATE",
@@ -5848,7 +6281,12 @@ def main():
                         help="With --stats/--analytics: window end, same formats "
                              "(bare date = inclusive end of day)")
     parser.add_argument("--lane", type=int, metavar="K", default=None,
-                        help=f"With --stats/--analytics: only that lane's sessions (1-{LANES_MAX})")
+                        help=f"Parallel lane to run or inspect (1-{LANES_MAX}, default 1): "
+                             "--daemon / --status / --monitor / --stop / --diagnose act on "
+                             "that lane; with --stats/--analytics only its sessions")
+    parser.add_argument("--lanes", type=int, metavar="M", default=None,
+                        help=f"With --benchmark: probe at 1..M concurrent clients (2-{LANES_MAX}) "
+                             "and recommend a lane count")
     parser.add_argument("--preset", type=str, metavar="NAME",
                         help="Load a named preset and start (skips wizard)")
     parser.add_argument("--proxy", type=str, metavar="URL",
@@ -5864,12 +6302,13 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
-    if args.lane is not None:
-        try:
-            validate_lane(args.lane)
-        except ValueError as e:
-            console.print(f"[red]{e}[/]")
-            sys.exit(2)
+    # v1.13.0 (wolfbet v2.35.0) — pick the lane before any command so status /
+    # monitor / stop / diagnose / the daemon all use that lane's files.
+    try:
+        _apply_lane(args.lane)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        sys.exit(2)
 
     if args.proxy:
         try:
@@ -5924,10 +6363,13 @@ def main():
         cmd_cleanup(None if args.cleanup == -1 else args.cleanup)
         return
     if args.benchmark is not None:
-        cmd_benchmark(args.benchmark, proxy=args.proxy)
+        cmd_benchmark(args.benchmark, proxy=args.proxy, lanes=args.lanes)
         return
     if args.diagnose:
         cmd_diagnose()
+        return
+    if args.lanes_status:
+        cmd_lanes_status()
         return
 
     if args.setup_only:
@@ -5955,6 +6397,9 @@ def main():
             else:
                 console.print("[red]No access token found. Run wizard first.[/]")
                 sys.exit(1)
+        # v1.13.0 — a preset run still counts the saved lanes (count / split);
+        # lane overrides are not applied on top of an explicit preset.
+        state.lanes_count, state.lane_split = lanes_count(saved), lane_split(saved)
         if saved.get("proxy") and not args.proxy:
             # v1.12.0 fix: presets carry no proxy; use the saved one like --resume does
             _set_config_value("proxy", saved["proxy"])
@@ -5977,6 +6422,14 @@ def main():
     if state.proxy and not _HAS_CFFI:
         console.print("[yellow]Proxy set but curl_cffi is not installed -- the proxy is ignored. "
                       "Install it: pip install curl_cffi[/]")
+
+    # v1.13.0 (wolfbet v2.35.0) — fix the lane's budget share, then stagger
+    # lane K's first bet by (K-1)*2 s so lanes don't start in lock-step.
+    if split_budget_on(state.lanes_count, state.lane_split) and state.current_balance <= 0:
+        _refresh_balance()          # --preset never reads the balance otherwise
+    _init_lane_budget()
+    if state.lane > 1:
+        time.sleep((state.lane - 1) * 2.0)
 
     state.session_id    = _db_start_session()
     state.session_start = time.time()
