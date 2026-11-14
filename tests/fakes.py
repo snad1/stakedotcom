@@ -15,7 +15,9 @@ No balance in the bet response: both clients track it locally, so the fake's
 ledger (`balance`) is what local tracking must equal.
 Read-only GraphQL calls never consume the script.
 
-Script outcomes: win, loss, insufficient_balance, http_429, timeout, cf_403.
+Script outcomes: win, loss, insufficient_balance, http_429, timeout, cf_403,
+api_error_balance, http_error_balance (rejections that mention "balance" but
+are not insufficient funds: HTTP 200 `errors` / HTTP 400).
 cf_403 answers one bet POST with a Cloudflare challenge page; the next bet
 POST (the TG retry after `_cf_reauth`, or the CLI's next loop) takes the next
 outcome. An empty script answers insufficient_balance and sets `exhausted`.
@@ -33,7 +35,8 @@ BASES = ("https://stake.bet", "https://stake.com")
 LIMBO = "/_api/casino/limbo/bet"
 DICE = "/_api/casino/dice/roll"
 GQL = "/_api/graphql"
-OUTCOMES = {"win", "loss", "insufficient_balance", "http_429", "timeout", "cf_403"}
+OUTCOMES = {"win", "loss", "insufficient_balance", "http_429", "timeout", "cf_403",
+            "api_error_balance", "http_error_balance"}
 CF_PAGE = "<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>"
 
 
@@ -102,6 +105,12 @@ class FakeCasino:
             return 403, CF_PAGE
         if outcome == "http_429":
             return 429, {"errors": [{"errorType": "rateLimit", "message": "Too many requests"}]}
+        if outcome == "api_error_balance":
+            return 200, {"errors": [{"errorType": "currency",
+                                     "message": "Balance currency not supported"}]}
+        if outcome == "http_error_balance":
+            return 400, {"errors": [{"errorType": "currency",
+                                     "message": "Balance currency not supported"}]}
         if outcome == "insufficient_balance" or amount > self.balance:
             return 400, {"errors": [{"errorType": "insufficientBalance",
                                      "message": "Insufficient balance"}]}

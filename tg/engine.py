@@ -26,6 +26,9 @@ from .config import API_BASES, APP_ENV, FLARESOLVERR_URL, CF_CACHE_TTL, MIN_BET,
 from core.database import init_db, db_connect, cleanup_old_bets, cleanup_live_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, apply_action, evaluate_rules
+from shared.core.session_rules import (
+    STREAK_RESET_REASON, record_outcome, streak_reset_triggered, streak_reset_stop_reason,
+)
 
 # Try curl_cffi async for Cloudflare TLS bypass; fall back to httpx
 try:
@@ -171,6 +174,11 @@ class BettingEngine:
         self.max_bets        = config.get("max_bets")
         self.max_wins        = config.get("max_wins")
         self.stop_on_balance = config.get("stop_on_balance")
+        # Streak reset (WolfBet v2.32.0): stop on the first win after this many
+        # consecutive losses (profit >= 0 only); handlers restart after
+        # streak_reset_delay. The delay is kept here for /status only.
+        self.streak_reset_losses = config.get("streak_reset_losses")
+        self.streak_reset_delay  = config.get("streak_reset_delay")
 
         # ── session state ──
         self.running         = False
@@ -189,6 +197,8 @@ class BettingEngine:
         self.current_streak  = 0
         self.max_win_streak  = 0
         self.max_loss_streak = 0
+        # Length of the loss streak the latest win just broke (0 if none).
+        self.last_broken_loss_streak = 0
         self.highest_bet     = 0.0
         self.highest_win     = 0.0
         self.biggest_loss    = 0.0
@@ -939,7 +949,7 @@ window.navigator.permissions.query = (parameters) => (
             errors = data.get("errors") or data.get("error")
             if errors:
                 err_str = str(errors).lower()
-                if "insufficient" in err_str or "balance" in err_str:
+                if "insufficient" in err_str:
                     self._set_error("Insufficient balance")
                     self._insufficient_balance = True
                     return None
@@ -972,7 +982,7 @@ window.navigator.permissions.query = (parameters) => (
                     self._set_error("Cloudflare blocked", "CF 403 — all bypass attempts failed")
             elif "429" in err:
                 self._set_error("Rate limited", "Rate limit 429")
-            elif "insufficient" in err.lower() or "balance" in err.lower():
+            elif "insufficient" in err.lower():
                 self._set_error("Insufficient balance")
                 self._insufficient_balance = True
             else:
@@ -1227,6 +1237,11 @@ window.navigator.permissions.query = (parameters) => (
             return True, f"Max wins: {self.wins}"
         if self.stop_on_balance is not None and b <= self.stop_on_balance:
             return True, f"Balance floor: {b:.8f}"
+        # Streak reset — only on the win that broke an N+ loss streak, not in the
+        # red. Stake has no balance in the bet reply: p is the locally tracked profit.
+        if streak_reset_triggered(self.current_streak, self.last_broken_loss_streak,
+                                  self.streak_reset_losses, p):
+            return True, streak_reset_stop_reason(self.last_broken_loss_streak)
         return False, ""
 
     def _check_milestone(self, last_state: str) -> str:
@@ -1313,6 +1328,8 @@ window.navigator.permissions.query = (parameters) => (
             "max_bets": self.max_bets,
             "max_wins": self.max_wins,
             "stop_on_balance": self.stop_on_balance,
+            "streak_reset_losses": self.streak_reset_losses,
+            "streak_reset_delay": self.streak_reset_delay,
             "profit_increment": self.profit_increment,
             "profit_threshold": self.profit_threshold,
             "proxy": self.proxy,
@@ -1344,6 +1361,7 @@ window.navigator.permissions.query = (parameters) => (
             "current_streak": self.current_streak,
             "max_win_streak": self.max_win_streak,
             "max_loss_streak": self.max_loss_streak,
+            "last_broken_loss_streak": self.last_broken_loss_streak,
             "highest_bet": self.highest_bet,
             "highest_win": self.highest_win,
             "biggest_loss": self.biggest_loss,
@@ -1371,6 +1389,7 @@ window.navigator.permissions.query = (parameters) => (
         self.current_streak    = snap["current_streak"]
         self.max_win_streak    = snap["max_win_streak"]
         self.max_loss_streak   = snap["max_loss_streak"]
+        self.last_broken_loss_streak = snap.get("last_broken_loss_streak", 0)
         self.highest_bet       = snap["highest_bet"]
         self.highest_win       = snap["highest_win"]
         self.biggest_loss      = snap["biggest_loss"]
@@ -1458,6 +1477,10 @@ window.navigator.permissions.query = (parameters) => (
             v = changes["stop_on_balance"]
             self.stop_on_balance = float(v) if v is not None else None
             msgs.append(f"Min balance: {float(v):.8f}" if v is not None else "Min balance: off")
+        if "streak_reset_losses" in changes:
+            v = changes["streak_reset_losses"]
+            self.streak_reset_losses = int(v) if v is not None else None
+            msgs.append(f"Streak reset: after {v} losses" if v is not None else "Streak reset: off")
         if "milestone_bets" in changes:
             self.milestone_bets = int(changes["milestone_bets"])
             msgs.append(f"Milestone bets: {self.milestone_bets}")
@@ -1590,6 +1613,8 @@ window.navigator.permissions.query = (parameters) => (
             "streak_delay_bets": self.streak_delay_bets,
             "streakbet_loss": self.streakbet_loss,
             "basebet_pct": self.basebet_pct,
+            "streak_reset_losses": self.streak_reset_losses,
+            "streak_reset_delay": self.streak_reset_delay,
             "win_mult": self.win_mult,
             "loss_mult": self.loss_mult,
             "game_label": game_info,
@@ -1695,13 +1720,16 @@ window.navigator.permissions.query = (parameters) => (
                 self.wins += 1
                 if raw_profit > self.highest_win:
                     self.highest_win = raw_profit
-                self.current_streak = max(self.current_streak, 0) + 1
-                self.max_win_streak = max(self.max_win_streak, self.current_streak)
             else:
                 self.losses += 1
                 if amount_used > self.biggest_loss:
                     self.biggest_loss = amount_used
-                self.current_streak = min(self.current_streak, 0) - 1
+            self.current_streak, broken = record_outcome(self.current_streak, is_win)
+            if broken is not None:
+                self.last_broken_loss_streak = broken
+            if is_win:
+                self.max_win_streak = max(self.max_win_streak, self.current_streak)
+            else:
                 self.max_loss_streak = max(self.max_loss_streak, abs(self.current_streak))
 
             if amount_used > self.highest_bet:

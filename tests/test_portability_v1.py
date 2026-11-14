@@ -52,7 +52,7 @@ def test_cli_version():
 
 
 def test_tg_version():
-    assert tg.VERSION == "1.11.1"
+    assert tg.VERSION == "1.12.0"
 
 
 # ── PRAGMAs ───────────────────────────────────────────────
@@ -331,7 +331,9 @@ def test_tg_analytics_threads_where():
     src = inspect.getsource(tg_handlers.cmd_analytics)
     assert "context.args" in src
     assert src.count("{where}") >= 5
-    assert "Range' if args_ else 'Lifetime'" in src
+    # v1.12.0: the window clause comes from shared.core.stats (E2-S3).
+    assert "stats_date_window(since, until)" in src
+    assert "Range' if window_label else 'Lifetime'" in src
 
 
 def test_stakectl_stats_passes_args():

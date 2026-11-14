@@ -37,7 +37,11 @@ from core.strategy import (
     STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME, StrategyRule,
     describe_rule, load_rules_from_text,
 )
-from .engine import BettingEngine
+from shared.core.session_rules import (
+    clamp, RECURRING_DELAY_MAX, STREAK_RESET_DELAY_MIN,
+)
+from shared.core.stats import stats_date_window
+from .engine import BettingEngine, STREAK_RESET_REASON
 from .formatter import (
     format_status, format_stop, format_milestone, format_session_row,
     format_session_detail, format_all_time, format_lastbets,
@@ -192,7 +196,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`profitincrement` — Amount to add to base bet (`off` to disable)\n"
         "`proxy` — http://user:pass@ip:port or socks5://... (`off` to disable)\n"
         "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
-        "`recurringdelay` — Seconds before restart (default 60)\n"
+        "`recurringdelay` — Seconds before restart (default 60, 5-86400)\n"
+        "`srloss` — Streak reset: stop on the win after N+ losses if profit ≥ 0, then restart (`off` to disable)\n"
+        "`srdelay` — Pause before a streak-reset restart (default 600, 5-86400)\n"
         "`streakdelay_loss` — Delay after N losses (`5:1.0` = every 5 losses → 1s)\n"
         "`streakdelay_win` — Delay after N wins (`10:0.5` = every 10 wins → 0.5s)\n"
         "`streakdelay_bets` — Delay after every N bets (`100:0.5` = every 100 bets → 0.5s)\n"
@@ -518,6 +524,9 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rec_on = config.get("recurring", False)
         rec_delay = int(config.get("recurring_delay") or 60)
         lines.append(f"Recurring: `{'on (' + str(rec_delay) + 's)' if rec_on else 'off'}`")
+        sr = config.get("streak_reset_losses")
+        if sr:
+            lines.append(f"Streak reset: `after {sr} losses, pause {_streak_reset_delay(config)}s`")
 
         # Rules (for rule-based strategy)
         if strategy_key == "7":
@@ -553,6 +562,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     param = context.args[0].lower()
     value = " ".join(context.args[1:]).replace(",", "")
     config = load_user_config(user_id)
+    note = None  # clamp message shown with the reply (WolfBet v2.30.6)
 
     try:
         if param == "currency":
@@ -711,11 +721,23 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Use: `/set recurring on` or `/set recurring off`", parse_mode="Markdown")
                 return
         elif param in ("recurringdelay", "recdelay"):
-            val = int(value)
-            if val < 5:
-                await update.message.reply_text("Recurring delay must be >= 5 seconds.")
-                return
-            config["recurring_delay"] = val
+            val, note = clamp("recurring_delay", int(value), 5, RECURRING_DELAY_MAX)
+            config["recurring_delay"] = int(val)
+            value = str(int(val))
+        elif param in ("streakreset", "srloss"):
+            if value.lower() in ("off", "none", "0"):
+                config["streak_reset_losses"] = None
+            else:
+                val = int(value)
+                if val < 1:
+                    await update.message.reply_text("Streak reset must be >= 1 losses (or 'off').")
+                    return
+                config["streak_reset_losses"] = val
+        elif param in ("streakresetdelay", "srdelay"):
+            val, note = clamp("streak_reset_delay", int(value),
+                              STREAK_RESET_DELAY_MIN, RECURRING_DELAY_MAX)
+            config["streak_reset_delay"] = int(val)
+            value = str(int(val))
         elif param in ("streakdelay_loss", "sdloss"):
             if value.lower() == "off":
                 config["streak_delay_loss"] = None
@@ -786,7 +808,10 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         save_user_config(user_id, config)
-        await update.message.reply_text(f"Set `{param}` = `{value}`", parse_mode="Markdown")
+        reply = f"Set `{param}` = `{value}`"
+        if note:
+            reply += f"\n{note}"
+        await update.message.reply_text(reply, parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text(
             f"Invalid value for `{param}`: `{value}`", parse_mode="Markdown")
@@ -982,22 +1007,38 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     # Recurring bet: schedule restart if condition stop (not manual) AND live config says recurring is on.
     # Re-read the saved config at stop time so toggling /set recurring on/off applies to every session.
     rec = user_rec.get(slot)
+    # Streak reset (first win after N+ losses, profit >= 0) is its own restart
+    # rule with its own delay — independent of the recurring flag (WolfBet v2.32.0).
+    is_streak_reset = reason.startswith(STREAK_RESET_REASON)
     try:
         live_config = load_user_config(user_id)
         recurring_on = bool(live_config.get("recurring"))
         live_delay = int(live_config.get("recurring_delay") or rec["delay"]) if rec else 60
+        if is_streak_reset:
+            recurring_on = bool(live_config.get("streak_reset_losses"))
+            live_delay = _streak_reset_delay(live_config)
     except Exception as e:
         logger.warning("User %d: failed to reload config at stop, falling back to snapshot: %s", user_id, e)
+        live_config = None
         recurring_on = bool(rec)
         live_delay = rec["delay"] if rec else 60
+        if is_streak_reset and rec:
+            live_delay = _streak_reset_delay(rec["config"])
+    # A saved delay from before the 24 h cap (v2.30.6) must not stall a restart.
+    live_delay = min(int(live_delay), RECURRING_DELAY_MAX)
 
     if rec and recurring_on and reason != "Stopped by user" and "insufficient" not in reason.lower():
         config = rec["config"]
+        if live_config is not None:
+            # Carry live /set changes to the streak-reset settings into the next cycle.
+            for k in ("streak_reset_losses", "streak_reset_delay"):
+                config[k] = live_config.get(k)
         # Carry forward the current base_bet (profit increment may have raised it)
         config["base_bet"] = engine.base_bet
+        label = "Streak reset" if is_streak_reset else "Recurring"
         await _safe_send(app,
             chat_id,
-            f"Recurring: restarting in {live_delay}s...\n"
+            f"{label}: restarting in {live_delay}s...\n"
             f"Use `/stop recurring` to cancel.",
             parse_mode="Markdown",
         )
@@ -1008,6 +1049,15 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     elif rec and not recurring_on:
         # User turned recurring off — clean up the snapshot so it doesn't linger
         recurring_state.get(user_id, {}).pop(slot, None)
+
+
+def _streak_reset_delay(config: dict) -> int:
+    """Pause before a streak-reset restart: default 600 s, clamped 5..86400."""
+    v = config.get("streak_reset_delay")
+    if v is None:
+        return 600
+    return int(clamp("streak_reset_delay", int(v),
+                     STREAK_RESET_DELAY_MIN, RECURRING_DELAY_MAX)[0])
 
 
 async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
@@ -1219,7 +1269,9 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/tweak multiplier 2.5`\n"
             "`/tweak lossmult 2.01`\n"
             "`/tweak winmult 1.5`\n"
-            "`/tweak sdbets 100:0.5` — delay every 100 bets\n\n"
+            "`/tweak sdbets 100:0.5` — delay every 100 bets\n"
+            "`/tweak srloss 5` — streak reset after 5 losses\n"
+            "`/tweak srdelay 600` / `/tweak recdelay 60` — restart pauses (next stop)\n\n"
             "Use `off` to disable: `/tweak maxwins off`\n"
             "Add slot: `/tweak maxwins 5000 2`",
             parse_mode="Markdown")
@@ -1267,6 +1319,24 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             changes["max_wins"] = None if off else int(value)
         elif param == "minbalance":
             changes["stop_on_balance"] = None if off else float(value)
+        elif param in ("streakreset", "srloss"):
+            val = None if off else int(value)
+            if val is not None and val < 1:
+                raise ValueError(value)
+            changes["streak_reset_losses"] = val
+        elif param in ("streakresetdelay", "srdelay", "recurringdelay", "recdelay"):
+            # No engine field: the delay is read from the saved config at the next stop.
+            key = "streak_reset_delay" if param in ("streakresetdelay", "srdelay") else "recurring_delay"
+            lo = STREAK_RESET_DELAY_MIN if key == "streak_reset_delay" else 5
+            val, note = clamp(key, int(value), lo, RECURRING_DELAY_MAX)
+            config = load_user_config(user_id)
+            config[key] = int(val)
+            save_user_config(user_id, config)
+            msg = f"{key} = `{int(val)}s` (applies at the next stop)"
+            if note:
+                msg += f"\n{note}"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            return
         elif param in ("milestonebets", "msbets"):
             changes["milestone_bets"] = int(value)
         elif param in ("milestonewins", "mswins"):
@@ -1694,35 +1764,46 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+def _analytics_bounds(args: list):
+    """Split /analytics args into (since, until).
+
+    Telegram splits "2026-11-13 14:00" into two args, so a time token
+    (has ':' and no '-') joins the date before it. Returns None when the
+    args don't form at most two bounds.
+    """
+    bounds = []
+    for a in args:
+        if bounds and ":" in a and "-" not in a and " " not in bounds[-1]:
+            bounds[-1] = f"{bounds[-1]} {a}"
+        else:
+            bounds.append(a)
+    if len(bounds) > 2:
+        return None
+    return (bounds[0] if bounds else None, bounds[1] if len(bounds) > 1 else None)
+
+
 async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """v1.10.0 — lifetime analytics. v1.11.0 — optional date window:
     /analytics [SINCE] [UNTIL] (bare dates or ISO ts; bare UNTIL = inclusive
-    end of day)."""
+    end of day). v1.12.0 — shared window (shared.core.stats)."""
     user_id = update.effective_user.id
     db_path = user_db_path(user_id)
     if not os.path.exists(db_path):
         await update.message.reply_text("No session history yet."); return
 
-    since = until = None
-    args_ = list(context.args or [])
-    if len(args_) > 2:
-        await update.message.reply_text(
-            "Usage: `/analytics [SINCE] [UNTIL]` — e.g. `/analytics 2026-08-14` "
-            "or `/analytics 2026-08-01 2026-08-15`", parse_mode="Markdown")
-        return
-    if args_:
-        since = args_[0]
-        if len(args_) == 2:
-            until = args_[1]
-            if len(until) == 10:
-                until += "T23:59:59"
-    wconds, wparams = [], []
-    if since:
-        wconds.append("started_at >= ?"); wparams.append(since)
-    if until:
-        wconds.append("started_at <= ?"); wparams.append(until)
-    where = (" WHERE " + " AND ".join(wconds)) if wconds else ""
-    window_label = f"  ({since or '…'} → {args_[1] if len(args_) == 2 else '…'})" if args_ else ""
+    usage = ("Usage: `/analytics [SINCE] [UNTIL]` — e.g. `/analytics 2026-08-14`, "
+             "`/analytics 2026-08-01 2026-08-15` or `/analytics 2026-11-13 14:00`")
+    bounds = _analytics_bounds(list(context.args or []))
+    if bounds is None:
+        await update.message.reply_text(usage, parse_mode="Markdown"); return
+    since, until = bounds
+    try:
+        # v1.12.0 — shared window (WolfBet v2.33.0): "DATE HH:MM" no longer
+        # matches the whole day; a bare UNTIL date stays inclusive.
+        where, wparams, _ = stats_date_window(since, until)
+    except ValueError:
+        await update.message.reply_text(usage, parse_mode="Markdown"); return
+    window_label = f"  ({since or '…'} → {until or '…'})" if (since or until) else ""
 
     init_db(db_path)
     conn = sqlite3.connect(db_path)
@@ -1769,7 +1850,7 @@ async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ps = "+" if profit_total >= 0 else ""
 
     lines = [
-        f"*📈 {'Range' if args_ else 'Lifetime'} analytics*{window_label}", "",
+        f"*📈 {'Range' if window_label else 'Lifetime'} analytics*{window_label}", "",
         f"Sessions: `{sess_total}` (`{in_prof or 0}` in profit / `{in_loss or 0}` in loss)",
         f"Bets: `{bets_total:,}`  ·  Win rate: `{wr:.1f}%`",
         f"P/L: `{ps}{profit_total:.8f}`  ·  Wagered: `{wagered_total:.8f}`",
