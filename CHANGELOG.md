@@ -1,5 +1,19 @@
 # Changelog
 
+## CLI v1.11.0 — Stats windows, durations, analytics, lane filter (2026-11-14)
+
+Mirrors WolfBet CLI v2.23.0 (`--analytics`), v2.30.9 / v2.31.0 (date-windowed stats and analytics), v2.33.0 (time-of-day window fix), v2.33.1 (wins / losses per session), v2.34.0 (durations) and v2.35.0 (lane filter, "By lane"). TG unchanged. Uses `shared.core.stats` and `shared.core.lanes`.
+
+- **Fix: time-of-day window.** `--since "2026-11-13 14:00"` matched the whole day (`' ' < 'T'`). The window now comes from `shared.core.stats.stats_date_window`: the space becomes `T`, a bad bound prints `Invalid --since/--until "…": use YYYY-MM-DD[ HH:MM[:SS]]` and no rows, and a bare `--until` date runs to `T23:59:59.999999`.
+- **`--stats` totals** add `Sessions: N  (first -> last)`, `Time Span … Bet Time …` (span includes pauses between sessions; bet time sums each session, a running one ends now), `Wins/Session: Max N Avg N.N` and `Losses/Session: Max N Avg N.N`, all window-aware. "No database found" now shows when there is no DB (the DB used to be created first).
+- **New `--analytics [--since --until --lane]`**: Overall panel (sessions in profit / loss, bets, win rate, wagered, P/L, best / worst session, `Time range` / `Time span` / `Bet time`), By game (Limbo / Dice), By strategy, Top 5 best / worst sessions. `stakectl analytics` passes through.
+- **Lanes (v2.35.0).** `sessions.lane` is added to older DBs by `init_db` (`ensure_sessions_lane`; old rows read as lane 1). `--stats` / `--analytics --lane K` filter to one lane (1-10, else exit 2); session headers show `[LK]` for lane > 1; analytics shows "By lane" when more than one lane has sessions. Running lanes lands in E5-S8, so until then every row is lane 1.
+- `Run …` in the TUI / monitor headers and `--status` "Running for" already shipped in 1.10.0.
+- **N/A:** none. **Later:** lane runtime (E5-S8), `stakectl lanes` / `--lane` pass-through (E7).
+- Tests: `tests/test_wolfbet_sync_e4.py` (19); `test_portability_v1.py` window and version pins updated.
+
+`VERSION` `1.10.0` → `1.11.0`.
+
 ## CLI v1.10.0 — Recurring and streak-reset cycles, live reload (2026-11-14)
 
 Mirrors WolfBet CLI v2.16.0 (recurring, streak delays, `streakbet_loss`, `basebet_pct`, milestones), v2.25.3 / v2.30.6 (`recurring_delay` 0..86400 with a clamp message), v2.28.2 (config persistence), v2.28.3 (SIGHUP live reload), v2.28.4 (uptime freezes in the pause), v2.30.1 / v2.30.7 (`next_profit_milestone` persisted, `Ms` per-window progress), v2.32.0 (streak reset) and v2.32.1 (insufficient balance terminal). TG unchanged. Cloudflare bypass chain and its 403 handling unchanged. Uses `shared.core.session_rules`.

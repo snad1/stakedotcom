@@ -48,7 +48,7 @@ def _mk_engine(db):
 
 # ── VERSION ───────────────────────────────────────────────
 def test_cli_version():
-    assert st.VERSION == "1.10.0"
+    assert st.VERSION == "1.11.0"
 
 
 def test_tg_version():
@@ -240,18 +240,18 @@ def test_help_mentions_new_commands():
 
 # ── Date-range stats (v1.9.0 / TG v1.11.0) ───────────────
 def test_stats_date_window_unit():
-    clause, params, label = st._stats_date_window()
+    clause, params, label = st.stats_date_window()
     assert clause == "" and params == [] and label == ""
 
-    clause, params, label = st._stats_date_window(since="2026-08-01")
+    clause, params, label = st.stats_date_window(since="2026-08-01")
     assert "started_at >= ?" in clause
     assert params == ["2026-08-01"]
     assert "2026-08-01" in label
 
-    _, params, _ = st._stats_date_window(until="2026-08-15")
-    assert params == ["2026-08-15T23:59:59"]
+    _, params, _ = st.stats_date_window(until="2026-08-15")
+    assert params == ["2026-08-15T23:59:59.999999"]  # v1.11.0: shared helper
 
-    _, params, _ = st._stats_date_window(until="2026-08-15T06:00:00")
+    _, params, _ = st.stats_date_window(until="2026-08-15T06:00:00")
     assert params == ["2026-08-15T06:00:00"]
 
 
@@ -324,7 +324,7 @@ def test_since_until_are_modifiers_not_commands():
     assert re.search(r'parser\.add_argument\("--until"', src)
     assert not re.search(r'group\.add_argument\("--since"', src)
     assert not re.search(r'group\.add_argument\("--until"', src)
-    assert "cmd_stats(since=args.since, until=args.until)" in src
+    assert "cmd_stats(since=args.since, until=args.until, lane=args.lane)" in src
 
 
 def test_tg_analytics_threads_where():
