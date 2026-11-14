@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 +----------------------------------------------------------+
-|   Stake AutoBot v1.2  -- Multi-Game Auto-Betting Engine  |
+|   Stake AutoBot -- Multi-Game Auto-Betting Engine        |
 |   Limbo + Dice | Live TUI | Session logging & strategies |
 +----------------------------------------------------------+
 """
 
-import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, re
+import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, re, math, queue
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
@@ -17,7 +17,9 @@ from shared.core.session_rules import (
     streak_reset_stop_reason, streak_reset_triggered, streakbet_loss_factor,
 )
 from shared.core.stats import fmt_duration, sessions_time_span, stats_date_window
-from shared.core.database import ensure_sessions_lane
+from shared.core.database import ensure_sessions_lane, cleanup_old_bets, cleanup_live_bets
+from shared.core.diagnostics import percentile, benchmark_verdict
+from shared.core.net import validate_proxy, mask_proxy
 from shared.core.lanes import LANES_MAX, validate_lane
 try:
     import readline
@@ -52,10 +54,21 @@ except ImportError:
     except ImportError:
         _http = requests.Session()
 
+_warned_no_cffi_proxy = False
+
 def _recreate_http(impersonate: str = "chrome"):
-    """Replace the global HTTP session with a new curl_cffi session using the given profile."""
-    global _http
+    """Replace the global HTTP session with a new curl_cffi session using the given profile.
+
+    v1.12.0: also the single place a saved / CLI proxy reaches the client.
+    Without curl_cffi the fallback session is kept and a proxy is a no-op:
+    say so once instead of silently going direct.
+    """
+    global _http, _warned_no_cffi_proxy
     if not _HAS_CFFI:
+        if getattr(state, "proxy", None) and not _warned_no_cffi_proxy:
+            _warned_no_cffi_proxy = True
+            logger.warning("proxy set but curl_cffi is not installed -- proxy is ignored "
+                           "(pip install curl_cffi)")
         return
     try:
         _http.close()
@@ -414,7 +427,7 @@ STATE_PATH   = os.path.expanduser("~/.stake_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.11.0"
+VERSION      = "1.12.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -608,6 +621,8 @@ _CONFIG_KEYS = [
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "basebet_pct", "milestone_bets", "milestone_wins", "milestone_losses",
     "milestone_profit",
+    # v1.12.0 — WolfBet v2.26.0 retention / v2.27.0 async bet writer
+    "purge_days", "db_write_mode",
 ]
 
 # Stored as "N:X" strings (None when off), held as (N, X) tuples in state.
@@ -633,6 +648,19 @@ def _set_config_value(k: str, v):
         v, msg = clamp(k, float(v or 0), 0.0, RECURRING_DELAY_MAX)
         if msg:
             logger.warning(msg)
+    elif k == "proxy":
+        try:
+            v = validate_proxy(v) or ""
+        except ValueError as e:
+            logger.warning("saved proxy ignored: %s", e)
+            v = ""
+    elif k == "purge_days":
+        try:
+            v = int(max(1, min(30, float(v))))
+        except (TypeError, ValueError):
+            v = 3
+    elif k == "db_write_mode":
+        v = v if v in ("async", "sync") else "async"
     setattr(state, k, v)
 
 def _apply_loaded(data: dict, keys: list):
@@ -666,9 +694,13 @@ def load_config() -> bool:
         with open(CONFIG_PATH) as f:
             data = json.load(f)
         _apply_loaded(data, _CONFIG_KEYS)
-        return True
     except Exception:
         return False
+    # v1.12.0 fix: the saved proxy only reached the HTTP client by accident
+    # (a CF profile rotation). Rebuild it here so --resume / --daemon /
+    # --preset and every command that loads the config use the proxy.
+    _recreate_http()
+    return True
 
 # Keys SIGHUP may change on a running bot (WolfBet v2.28.3). Everything else
 # (credentials, currency, game, multiplier, strategy, base bet) needs a restart.
@@ -679,6 +711,9 @@ _LIVE_RELOAD_KEYS = [
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "profit_increment", "profit_threshold", "proxy", "custom_rules_text",
+    # v1.12.0 — retention window + writer mode (a live flip only reroutes
+    # new rows; the writer thread starts at launch)
+    "purge_days", "db_write_mode",
 ]
 
 def _reload_live_config() -> dict:
@@ -735,6 +770,9 @@ _PRESET_KEYS = [
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "basebet_pct", "milestone_bets", "milestone_wins", "milestone_losses",
     "milestone_profit",
+    # v1.12.0 — WolfBet v2.26.0 / v2.27.0 (proxy stays out: a preset must
+    # not swap the network path the CF cookies were solved on)
+    "purge_days", "db_write_mode",
 ]
 
 def _load_all_presets() -> dict:
@@ -1235,7 +1273,21 @@ class BotState:
         self._bets_this_min  = 0
         self._current_sec    = 0
         self._current_min    = 0
-        self.bet_timestamps  = deque(maxlen=120)
+
+        # -- v1.12.0: API / cycle observability (WolfBet v2.17.0, v2.30.3-5) --
+        self._last_api_ms      = 0.0
+        self._api_ms_total     = 0.0
+        self._api_ms_count     = 0
+        self.peak_api_ms       = 0.0
+        self._api_samples      = deque(maxlen=500)
+        self._on_target_count  = 0
+        self._cycle_ms         = 0.0     # alias of cycle p50
+        self._cycle_overhead_ms = 0.0
+        self._cycle_samples    = deque(maxlen=500)
+
+        # -- v1.12.0: retention + DB writer (WolfBet v2.26.0 / v2.27.0) --
+        self.purge_days    : int = 3
+        self.db_write_mode : str = "async"
 
         # -- profit history for sparkline --
         self.profit_history  = deque(maxlen=80)
@@ -1284,6 +1336,427 @@ class BotState:
 state   = BotState()
 console = Console()
 
+
+# ===========================================================
+#  OBSERVABILITY METRICS  (WolfBet v2.17.0, v2.30.3-2.30.5)
+# ===========================================================
+# API time = one bet HTTP round trip. Cycle time = one betting_loop
+# iteration (delays + bet + bookkeeping). Both keep a 500-sample window;
+# p50/p99/mean and efficiency come from the same window. Stake sends no
+# rate-limit headers, so there is no rate-limit row (N/A).
+def _compute_api_avg() -> float:
+    """All-time mean API time in ms (0 when no samples yet)."""
+    if state._api_ms_count == 0:
+        return 0.0
+    return state._api_ms_total / state._api_ms_count
+
+
+def _compute_api_p50() -> float:
+    """Median API time in ms from the last-500-sample window (0 when empty)."""
+    if not state._api_samples:
+        return 0.0
+    ordered = sorted(state._api_samples)
+    return ordered[len(ordered) // 2]
+
+
+def _compute_api_p99() -> float:
+    """99th-percentile API time in ms from the window (0 when empty)."""
+    return percentile(sorted(state._api_samples), 0.99)
+
+
+def _compute_on_target_pct() -> Optional[float]:
+    """% of bets whose API time <= bet_delay; None when no delay / no samples."""
+    if state.bet_delay <= 0 or state._api_ms_count == 0:
+        return None
+    return (state._on_target_count / state._api_ms_count) * 100
+
+
+def _compute_api_rolling_avg() -> float:
+    """Mean API ms over the same window as p50/p99 (0 when empty)."""
+    if not state._api_samples:
+        return 0.0
+    return sum(state._api_samples) / len(state._api_samples)
+
+
+def _compute_cycle_p50() -> float:
+    """Median per-iteration cycle time in ms (0 when empty)."""
+    if not state._cycle_samples:
+        return 0.0
+    ordered = sorted(state._cycle_samples)
+    return ordered[len(ordered) // 2]
+
+
+def _compute_cycle_p99() -> float:
+    """99th-percentile per-iteration cycle time in ms (0 when empty)."""
+    return percentile(sorted(state._cycle_samples), 0.99)
+
+
+def _compute_cycle_mean() -> float:
+    """Mean per-iteration cycle time in ms (0 when empty). Drives Recent BPS."""
+    if not state._cycle_samples:
+        return 0.0
+    return sum(state._cycle_samples) / len(state._cycle_samples)
+
+
+def _compute_recent_bps() -> float:
+    """Windowed BPS = 1000 / cycle mean (same statistic as the ceiling)."""
+    cycle_mean = _compute_cycle_mean()
+    return 1000.0 / cycle_mean if cycle_mean > 0 else 0.0
+
+
+def _compute_theoretical_max_bps() -> float:
+    """Ceiling BPS = 1 / max(bet_delay, rolling api avg). 0 when both are 0."""
+    api_avg_s = _compute_api_rolling_avg() / 1000.0
+    floor = max(state.bet_delay, api_avg_s)
+    return (1.0 / floor) if floor > 0 else 0.0
+
+
+def _compute_efficiency_pct() -> float:
+    """Recent BPS as % of the ceiling, capped at 100. Session BPS until the window fills."""
+    tmax = _compute_theoretical_max_bps()
+    if tmax <= 0:
+        return 0.0
+    recent = _compute_recent_bps()
+    if recent <= 0:
+        recent = state.bets_per_second
+    return min(100.0, recent / tmax * 100)
+
+
+def _record_api_ms(dt_ms: float) -> None:
+    """Update every API-timing counter from one request."""
+    with state.lock:
+        state._last_api_ms   = dt_ms
+        state._api_ms_total += dt_ms
+        state._api_ms_count += 1
+        state._api_samples.append(dt_ms)
+        if dt_ms > state.peak_api_ms:
+            state.peak_api_ms = dt_ms
+        if state.bet_delay > 0 and dt_ms <= state.bet_delay * 1000:
+            state._on_target_count += 1
+
+
+def _record_cycle_ms(cycle_observed_ms: float) -> None:
+    """Push one cycle observation; overhead = cycle p50 - api p50 - delay."""
+    with state.lock:
+        state._cycle_samples.append(cycle_observed_ms)
+        state._cycle_ms = _compute_cycle_p50()
+        api_ref = _compute_api_p50() if state._api_samples else state._last_api_ms
+        state._cycle_overhead_ms = max(0.0, state._cycle_ms - api_ref - state.bet_delay * 1000)
+
+
+# ===========================================================
+#  RISKY CONFIG HINTS  (WolfBet v2.22.1 / v2.32.1)
+# ===========================================================
+# Stake keys: 2 = Martingale, 6 = Delay Martingale (WolfBet "7"),
+# 7 = Rule-Based (WolfBet "8"). Hints only, never blocking.
+_DOUBLING_KEYS = ("2", "6")
+_RULES_KEY = "7"
+
+
+def martingale_chain_depth(balance: float, base: float, mult: float) -> int:
+    """Longest loss run a Martingale chain can pay for: max k with
+    base*(mult^k - 1)/(mult - 1) <= balance. 0 when inputs can't form a chain."""
+    if balance <= 0 or base <= 0 or mult <= 1:
+        return 0
+    k = int(math.log(1 + balance * (mult - 1) / base) / math.log(mult))
+    while k > 0 and base * (mult ** k - 1) / (mult - 1) > balance:
+        k -= 1
+    return k
+
+
+def _check_risky_config() -> list:
+    """Return human-readable heads-up strings for combinations that drain balance fast."""
+    warnings = []
+    sk = state.strategy_key
+    mult = state.multiplier_target
+    loss_mult = state.loss_mult
+
+    if sk == "2" and loss_mult >= 2.5:
+        warnings.append(
+            f"Aggressive Martingale (loss_mult={loss_mult}) -- a 5-loss streak needs "
+            f"~{loss_mult**5:.0f}x base_bet in reserve."
+        )
+    if sk in _DOUBLING_KEYS and state.max_loss is None:
+        warnings.append(
+            "No `max_loss` set -- Martingale-style strategies can drain balance "
+            "on a bad streak. Consider `maxloss <amount>` (T hotkey or --config-set)."
+        )
+    depth = martingale_chain_depth(state.current_balance, state.base_bet, loss_mult)
+    if sk in _DOUBLING_KEYS and state.streak_reset_losses and state.max_loss is None and depth:
+        warnings.append(
+            f"Streak reset with no `max_loss`: balance covers a {depth}-loss chain. "
+            f"Loss {depth + 1} in a row ends the session with insufficient balance."
+        )
+    if sk == "3" and state.max_profit is None:
+        warnings.append(
+            "Anti-Martingale grows bets on wins with no lock-in. "
+            "Consider `maxprofit <amount>` to bank a target."
+        )
+    if state.current_balance > 0 and state.base_bet > 0.01 * state.current_balance:
+        pct = state.base_bet / state.current_balance * 100
+        warnings.append(
+            f"Base bet is {pct:.1f}% of current balance ({state.base_bet:.8f} of "
+            f"{state.current_balance:.8f}) -- small bankrolls drain in ~7 losses at this size."
+        )
+    if mult > 10:
+        warnings.append(
+            f"Multiplier {mult}x -> win chance ~{_get_win_chance():.1f}%. "
+            "Most sessions at this multiplier end in the red."
+        )
+    if state.recurring and state.max_profit is None and state.max_bets is None:
+        rd = state.recurring_delay or 0.0
+        gap = f"delay {rd:.0f}s between cycles" if rd > 0 else "back-to-back (no delay)"
+        warnings.append(
+            "Recurring restart is on with no max_profit and no max_bets -- "
+            f"sessions could restart indefinitely ({gap}). Consider setting at least one cap."
+        )
+    if sk == _RULES_KEY and state.max_bets is None:
+        warnings.append(
+            f"Custom rules (Strategy {_RULES_KEY}) with no `max_bets` cap can loop. "
+            "Consider setting `max_bets` for safety."
+        )
+    if state.basebet_pct >= 0.05:
+        warnings.append(
+            f"basebet_pct = {state.basebet_pct*100:.1f}% of balance -- "
+            "the base bet grows quickly on winning streaks."
+        )
+    if state.proxy and state.proxy.startswith("http://"):
+        warnings.append(
+            f"proxy scheme is http:// ({mask_proxy(state.proxy)}) -- "
+            "credentials + traffic travel unencrypted between you and the proxy. "
+            "Prefer https:// or socks5:// when possible."
+        )
+    return warnings
+
+
+# ===========================================================
+#  RUNTIME TWEAK GRAMMAR  (WolfBet v2.19.0 / v2.30.6)
+# ===========================================================
+_TWEAK_ALIAS = {
+    "delay":       "bet_delay",
+    "sdloss":      "streak_delay_loss",
+    "sdwin":       "streak_delay_win",
+    "sdbets":      "streak_delay_bets",
+    "sbloss":      "streakbet_loss",
+    "bbpct":       "basebet_pct",
+    "maxprofit":   "max_profit",
+    "maxloss":     "max_loss",
+    "maxbets":     "max_bets",
+    "maxwins":     "max_wins",
+    "minbalance":  "stop_on_balance",
+    "msbets":      "milestone_bets",
+    "mswins":      "milestone_wins",
+    "mslosses":    "milestone_losses",
+    "msprofit":    "milestone_profit",
+    "pi":          "profit_increment",
+    "pt":          "profit_threshold",
+    "basebet":     "base_bet",
+    "multiplier":  "multiplier_target",
+    "mult":        "multiplier_target",
+    "lossmult":    "loss_mult",
+    "winmult":     "win_mult",
+    "recdelay":    "recurring_delay",
+    "recurringdelay": "recurring_delay",
+    "srloss":      "streak_reset_losses",
+    "srdelay":     "streak_reset_delay",
+    "purgedays":   "purge_days",
+    "dbmode":      "db_write_mode",
+    "dbwritemode": "db_write_mode",
+}
+_TWEAK_PARAMS = {
+    "bet_delay", "basebet_pct",
+    "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
+    "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
+    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
+    "profit_increment", "profit_threshold", "recurring", "recurring_delay",
+    "streak_reset_losses", "streak_reset_delay",
+    "base_bet", "multiplier_target", "loss_mult", "win_mult",
+    "proxy", "purge_days", "db_write_mode",
+}
+_TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
+
+
+def _dice_target_for(multiplier: float, condition: str) -> float:
+    """Dice target for a multiplier -- same formula as the wizard's step_bet_config."""
+    wc = 99.0 / multiplier
+    return round(100.0 - wc, 2) if condition == "above" else round(wc, 2)
+
+
+def _apply_mutation(changes: dict) -> list:
+    """Apply {param: value} to state.* and return status lines.
+
+    Raises ValueError on malformed input. Clamped values add a "⚠" line.
+    Stake has no server-side auto-bet, so nothing is cleared: a new base
+    bet / multiplier applies to the next bet.
+    """
+    msgs = []
+
+    def _is_off(v):
+        return v is None or (isinstance(v, str) and v.strip().lower() in _TWEAK_OFF_VALUES)
+
+    def _clamped(name: str, raw: float, lo: float, hi: float) -> float:
+        out = max(lo, min(hi, raw))
+        if out != raw:
+            msgs.append(f"⚠ {name} clamped from {raw:g} to {out:g} (allowed: {lo:g}..{hi:g})")
+        return out
+
+    def _num(name, v, cast=float):
+        try:
+            return cast(float(v)) if cast is int else cast(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be a number, got {v!r}")
+
+    if "bet_delay" in changes:
+        state.bet_delay = max(0.0, _num("bet_delay", changes["bet_delay"]))
+        msgs.append(f"Delay: {state.bet_delay:.3f}s")
+
+    if "basebet_pct" in changes:
+        v = changes["basebet_pct"]
+        state.basebet_pct = 0.0 if _is_off(v) else _num("basebet_pct", v)
+        if state.basebet_pct > 0 and state.current_balance > 0:
+            _apply_basebet_pct()
+            msgs.append(f"Basebet pct: {state.basebet_pct*100:.4f}% -> base={state.base_bet:.8f}")
+        else:
+            msgs.append("Basebet pct: off" if not state.basebet_pct
+                        else f"Basebet pct: {state.basebet_pct*100:.4f}%")
+
+    for attr, label in [("streak_delay_loss", "Streak delay loss"),
+                        ("streak_delay_win",  "Streak delay win"),
+                        ("streak_delay_bets", "Streak delay bets"),
+                        ("streakbet_loss",    "Streakbet loss")]:
+        if attr in changes:
+            v = changes[attr]
+            _set_config_value(attr, None if _is_off(v) else v)
+            n, x = getattr(state, attr)
+            msgs.append(f"{label}: every {n} -> {x:.3f}" if n > 0 else f"{label}: off")
+
+    for attr, label, cast in [("max_profit",      "Max profit",  float),
+                              ("max_loss",        "Max loss",    float),
+                              ("max_bets",        "Max bets",    int),
+                              ("max_wins",        "Max wins",    int),
+                              ("stop_on_balance", "Min balance", float)]:
+        if attr in changes:
+            v = changes[attr]
+            if _is_off(v):
+                setattr(state, attr, None)
+                msgs.append(f"{label}: off")
+            else:
+                setattr(state, attr, _num(attr, v, cast))
+                msgs.append(f"{label}: {getattr(state, attr)}")
+
+    for attr, label in [("milestone_bets",   "Milestone bets"),
+                        ("milestone_wins",   "Milestone wins"),
+                        ("milestone_losses", "Milestone losses")]:
+        if attr in changes:
+            v = changes[attr]
+            setattr(state, attr, 0 if _is_off(v) else _num(attr, v, int))
+            msgs.append(f"{label}: {getattr(state, attr) or 'off'}")
+    if "milestone_profit" in changes:
+        v = changes["milestone_profit"]
+        state.milestone_profit = 0.0 if _is_off(v) else _num("milestone_profit", v)
+        msgs.append(f"Milestone profit: {state.milestone_profit:.8f}"
+                    if state.milestone_profit else "Milestone profit: off")
+
+    if "profit_increment" in changes:
+        v = changes["profit_increment"]
+        state.profit_increment = None if _is_off(v) else _num("profit_increment", v)
+        msgs.append(f"Profit increment: {state.profit_increment:.8f}"
+                    if state.profit_increment else "Profit increment: off")
+    if "profit_threshold" in changes:
+        v = changes["profit_threshold"]
+        state.profit_threshold = None if _is_off(v) else _num("profit_threshold", v)
+        if state.profit_threshold:
+            state.next_profit_milestone = state.profit_threshold
+        msgs.append(f"Profit threshold: {state.profit_threshold:.8f}"
+                    if state.profit_threshold else "Profit threshold: off")
+
+    if "recurring" in changes:
+        state.recurring = str(changes["recurring"]).strip().lower() in ("on", "true", "yes", "y", "1")
+        msgs.append(f"Recurring: {'on' if state.recurring else 'off'}")
+
+    for attr, label in [("recurring_delay", "Recurring delay"),
+                        ("streak_reset_delay", "Streak reset delay")]:
+        if attr in changes:
+            v = changes[attr]
+            if _is_off(v):
+                setattr(state, attr, 0.0)
+            else:
+                try:
+                    raw = float(v)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{attr} must be a number 0-{RECURRING_DELAY_MAX:g}, got {v!r}")
+                setattr(state, attr, _clamped(attr, raw, 0.0, float(RECURRING_DELAY_MAX)))
+            val = getattr(state, attr)
+            msgs.append(f"{label}: {val:.0f}s" if val > 0 else f"{label}: off")
+
+    if "streak_reset_losses" in changes:
+        v = changes["streak_reset_losses"]
+        if _is_off(v):
+            state.streak_reset_losses = None
+        else:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"streak_reset_losses must be an integer >= 1, got {v!r}")
+            if n < 1:
+                raise ValueError(f"streak_reset_losses must be an integer >= 1, got {v!r}")
+            state.streak_reset_losses = n
+        msgs.append(f"Streak reset: after {state.streak_reset_losses} losses"
+                    if state.streak_reset_losses else "Streak reset: off")
+
+    if "proxy" in changes:
+        try:
+            state.proxy = validate_proxy(changes["proxy"]) or ""
+        except ValueError as e:
+            raise ValueError(f"proxy: {e}")
+        _recreate_http()
+        msgs.append(f"Proxy: {mask_proxy(state.proxy)}")
+
+    if "purge_days" in changes:
+        v = changes["purge_days"]
+        if isinstance(v, str) and v.strip().lower() in ("off", "none", "false", "disable", "no"):
+            state.purge_days = 3
+        else:
+            try:
+                state.purge_days = int(_clamped("purge_days", float(v), 1.0, 30.0))
+            except (TypeError, ValueError):
+                raise ValueError(f"purge_days must be an integer 1-30, got {v!r}")
+        msgs.append(f"Purge days: {state.purge_days}")
+
+    if "db_write_mode" in changes:
+        v = str(changes["db_write_mode"]).strip().lower()
+        if v not in ("async", "sync"):
+            raise ValueError(f"db_write_mode must be 'async' or 'sync', got {v!r}")
+        state.db_write_mode = v
+        msgs.append(f"DB write mode: {state.db_write_mode}")
+
+    if "base_bet" in changes:
+        bet = _num("base_bet", changes["base_bet"])
+        if bet < 0:
+            raise ValueError(f"base_bet must be >= 0, got {changes['base_bet']!r}")
+        if 0 < bet < MIN_BET:
+            msgs.append(f"⚠ base_bet raised from {bet:g} to the minimum {MIN_BET:g}")
+            bet = MIN_BET
+        state.base_bet = state.current_bet = bet
+        msgs.append(f"Base bet: {state.base_bet:.8f}")
+    if "multiplier_target" in changes:
+        m = _num("multiplier", changes["multiplier_target"])
+        if m < 1.01:
+            raise ValueError(f"multiplier must be at least 1.01, got {changes['multiplier_target']!r}")
+        state.multiplier_target = m
+        msgs.append(f"Multiplier: {state.multiplier_target:.2f}")
+        if state.game == "dice":
+            state.dice_target = _dice_target_for(m, state.dice_condition)
+            msgs.append(f"Dice target: {state.dice_condition} {state.dice_target}")
+    if "loss_mult" in changes:
+        state.loss_mult = _num("loss_mult", changes["loss_mult"])
+        msgs.append(f"Loss mult: {state.loss_mult:.2f}")
+    if "win_mult" in changes:
+        state.win_mult = _num("win_mult", changes["win_mult"])
+        msgs.append(f"Win mult: {state.win_mult:.2f}")
+
+    return msgs
+
 # ===========================================================
 #  API HELPERS
 # ===========================================================
@@ -1309,10 +1782,7 @@ def _headers(base: str = None) -> dict:
         h["Cookie"] = "; ".join(cookie_parts)
     return h
 
-def api_get_balances() -> list:
-    """Fetch all balances via GraphQL. Returns list of {currency, amount} dicts."""
-    gql_url = API_BASE.split("/_api/casino")[0] + "/_api/graphql"
-    query = """query UserBalances {
+_USER_BALANCES_QUERY = """query UserBalances {
   user {
     id
     balances {
@@ -1322,9 +1792,17 @@ def api_get_balances() -> list:
     __typename
   }
 }"""
-    payload = {"operationName": "UserBalances", "query": query, "variables": {}}
+
+def _gql_url() -> str:
+    return API_BASE.split("/_api/casino")[0] + "/_api/graphql"
+
+def _user_balances_payload() -> dict:
+    return {"operationName": "UserBalances", "query": _USER_BALANCES_QUERY, "variables": {}}
+
+def api_get_balances() -> list:
+    """Fetch all balances via GraphQL. Returns list of {currency, amount} dicts."""
     try:
-        r = _http.post(gql_url, headers=_headers(), json=payload, timeout=15)
+        r = _http.post(_gql_url(), headers=_headers(), json=_user_balances_payload(), timeout=15)
         if r.status_code == 200:
             data = r.json()
             user = data.get("data", {}).get("user", {})
@@ -1478,7 +1956,13 @@ def api_place_bet(amount: float) -> Optional[dict]:
     url = API_BASE + endpoint
     logger.debug("BET [%s] url=%s payload=%s", state.game, url, json.dumps(payload))
     try:
-        data = _api_post(url, payload)
+        t0 = time.perf_counter()
+        try:
+            data = _api_post(url, payload)
+        except ConnectionError:
+            _record_api_ms((time.perf_counter() - t0) * 1000)   # HTTP reply, non-200
+            raise
+        _record_api_ms((time.perf_counter() - t0) * 1000)
         if data is None:
             with state.lock:
                 state.last_error = "Empty response (proxy timeout?)"
@@ -1686,6 +2170,7 @@ def betting_loop():
     last_result = "none"
 
     while state.running:
+        loop_start = time.monotonic()
         if state.paused:
             state.status = "PAUSED -- press [R] to resume"
             time.sleep(0.4)
@@ -1852,7 +2337,7 @@ def betting_loop():
                 state.status = f"Milestone: {ms}"
                 logger.info("MILESTONE: %s", ms)
 
-        _db_save_bet(result, raw_profit, new_balance)
+        _db_save_bet_dispatch(result, raw_profit, new_balance)
 
         # Rule-Based: apply custom rules after bet
         if state.strategy_key == "7" and state.custom_rules:
@@ -1868,6 +2353,9 @@ def betting_loop():
             next_bet = MIN_BET
         state.current_bet = next_bet
         last_result = bet_state
+
+        # cycle-time metric (WolfBet v2.30.4): one full loop iteration
+        _record_cycle_ms((time.monotonic() - loop_start) * 1000)
 
 # ===========================================================
 #  DATABASE I/O
@@ -1899,30 +2387,131 @@ def _db_start_session() -> int:
     conn.close()
     return sid
 
-def _db_save_bet(result: dict, profit: float, balance: float):
+_BET_INSERT_SQL = (
+    "INSERT INTO bets "
+    "(session_id, timestamp, game, amount, multiplier_target, "
+    " result_value, result_display, state, profit, balance_after) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?)"
+)
+
+def _make_bet_row(result: dict, profit: float, balance: float) -> tuple:
+    """The 10-tuple both the sync and the async INSERT use."""
+    return (
+        state.session_id,
+        datetime.now().isoformat(),
+        state.game,
+        result["amount"],
+        state.multiplier_target,
+        result["result_value"],
+        result["result_display"],
+        "win" if result["is_win"] else "loss",
+        profit,
+        balance,
+    )
+
+def _db_save_bet(result: dict, profit: float, balance: float, row: tuple = None):
     try:
         conn = _db_conn()
-        conn.execute("""
-            INSERT INTO bets
-                (session_id, timestamp, game, amount, multiplier_target,
-                 result_value, result_display, state, profit, balance_after)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
-        """, (
-            state.session_id,
-            datetime.now().isoformat(),
-            state.game,
-            result["amount"],
-            state.multiplier_target,
-            result["result_value"],
-            result["result_display"],
-            "win" if result["is_win"] else "loss",
-            profit,
-            balance,
-        ))
+        conn.execute(_BET_INSERT_SQL, row or _make_bet_row(result, profit, balance))
         conn.commit()
         conn.close()
     except Exception as e:
         logger.error("DB save_bet failed: %s", e)
+
+# -- Async bet writer (WolfBet v2.27.0): one batched commit off the hot path --
+_bet_write_queue: queue.Queue = queue.Queue(maxsize=1000)
+_bet_writer_thread: Optional[threading.Thread] = None
+_bet_writer_stop = threading.Event()
+_bet_writer_stats = {
+    "queued": 0,
+    "flushed": 0,
+    "batches": 0,
+    "fallback_sync": 0,
+    "queue_high_watermark": 0,
+}
+_BET_WRITER_BATCH_SIZE   = 32
+_BET_WRITER_BATCH_WINDOW = 0.1   # seconds
+
+def _bet_writer_worker():
+    """Drain _bet_write_queue in batches of up to 32 within 0.1 s; one commit per batch."""
+    try:
+        conn = _db_conn()
+    except Exception as e:
+        logger.error("bet writer failed to open DB (%s) -- bets fall back to sync", e)
+        return
+    while not (_bet_writer_stop.is_set() and _bet_write_queue.empty()):
+        batch = []
+        deadline = time.monotonic() + _BET_WRITER_BATCH_WINDOW
+        while len(batch) < _BET_WRITER_BATCH_SIZE:
+            timeout = max(0.0, deadline - time.monotonic())
+            if timeout == 0:
+                break
+            try:
+                batch.append(_bet_write_queue.get(timeout=timeout))
+            except queue.Empty:
+                break
+        if not batch:
+            continue
+        try:
+            conn.executemany(_BET_INSERT_SQL, batch)
+            conn.commit()
+            _bet_writer_stats["batches"] += 1
+            _bet_writer_stats["flushed"] += len(batch)
+        except Exception as e:
+            logger.warning("bet writer batch failed (%d rows dropped): %s", len(batch), e)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            try:
+                conn = _db_conn()
+            except Exception as reopen_err:
+                logger.error("bet writer reopen failed: %s -- exiting worker", reopen_err)
+                return
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+def _start_bet_writer():
+    """Spawn the writer thread if not already running. Idempotent."""
+    global _bet_writer_thread
+    if _bet_writer_thread is not None and _bet_writer_thread.is_alive():
+        return
+    _bet_writer_stop.clear()
+    _bet_writer_thread = threading.Thread(target=_bet_writer_worker, daemon=True, name="BetWriter")
+    _bet_writer_thread.start()
+
+def _stop_bet_writer(timeout: float = 5.0):
+    """Let the writer drain the queue, then join (bounded wait)."""
+    global _bet_writer_thread
+    _bet_writer_stop.set()
+    if _bet_writer_thread is not None and _bet_writer_thread.is_alive():
+        _bet_writer_thread.join(timeout=timeout)
+        if _bet_writer_thread.is_alive():
+            logger.warning("bet writer did not drain within %.1fs; %d rows may be lost",
+                           timeout, _bet_write_queue.qsize())
+    _bet_writer_thread = None
+
+def _db_save_bet_async(result: dict, profit: float, balance: float):
+    """Enqueue a bet row; a full queue falls back to a sync write so no bet is lost."""
+    row = _make_bet_row(result, profit, balance)
+    try:
+        _bet_write_queue.put_nowait(row)
+        _bet_writer_stats["queued"] += 1
+        qs = _bet_write_queue.qsize()
+        if qs > _bet_writer_stats["queue_high_watermark"]:
+            _bet_writer_stats["queue_high_watermark"] = qs
+    except queue.Full:
+        _bet_writer_stats["fallback_sync"] += 1
+        _db_save_bet(result, profit, balance, row=row)
+
+def _db_save_bet_dispatch(result: dict, profit: float, balance: float):
+    """Async writer when db_write_mode is async and the thread runs; else sync."""
+    if state.db_write_mode == "async" and _bet_writer_thread is not None:
+        _db_save_bet_async(result, profit, balance)
+    else:
+        _db_save_bet(result, profit, balance)
 
 def _db_save_session():
     try:
@@ -2034,6 +2623,26 @@ def _save_state_file():
             "milestone_wins": state.milestone_wins or None,
             "milestone_losses": state.milestone_losses or None,
             "milestone_profit": state.milestone_profit or None,
+            # v1.12.0 — observability (WolfBet v2.17.0 / v2.30.3-5)
+            "api_ms":              state._last_api_ms,
+            "api_avg_ms":          _compute_api_avg(),
+            "api_peak_ms":         state.peak_api_ms,
+            "api_p50_ms":          _compute_api_p50(),
+            "api_p99_ms":          _compute_api_p99(),
+            "on_target_pct":       _compute_on_target_pct(),
+            "cycle_ms":            state._cycle_ms,
+            "overhead_ms":         state._cycle_overhead_ms,
+            "cycle_p50_ms":        _compute_cycle_p50(),
+            "cycle_p99_ms":        _compute_cycle_p99(),
+            "cycle_mean_ms":       _compute_cycle_mean(),
+            "cycle_sample_count":  len(state._cycle_samples),
+            "bets_per_second_recent": _compute_recent_bps(),
+            "efficiency_pct":      _compute_efficiency_pct(),
+            "theoretical_max_bps": _compute_theoretical_max_bps(),
+            "db_write_mode":       state.db_write_mode,
+            "db_writer_stats":     dict(_bet_writer_stats),
+            "db_writer_queue":     _bet_write_queue.qsize(),
+            "purge_days":          state.purge_days,
             **_uptime_fields(),
             "status": state.status,
             "last_error": state.last_error,
@@ -2322,6 +2931,29 @@ def build_dashboard_screen() -> str:
           f"  {_a('dim', 'Bal')} {_a(bc_c, f'{bc_s}{bal_change:.8f}')}")
     add(s5)
 
+    # -- Row 5b (v1.12.0): API timing, Efficiency, Cycle (WolfBet v2.17.0 / v2.30.3) --
+    # No rate-limit row: Stake sends no rate-limit headers.
+    api_p50 = _compute_api_p50()
+    add(f" {_a('dim', 'API')} last {_a('cyan', f'{state._last_api_ms:.0f}ms')}"
+        f"  p50 {_a('cyan', f'{api_p50:.0f}ms')}"
+        f"  p99 {_a('cyan', f'{_compute_api_p99():.0f}ms')}"
+        f"  avg {_a('cyan', f'{_compute_api_avg():.0f}ms')}"
+        f"  peak {_a('cyan', f'{state.peak_api_ms:.0f}ms')}")
+    if state.bet_delay > 0:
+        ot = _compute_on_target_pct()
+        ot_str = f"{ot:.0f}%" if ot is not None else "n/a"
+        add(f" {_a('dim', 'API stable')} {_a('cyan', f'{api_p50:.0f}ms')} median"
+            f"  · {_a('cyan', ot_str)} on-target  (API <= bet delay)")
+    tmax = _compute_theoretical_max_bps()
+    eff = _compute_efficiency_pct()
+    eff_c = 'green' if eff >= 90 else 'yellow'
+    eff_note = (f"(max {_a('cyan', f'{tmax:.2f}')} bps @ delay={state.bet_delay:.3f}s)"
+                if state.bet_delay > 0 else "(raw throughput, no delay)")
+    add(f" {_a('dim', 'Efficiency')} {_a(eff_c, f'{eff:.0f}%')}  {eff_note}"
+        f"  {_a('dim', 'Cycle')} {_a('magenta', f'{state._cycle_ms:.0f}ms')}/bet"
+        f"  (overhead {_a('cyan', f'{state._cycle_overhead_ms:.0f}ms')})"
+        f"  -> {_a('magenta', f'{tmax:.2f}')} bps")
+
     # -- Row 6: Sparkline --
     spark = _sparkline(list(state.profit_history))
     sp_c = "green" if p >= 0 else "red"
@@ -2336,8 +2968,8 @@ def build_dashboard_screen() -> str:
     # -- Row 8: Bets table header --
     add(_a("dim", f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>10}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}"))
 
-    # -- Rows 9..N-2: Recent bet rows --
-    bets_avail = max(0, term_h - 11)
+    # -- Rows 9..N-2: Recent bet rows (what is left above the 2 footer rows) --
+    bets_avail = max(0, term_h - len(lines) - 2)
     recent = list(state.recent_bets)[-bets_avail:] if bets_avail > 0 else []
 
     for b in reversed(recent):
@@ -2367,7 +2999,7 @@ def build_dashboard_screen() -> str:
 
     # -- Row N: Status + controls --
     status_txt = state.status[:60]
-    keys = "[P]ause [R]esume [Q]uit [H]istory"
+    keys = "[P]ause [R]esume [Q]uit [H]istory [T]weak"
     add(f" {_a('white', status_txt)}  {_a('dim', keys)}")
 
     return "\r\n".join(lines)
@@ -2455,6 +3087,78 @@ def input_handler():
             state.status = "Resumed"
         elif ch == "h":
             show_history()
+        elif ch == "t":
+            show_tweak()
+
+def _print_tweak_help():
+    """Compact reference of tweakable params + example values."""
+    t = Table(box=box.SIMPLE, expand=True)
+    t.add_column("Param",   width=20)
+    t.add_column("Example", width=28)
+    t.add_column("Notes",   width=32)
+    rows = [
+        ("delay <sec>",          "delay 0.1",          "bet_delay"),
+        ("bbpct <0-1>",          "bbpct 0.001",        "basebet_pct (0 disables)"),
+        ("sdloss / sdwin",       "sdloss 3:0.5",       "'N:sec' streak delay"),
+        ("sdbets / sbloss",      "sdbets 100:0.5",     "streak-bet reduction"),
+        ("maxprofit",            "maxprofit 0.01",     "'off' to disable"),
+        ("maxloss / maxbets",    "maxbets 5000",       "instant stop condition"),
+        ("maxwins / minbalance", "maxwins 1000",       "instant stop condition"),
+        ("msbets / mswins",      "msbets 100",         "milestone thresholds"),
+        ("mslosses / msprofit",  "msprofit 0.001",     "milestone thresholds"),
+        ("pi / pt",              "pt 0.001",           "profit increment"),
+        ("recurring on/off",     "recurring on",       "restart on non-loss stop"),
+        ("recdelay",             "recdelay 60",        "pause between cycles (s)"),
+        ("srloss / srdelay",     "srloss 20",          "restart on win after N losses"),
+        ("purgedays / dbmode",   "purgedays 7",        "retention 1-30 / async|sync"),
+        ("basebet <amount>",     "basebet 0.0001",     "applies to the next bet"),
+        ("multiplier",           "multiplier 3.0",     "dice target re-derived"),
+        ("lossmult / winmult",   "lossmult 2.01",      "strategy multipliers"),
+    ]
+    for p, ex, note in rows:
+        t.add_row(f"[cyan]{p}[/]", f"[yellow]{ex}[/]", f"[dim]{note}[/]")
+    console.print(t)
+
+def show_tweak():
+    """Modal runtime tweak (WolfBet v2.19.0): pause, apply `param value`, restore."""
+    was_paused = state.paused
+    state.paused = True
+    time.sleep(0.15)
+
+    console.clear()
+    console.print(Rule("[bold cyan]Runtime tweak[/]"))
+    _print_tweak_help()
+
+    while True:
+        console.print("\n[dim]Format: [/][cyan]param value[/]  [dim]|  'back' to cancel[/]")
+        try:
+            raw = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not raw or raw.lower() in ("back", "q", "quit"):
+            break
+        parts = raw.split(maxsplit=1)
+        if len(parts) < 2:
+            console.print("  [red]Missing value.[/] Try: [cyan]delay 0.1[/]")
+            continue
+        param = _TWEAK_ALIAS.get(parts[0].lower(), parts[0].lower())
+        if param not in _TWEAK_PARAMS:
+            console.print(f"  [red]Unknown param:[/] [cyan]{param}[/]")
+            continue
+        try:
+            msgs = _apply_mutation({param: parts[1]})
+        except (ValueError, TypeError) as e:
+            console.print(f"  [red]Invalid value:[/] {e}")
+            continue
+        for m in msgs:
+            console.print(f"  [green]✓[/] {m}")
+            logger.info("TWEAK: %s", m)
+        time.sleep(2.0)
+        break
+
+    console.clear()
+    state.paused = was_paused
 
 # ===========================================================
 #  SETUP WIZARD
@@ -2822,7 +3526,7 @@ def setup_wizard():
     console.print()
     console.print(Align.center(
         Panel(
-            "[bold cyan]Stake AutoBot  v1.2[/]\n"
+            f"[bold cyan]Stake AutoBot  v{VERSION}[/]\n"
             "[dim]Multi-game auto-bettor with live TUI dashboard[/]",
             box=box.DOUBLE, expand=False, padding=(1, 6), style="magenta"
         )
@@ -2851,7 +3555,7 @@ def setup_wizard():
 
     def step_auth():
         nonlocal saved_token, saved_lockdown, saved_cookie
-        console.print(Rule("[bold cyan]Step 1 / 7 -- Authentication[/]"))
+        console.print(Rule("[bold cyan]Step 1 / 8 -- Authentication[/]"))
         console.print("  [dim]You need 3 things from browser DevTools (Network tab):[/]")
         console.print("    [yellow]1.[/] x-access-token  [dim](request header)[/]")
         console.print("    [yellow]2.[/] x-lockdown-token  [dim](request header)[/]")
@@ -2922,16 +3626,22 @@ def setup_wizard():
         console.print()
         console.print("  [dim]Proxy (optional — socks5://host:port or http://user:pass@host:port).[/]")
         console.print("  [dim]Required if this bot runs on a server with a blocked IP. Press Enter to skip.[/]")
-        v = _ask("Proxy URL", default=saved_proxy or "")
-        if v is not _BACK:
-            state.proxy = v.strip()
-            if state.proxy:
-                _recreate_http()
+        while True:
+            v = _ask("Proxy URL", default=saved_proxy or "")
+            if v is _BACK:
+                break
+            try:
+                state.proxy = validate_proxy(v.strip()) or ""
+            except ValueError as e:
+                console.print(f"    [red]{e}[/]")
+                continue
+            _recreate_http()
+            break
 
         return True
 
     def step_game():
-        console.print(Rule("[bold cyan]Step 2 / 7 -- Game Selection[/]"))
+        console.print(Rule("[bold cyan]Step 2 / 8 -- Game Selection[/]"))
         game_keys = list(GAMES.keys())
         for i, gk in enumerate(game_keys, 1):
             g = GAMES[gk]
@@ -2963,7 +3673,7 @@ def setup_wizard():
         return True
 
     def step_currency():
-        console.print(Rule("[bold cyan]Step 3 / 7 -- Currency & Balance[/]"))
+        console.print(Rule("[bold cyan]Step 3 / 8 -- Currency & Balance[/]"))
 
         # Fetch balances from API
         console.print("  [dim]Fetching balances from Stake.com…[/]")
@@ -3021,7 +3731,7 @@ def setup_wizard():
         return True
 
     def step_bet_config():
-        console.print(Rule("[bold cyan]Step 4 / 7 -- Bet Configuration[/]"))
+        console.print(Rule("[bold cyan]Step 4 / 8 -- Bet Configuration[/]"))
         game_label = GAMES[state.game]["label"]
 
         if state.game == "limbo":
@@ -3106,7 +3816,7 @@ def setup_wizard():
         return True
 
     def step_strategy():
-        console.print(Rule("[bold cyan]Step 5 / 7 -- Betting Strategy[/]"))
+        console.print(Rule("[bold cyan]Step 5 / 8 -- Betting Strategy[/]"))
         for k, (name, desc) in STRATEGIES.items():
             console.print(f"    [bold yellow][{k}][/] [cyan]{name:20s}[/]  [dim]{desc}[/]")
         console.print()
@@ -3239,7 +3949,7 @@ def setup_wizard():
         return True
 
     def step_stop_conditions():
-        console.print(Rule("[bold cyan]Step 6 / 7 -- Stop Conditions[/]"))
+        console.print(Rule("[bold cyan]Step 6 / 8 -- Stop Conditions[/]"))
         console.print("  [dim]Enter to keep current  |  'none' to clear  |  'back' for previous step[/]\n")
 
         v = _ask_optional(f"Stop when profit reaches ({state.currency.upper()})", state.max_profit)
@@ -3285,7 +3995,7 @@ def setup_wizard():
         return True
 
     def step_confirm():
-        console.print(Rule("[bold green]Step 7 / 7 -- Review & Confirm[/]"))
+        console.print(Rule("[bold green]Step 8 / 8 -- Review & Confirm[/]"))
         game_label = GAMES[state.game]["label"]
         wc = _get_win_chance()
 
@@ -3325,6 +4035,18 @@ def setup_wizard():
             for i, r in enumerate(state.custom_rules, 1):
                 console.print(f"    [dim]{i}.[/] [green]{r.description}[/]")
 
+        # v1.12.0 (WolfBet v2.22.1): heads-up for risky combinations, never blocking
+        risk_warnings = _check_risky_config()
+        if risk_warnings:
+            console.print()
+            body_lines = [Text.from_markup(f"[yellow]•[/] {w}") for w in risk_warnings]
+            console.print(Panel(
+                Group(*body_lines),
+                title="[bold yellow]Heads-up -- review before starting[/]",
+                border_style="yellow",
+            ))
+            console.print("[dim]  These are safety hints, not blockers. Press y to proceed anyway.[/]")
+
         console.print()
         if state.base_bet == 0:
             console.print("[bold cyan]  TEST MODE: bets cost nothing, no real money wagered.[/]")
@@ -3343,8 +4065,122 @@ def setup_wizard():
         console.print(f"[dim]  Config saved to {CONFIG_PATH}[/]\n")
         return True
 
+    def step_advanced_tuning():
+        """Optional session tuning (WolfBet v2.18.0 Step 5b): cycles, streaks, milestones."""
+        console.print(Rule("[bold cyan]Step 6b / 8 -- Advanced session tuning (optional)[/]"))
+        gate = _ask("Configure advanced tuning? (y/N)",
+                    default="y" if (state.recurring or state.streak_reset_losses or state.basebet_pct
+                                    or state.streak_delay_loss[0] or state.streak_delay_win[0]
+                                    or state.streak_delay_bets[0] or state.streakbet_loss[0]) else "n",
+                    choices=["y", "n"])
+        if gate is _BACK:
+            return False
+        if gate.lower() != "y":
+            console.print()
+            return True
+
+        console.print("  [dim]Enter to keep current  |  'none' to clear  |  'back' for previous step[/]\n")
+
+        def _set(changes) -> bool:
+            try:
+                for m in _apply_mutation(changes):
+                    if m.startswith("⚠"):
+                        console.print(f"    [yellow]{m}[/]")
+                return True
+            except ValueError as e:
+                console.print(f"    [red]{e}[/] [dim](kept the current value)[/]")
+                return False
+
+        rec = _ask("Recurring restart on non-loss stop? (y/N)",
+                   default="y" if state.recurring else "n", choices=["y", "n"])
+        if rec is _BACK:
+            return False
+        state.recurring = (rec.lower() == "y")
+
+        prompts = [
+            ("recurring_delay", "Pause between recurring cycles in seconds (0 = back-to-back)",
+             state.recurring_delay or None),
+            ("streak_reset_losses", "Restart session on first win after N losses in a row (blank/none = off)",
+             state.streak_reset_losses),
+        ]
+        for attr, prompt, cur in prompts:
+            v = _ask_optional(prompt, cur)
+            if v is _BACK:
+                return False
+            _set({attr: v})
+        if state.streak_reset_losses:
+            v = _ask_optional("Pause before streak-reset restart in seconds",
+                              state.streak_reset_delay or None)
+            if v is _BACK:
+                return False
+            _set({"streak_reset_delay": v})
+
+        v = _ask_optional("Base bet as % of balance (0-1, blank/none to disable)", state.basebet_pct or None)
+        if v is _BACK:
+            return False
+        _set({"basebet_pct": v})
+
+        for attr, prompt in [
+            ("streak_delay_loss", "Streak delay on losses (format 'N:sec')"),
+            ("streak_delay_win",  "Streak delay on wins (format 'N:sec')"),
+            ("streak_delay_bets", "Streak delay every N bets (format 'N:sec')"),
+            ("streakbet_loss",    "Streakbet loss reduction (format 'N:multiplier')"),
+        ]:
+            v = _ask_optional(prompt, _config_value(attr))
+            if v is _BACK:
+                return False
+            _set({attr: v})
+
+        for attr, prompt in [
+            ("milestone_bets",   "Milestone every N bets"),
+            ("milestone_wins",   "Milestone every N wins"),
+            ("milestone_losses", "Milestone every N losses"),
+        ]:
+            v = _ask_optional(prompt, getattr(state, attr) or None)
+            if v is _BACK:
+                return False
+            _set({attr: v})
+        v = _ask_optional(f"Milestone every {state.currency.upper()} profit crossed",
+                          state.milestone_profit or None)
+        if v is _BACK:
+            return False
+        _set({"milestone_profit": v})
+
+        v = _ask_optional("Keep bet rows for N days (1-30)", state.purge_days)
+        if v is _BACK:
+            return False
+        if v:
+            _set({"purge_days": v})
+        v = _ask("Bet DB writer (async = batched, sync = per-bet)", default=state.db_write_mode,
+                 choices=["async", "sync"])
+        if v is _BACK:
+            return False
+        _set({"db_write_mode": v})
+
+        console.print()
+        return True
+
+    def step_preset():
+        console.print(Rule("[bold cyan]Step 7 / 8 -- Presets[/]"))
+        presets = list_presets()
+        if presets:
+            console.print("  [dim]Saved presets:[/]")
+            for name, data in presets.items():
+                console.print(f"    [yellow]{name}[/]  [dim]-> {data.get('strategy', '?')} on "
+                              f"{(data.get('currency') or '?').upper()}[/]")
+            console.print()
+        v = _ask("Save current config as preset? (name or 'skip')", default="skip")
+        if v is _BACK:
+            return False
+        if v.lower() != "skip":
+            save_preset(v)
+            console.print(f"  [green]Saved preset '{v}'[/]\n")
+        else:
+            console.print()
+        return True
+
     steps = [step_auth, step_game, step_currency, step_bet_config, step_strategy,
-             step_stop_conditions, step_confirm]
+             step_stop_conditions, step_advanced_tuning, step_preset, step_confirm]
     i = 0
     while i < len(steps):
         ok = steps[i]()
@@ -3826,8 +4662,8 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     # Row 8: Bets table header
     add(_a("dim", f"{'#':>6}  {'Time':<9} {'Game':<6} {'Amount':>14}  {'Result':>10}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}"))
 
-    # Rows 9..N-2: Recent bet rows
-    bets_avail = max(0, term_h - 10)
+    # Rows 9..N-3: Recent bet rows (3 footer rows below)
+    bets_avail = max(0, term_h - 11)
     shown = bets[:bets_avail]
 
     for b in shown:
@@ -3863,8 +4699,46 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     status_txt = status[:60] if status else "Monitoring..."
     keys = "[P]ause [R]esume [Q]uit/Detach [S]top daemon"
     add(f" {_a('bold_white', 'MONITOR')} {_a('white', status_txt)}  {_a('dim', keys)}")
+    # v1.12.0 (WolfBet v2.28.1): T / H are foreground-TUI only; show the daemon paths.
+    add(f" {_a('dim', 'Tweak config:')} {_a('cyan', 'stake.py --config-set KEY=VALUE')}   "
+        f"{_a('dim', '· History:')} {_a('cyan', 'stake.py --stats / --analytics')}")
 
     return "\r\n".join(lines)
+
+
+SYSTEMD_UNIT = "stake"   # stakectl's $SERVICE
+
+def _is_systemd_managed(pid) -> bool:
+    """True when pid runs inside the stake systemd unit (Linux /proc cgroup check).
+
+    The monitor's stop then goes through systemctl, so the unit's Restart=
+    policy does not respawn the bot after a clean SIGTERM exit.
+    """
+    if not pid:
+        return False
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            return f"/{SYSTEMD_UNIT}.service" in f.read()
+    except OSError:
+        return False
+
+
+def _stop_daemon(pid) -> str:
+    """Stop the daemon: `systemctl --user stop` when systemd manages it, else SIGTERM."""
+    if _is_systemd_managed(pid):
+        try:
+            import subprocess as _sp
+            _sp.run(["systemctl", "--user", "stop", SYSTEMD_UNIT], check=False, timeout=10)
+            return "systemd"
+        except Exception:
+            pass
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return "signal"
+        except OSError:
+            pass
+    return ""
 
 
 def cmd_monitor():
@@ -3954,11 +4828,7 @@ def cmd_monitor():
             time.sleep(0.5)
 
         if _monitor_action[0] == "stop" or (locals().get("action") == "stop"):
-            if pid:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except OSError:
-                    pass
+            _stop_daemon(pid)
     finally:
         _monitor_running[0] = False
         sys.stdout.write("\033[?25h\033[?1049l\033[0m")
@@ -4090,6 +4960,23 @@ def cmd_status():
         ("Worst Loss",     f"[red]-{big_loss:.8f}[/]"),
         ("Speed",          f"{bps:.1f}/s  {bpm:.0f}/m  Range: {lw_bps}-{pk_bps}/s  {lw_bpm}-{pk_bpm}/m"),
     ]
+
+    # v1.12.0 — observability from the state file (WolfBet v2.26.1 / v2.30.3)
+    api_p50, api_p99, api_peak = d.get("api_p50_ms"), d.get("api_p99_ms"), d.get("api_peak_ms")
+    if api_p50 or api_peak:
+        rows.append(("API", f"p50 [cyan]{api_p50 or 0:.0f}ms[/]  · "
+                            f"p99 [cyan]{api_p99 or 0:.0f}ms[/]  · "
+                            f"peak [cyan]{api_peak or 0:.0f}ms[/]"))
+    cycle_ms = d.get("cycle_ms")
+    if cycle_ms:
+        tmax = float(d.get("theoretical_max_bps") or 0)
+        rows.append(("Cycle", f"[magenta]{cycle_ms:.0f}ms[/]/bet "
+                              f"(overhead [cyan]{d.get('overhead_ms') or 0:.0f}ms[/])"
+                              f"  -> [magenta]{tmax:.2f}[/] BPS ceiling"))
+    eff_pct = d.get("efficiency_pct")
+    if eff_pct is not None:
+        eff_c = "green" if eff_pct >= 90 else "yellow"
+        rows.append(("Efficiency", f"[{eff_c}]{eff_pct:.0f}%[/] of theoretical"))
 
     # Stop conditions
     stop_parts = []
@@ -4534,12 +5421,370 @@ def cmd_analytics(since: str = None, until: str = None, lane: int = None):
                   "or --session-bets ID to drill into one.[/]\n")
 
 # ===========================================================
+#  CONFIG CLI  (WolfBet v2.25.0 / v2.28.3: --config-show, --config-set)
+# ===========================================================
+_CONFIG_SHOW_FIELDS = [
+    ("currency",              "Betting currency"),
+    ("game",                  "Game (limbo / dice)"),
+    ("multiplier_target",     "Payout multiplier"),
+    ("dice_condition",        "Dice direction (above / below)"),
+    ("dice_target",           "Dice roll target"),
+    ("strategy",              "Strategy name"),
+    ("strategy_key",          "Strategy key (1-7)"),
+    ("base_bet",              "Base bet amount"),
+    ("loss_mult",             "Loss multiplier (Martingale)"),
+    ("win_mult",              "Win multiplier (Paroli / Anti-M)"),
+    ("delay_martin_threshold","Delay Martingale N-loss threshold"),
+    ("bet_delay",             "Seconds between bets (0 = full speed)"),
+    ("max_profit",            "Stop when profit >= this"),
+    ("max_loss",              "Stop when loss >= this"),
+    ("max_bets",              "Stop after this many bets"),
+    ("max_wins",              "Stop after this many wins"),
+    ("stop_on_balance",       "Stop when balance floor reached"),
+    ("profit_increment",      "Bump base_bet by this at every profit milestone"),
+    ("profit_threshold",      "Profit interval between increments"),
+    ("recurring",             "Auto-restart cycle on non-loss stop"),
+    ("recurring_delay",       "Seconds to pause between recurring cycles (0 = back-to-back)"),
+    ("streak_reset_losses",   "Restart session on first win after N losses in a row (profit >= 0)"),
+    ("streak_reset_delay",    "Seconds to pause before the streak-reset restart"),
+    ("basebet_pct",           "Base bet as % of balance (0 = off)"),
+    ("streak_delay_loss",     "Extra pause after N losses in a row  (N:sec)"),
+    ("streak_delay_win",      "Extra pause after N wins in a row  (N:sec)"),
+    ("streak_delay_bets",     "Extra pause every N bets  (N:sec)"),
+    ("streakbet_loss",        "Bet factor after N losses  (N:factor)"),
+    ("milestone_bets",        "Milestone every N bets (0 = off)"),
+    ("milestone_wins",        "Milestone every N wins (0 = off)"),
+    ("milestone_losses",      "Milestone every N losses (0 = off)"),
+    ("milestone_profit",      "Milestone every X profit crossed (0 = off)"),
+    ("proxy",                 "HTTP/HTTPS/SOCKS5 proxy URL (credentials masked)"),
+    ("purge_days",            "Bet-row retention window in days (1-30)"),
+    ("db_write_mode",         "Bet DB writer: async (default, batched) or sync (per-bet commit)"),
+    ("custom_rules_text",     "Rule-Based custom rules"),
+]
+_SECRET_FIELDS = ("access_token", "lockdown_token", "cookie")
+
+
+def _fmt_config_value(field: str, val) -> str:
+    """Render one value for --config-show. Proxy and secrets are always masked."""
+    if field == "proxy":
+        return f"[cyan]{mask_proxy(val)}[/]" if val else "[dim]direct[/]"
+    if field in _SECRET_FIELDS:
+        return f"[dim]{_mask_key(val)}[/]" if val else "[dim](not set)[/]"
+    if val is None or val == "":
+        return "[dim]off[/]"
+    if isinstance(val, bool):
+        return "[green]on[/]" if val else "[dim]off[/]"
+    if isinstance(val, tuple) and len(val) == 2:
+        n, x = val
+        return "[dim]off[/]" if n == 0 else f"{n}:{x}"
+    if isinstance(val, float):
+        if field in ("base_bet", "max_profit", "max_loss", "stop_on_balance",
+                     "profit_increment", "profit_threshold", "milestone_profit"):
+            return f"{val:.8f}"
+        return f"{val:.4f}".rstrip("0").rstrip(".") or "0"
+    if isinstance(val, str) and len(val) > 60:
+        return val[:57] + "..."
+    return str(val)
+
+
+def cmd_config_show():
+    """Print the saved config as a table. No wizard, no side effects."""
+    if not load_config():
+        console.print("[yellow]No config saved yet -- run the wizard first.[/]")
+        console.print("[dim]  Try: python3 stake.py --setup-only[/]")
+        sys.exit(1)
+    tbl = Table(title=f"Stake AutoBot v{VERSION} -- Current Config",
+                title_style="bold cyan", show_lines=False)
+    tbl.add_column("Field",       style="bold yellow", no_wrap=True)
+    tbl.add_column("Value",       style="cyan")
+    tbl.add_column("Description", style="dim")
+    for field, desc in [("access_token", "x-access-token (wizard only)"),
+                        ("lockdown_token", "x-lockdown-token (wizard only)"),
+                        ("cookie", "Browser cookie (wizard only)")]:
+        tbl.add_row(field, _fmt_config_value(field, getattr(state, field)), desc)
+    for field, desc in _CONFIG_SHOW_FIELDS:
+        tbl.add_row(field, _fmt_config_value(field, getattr(state, field, None)), desc)
+    console.print(tbl)
+    try:
+        st = os.stat(CONFIG_PATH)
+        console.print(f"\n[dim]Config file:[/] [cyan]{CONFIG_PATH}[/]  "
+                      f"[dim]mode={oct(st.st_mode & 0o777)}  size={st.st_size}B[/]")
+    except OSError:
+        pass
+    console.print("[dim]Tweak with:[/] [cyan]python3 stake.py --config-set KEY=VALUE ...[/]")
+
+
+def _parse_config_set_pairs(pairs: list) -> dict:
+    """['maxprofit=0.005', 'base_bet=0.0001'] -> {'max_profit': '0.005', ...}. Raises ValueError."""
+    out = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"Malformed pair (expected KEY=VALUE): {pair!r}")
+        key, val = pair.split("=", 1)
+        key = key.strip().lower()
+        canonical = _TWEAK_ALIAS.get(key, key)
+        if canonical not in _TWEAK_PARAMS:
+            raise ValueError(f"Unknown config field: {key!r}. Valid: {', '.join(sorted(_TWEAK_PARAMS))}")
+        out[canonical] = val.strip()
+    return out
+
+
+def cmd_config_set(pairs: list):
+    """Apply KEY=VALUE changes to the saved config, save, and SIGHUP a running daemon."""
+    for p in pairs:
+        key = p.split("=", 1)[0].strip().lower()
+        if key in _SECRET_FIELDS or key in ("token", "lockdown"):
+            console.print(f"[red]Refusing to write {key} via --config-set.[/]")
+            console.print("[dim]  Credentials are set in the wizard (python3 stake.py --setup-only), "
+                          "never in shell history / process args.[/]")
+            sys.exit(2)
+    try:
+        parsed = _parse_config_set_pairs(pairs)
+    except ValueError as e:
+        console.print(f"[red]Invalid --config-set argument:[/] {e}")
+        sys.exit(2)
+    if not load_config():
+        console.print("[yellow]No config saved yet -- run the wizard first.[/]")
+        console.print("[dim]  Try: python3 stake.py --setup-only[/]")
+        sys.exit(1)
+
+    old = {k: getattr(state, k, None) for k in parsed}
+    try:
+        mutation_msgs = _apply_mutation(parsed) or []
+    except ValueError as e:
+        console.print(f"[red]Mutation failed:[/] {e}")
+        sys.exit(2)
+
+    save_config()
+    console.print(Rule("[bold cyan]Config updated[/]"))
+    for k in parsed:
+        console.print(f"  [yellow]{k}[/]: [dim]{_fmt_config_value(k, old[k])}[/]"
+                      f"  ->  [green]{_fmt_config_value(k, getattr(state, k, None))}[/]")
+    for m in mutation_msgs:
+        if isinstance(m, str) and m.startswith("⚠"):
+            console.print(f"  [yellow]{m}[/]")
+    console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
+
+    unsafe = sorted(k for k in parsed if k not in _LIVE_RELOAD_KEYS)
+    if unsafe:
+        console.print(f"[yellow]Note:[/] {len(unsafe)} field(s) need a full restart to apply -- "
+                      f"{', '.join(unsafe)}. Run [cyan]stakectl restart[/] when ready.")
+    try:
+        if not os.path.exists(PID_PATH):
+            console.print("[dim]Daemon not running; changes apply on next start.[/]")
+            return
+        with open(PID_PATH) as f:
+            daemon_pid = int(f.read().strip())
+        if not hasattr(signal, "SIGHUP"):
+            console.print("[dim]SIGHUP not supported on this platform; restart the daemon to apply.[/]")
+            return
+        os.kill(daemon_pid, signal.SIGHUP)
+        console.print("[dim]Daemon reloaded live config.[/]")
+    except (OSError, ValueError):
+        console.print("[dim]Daemon PID stale; changes apply on next start.[/]")
+
+
+# ===========================================================
+#  RETENTION  (WolfBet v2.26.0)
+# ===========================================================
+def cmd_cleanup(days=None):
+    """Purge bet rows of sessions ended more than N days ago; session rows are kept."""
+    load_config()
+    n = int(days) if days is not None else state.purge_days
+    n = max(1, min(30, n))
+    if not os.path.exists(DB_PATH):
+        console.print("[dim]No database found -- nothing to purge.[/]")
+        return
+    try:
+        deleted = int(cleanup_old_bets(DB_PATH, bet_age_days=n) or 0)
+    except Exception as e:
+        detail = f": {e}" if APP_ENV != "production" else ""
+        console.print(f"[red]Cleanup failed{detail}.[/]")
+        sys.exit(1)
+    if deleted:
+        console.print(f"[green]✓[/] Purged [bold]{deleted}[/] bet rows from sessions older than "
+                      f"[bold]{n}[/] days. Session aggregates preserved.")
+    else:
+        console.print(f"[dim]Nothing to purge ({n}-day window; no old session bets found).[/]")
+
+
+def _retention_worker():
+    """Hourly purge of bet rows older than purge_days; exits when the bot stops."""
+    while state.running or state.paused:
+        for _ in range(3600):
+            if not (state.running or state.paused):
+                return
+            time.sleep(1)
+        try:
+            deleted = cleanup_live_bets(DB_PATH, bet_age_days=state.purge_days)
+            if deleted:
+                logger.info("RETENTION purged %d bet rows (>%dd)", deleted, state.purge_days)
+        except Exception as e:
+            logger.warning("retention purge failed: %s", e)
+
+
+# ===========================================================
+#  BPS DIAGNOSTICS  (WolfBet v2.26.1: --benchmark, --diagnose)
+# ===========================================================
+def cmd_benchmark(n=None, proxy=None):
+    """N read-only GraphQL UserBalances calls through the live client: no bets, no DB.
+
+    Uses the same CF-aware session, headers, cached CF cookies and proxy as
+    the bet path. It does not run the CF solver chain: a 403 counts as a
+    failed sample.
+    """
+    n = 20 if n is None else int(n)
+    n = max(3, min(200, n))
+    if not load_config():
+        console.print("[red]No config saved yet -- run the wizard first.[/]")
+        sys.exit(1)
+    if proxy:                      # --proxy beats the saved one
+        state.proxy = proxy
+        _recreate_http()
+    _cf_cache_load()
+    console.print(f"[dim]Benchmarking {n} x GraphQL UserBalances at {_gql_url()} "
+                  f"(proxy={mask_proxy(state.proxy)}) ...[/]")
+    samples, statuses, failures = [], [], 0
+    for _ in range(n):
+        t0 = time.perf_counter()
+        try:
+            r = _http.post(_gql_url(), headers=_headers(), json=_user_balances_payload(), timeout=15)
+            samples.append((time.perf_counter() - t0) * 1000)
+            statuses.append(r.status_code)
+        except Exception:
+            failures += 1
+            statuses.append("ERR")
+    if not samples:
+        console.print("[red]All requests failed. Check tokens, proxy and network.[/]")
+        sys.exit(1)
+    samples.sort()
+    p50 = percentile(samples, 0.50)
+    p99 = percentile(samples, 0.99)
+    mean = sum(samples) / len(samples)
+    tbl = Table(title="API latency (ms)", title_style="bold cyan", show_lines=False)
+    for col, style in [("min", "green"), ("p50", "cyan"), ("mean", "cyan"),
+                       ("p99", "yellow"), ("max", "red"), ("ok", "dim")]:
+        tbl.add_column(col, style=style, justify="right")
+    ok_count = sum(1 for st in statuses if st == 200)
+    tbl.add_row(f"{min(samples):.0f}", f"{p50:.0f}", f"{mean:.0f}",
+                f"{p99:.0f}", f"{max(samples):.0f}", f"{ok_count}/{n}")
+    console.print(tbl)
+    max_bps = 1000.0 / p50 if p50 > 0 else 0.0
+    console.print(f"\n[dim]Theoretical max BPS from p50:[/] [bold magenta]{max_bps:.1f}[/] bps")
+    colour, msg = benchmark_verdict(p50=p50, p99=p99, statuses=statuses,
+                                    sample_count=n, casino_name="Stake")
+    console.print(f"[bold {colour}]{msg}[/]")
+    blocked = sum(1 for st in statuses if st == 403)
+    if blocked:
+        console.print(f"[yellow]{blocked}/{n} got 403 (Cloudflare). Start the bot once so it "
+                      "solves CF and caches cookies, then re-run.[/]")
+    if failures:
+        console.print(f"[dim]Note: {failures}/{n} network errors.[/]")
+
+
+def cmd_diagnose():
+    """One-shot bottleneck analysis of the running session, from the state file."""
+    if not os.path.exists(STATE_PATH):
+        console.print("[yellow]No running daemon session found.[/]\n"
+                      "  Start one with [cyan]stakectl start[/] then re-run "
+                      "[cyan]python3 stake.py --diagnose[/].")
+        return
+    try:
+        with open(STATE_PATH) as f:
+            d = json.load(f)
+    except Exception as e:
+        detail = f": {e}" if APP_ENV != "production" else ""
+        console.print(f"[red]Failed to read state file{detail}.[/]")
+        return
+
+    api_p50    = float(d.get("api_p50_ms") or 0)
+    overhead   = float(d.get("overhead_ms") or 0)
+    cycle_ms   = float(d.get("cycle_ms") or 0)
+    cycle_p50  = float(d.get("cycle_p50_ms") or cycle_ms)
+    cycle_p99  = float(d.get("cycle_p99_ms") or 0)
+    cycle_n    = int(d.get("cycle_sample_count") or 0)
+    recent_bps = float(d.get("bets_per_second_recent") or 0)
+    bet_delay  = float(d.get("bet_delay") or 0)
+    bps        = float(d.get("bets_per_second") or 0)
+    tmax       = float(d.get("theoretical_max_bps") or 0)
+    delay_ms   = bet_delay * 1000
+
+    eff_ref = recent_bps if recent_bps > 0 else bps
+    if tmax > 0:
+        eff_raw = eff_ref / tmax * 100.0
+        eff_display = ">100%" if eff_raw > 100.0 else f"{eff_raw:.0f}%"
+    else:
+        eff_display = "--"
+
+    lines = [
+        f"[dim]Game:[/] [cyan]{d.get('game', '?')}[/]  ·  [dim]Strategy:[/] [cyan]{d.get('strategy', '?')}[/]",
+        "",
+        (f"[bold]Actual:[/] [magenta]{bps:.1f}[/] BPS (session)  ·  "
+         f"[bold]Recent:[/] [magenta]{recent_bps:.1f}[/] BPS  ·  "
+         f"[bold]Theoretical:[/] [magenta]{tmax:.1f}[/] BPS  ·  "
+         f"[bold]Efficiency:[/] [magenta]{eff_display}[/]"),
+        (f"[dim]Cycle:[/] median [cyan]{cycle_p50:.0f}ms[/]  p99 [cyan]{cycle_p99:.0f}ms[/]  "
+         f"[dim](n={cycle_n} samples)[/]"),
+        (f"[dim]Cycle breakdown:[/] api_p50=[cyan]{api_p50:.0f}ms[/] "
+         f"+ overhead=[cyan]{overhead:.0f}ms[/] + delay=[cyan]{delay_ms:.0f}ms[/] "
+         f"[dim]≈[/] [magenta]{api_p50 + overhead + delay_ms:.0f}ms[/]/bet [dim](decomposition)[/]"),
+        (f"[dim]Measured cycle:[/]  [magenta]{cycle_ms:.0f}ms[/]/bet "
+         f"[dim](median of last {cycle_n} iterations)[/]"),
+    ]
+
+    db_mode = d.get("db_write_mode") or "sync"
+    dbw = d.get("db_writer_stats") or {}
+    dbw_fb = int(dbw.get("fallback_sync") or 0)
+    dbw_hwm = int(dbw.get("queue_high_watermark") or 0)
+    if db_mode == "async":
+        lines.append(
+            f"[dim]DB writer:[/] mode=[cyan]async[/]  queue=[cyan]{int(d.get('db_writer_queue') or 0)}/1000[/]  "
+            f"batches=[cyan]{int(dbw.get('batches') or 0)}[/]  flushed=[cyan]{int(dbw.get('flushed') or 0)}[/]  "
+            f"fallback_sync=[{'red' if dbw_fb else 'cyan'}]{dbw_fb}[/]  hwm=[cyan]{dbw_hwm}[/]")
+    else:
+        lines.append("[dim]DB writer:[/] mode=[yellow]sync[/] (per-bet commit)")
+
+    blockers = [("Network / API latency", api_p50),
+                ("CLI overhead",          overhead),
+                ("User-configured delay", delay_ms)]
+    top_name, top_val = max(blockers, key=lambda x: x[1])
+
+    advice = []
+    if top_name == "Network / API latency" and api_p50 >= 100:
+        advice.append("• Run [cyan]python3 stake.py --benchmark 20[/] to isolate the network path.")
+        advice.append("• Consider a proxy in a region closer to Stake, or a faster server.")
+    elif top_name == "User-configured delay" and delay_ms > 10:
+        advice.append(f"• You have bet_delay={bet_delay:.3f}s. Drop it with "
+                      "[cyan]python3 stake.py --config-set delay=0[/] for max throughput.")
+    elif top_name == "CLI overhead" and overhead > 30:
+        if db_mode == "sync":
+            advice.append("• CLI overhead high AND db_write_mode=sync -- flip to async: "
+                          "[cyan]python3 stake.py --config-set dbmode=async[/] then restart.")
+        elif dbw_fb == 0 and dbw_hwm < 100:
+            advice.append("• CLI overhead is high on this host. The DB writer is healthy, so it is "
+                          "likely shared-tenancy CPU/disk jitter, not a fixable code issue.")
+        else:
+            advice.append("• CLI overhead is high. Check disk I/O (DB writes) and CPU load.")
+    if dbw_fb > 0:
+        advice.append(f"• DB writer queue overflowed {dbw_fb} times (check disk perf).")
+    if not advice:
+        advice.append("• Nothing obvious. Session is running near its natural ceiling.")
+
+    lines += ["", f"[bold yellow]Top blocker:[/] {top_name} ([magenta]{top_val:.0f}ms[/])",
+              "", "[bold]Advice:[/]", *advice]
+    console.print(Panel("\n".join(lines), title="Diagnostic bottleneck analysis", border_style="cyan"))
+
+
+# ===========================================================
 #  MAIN
 # ===========================================================
-def _load_and_connect():
-    if not load_config():
+def _load_and_connect(proxy: str = None):
+    if not load_config():          # also rebuilds the HTTP client with the saved proxy
         console.print("[red]No saved config found. Run without --resume first.[/]")
         sys.exit(1)
+    if proxy and state.proxy != proxy:   # --proxy beats the saved one
+        state.proxy = proxy
+        _recreate_http()
     console.print("[dim]Loading saved config...[/]")
     game_label = GAMES.get(state.game, {}).get("label", state.game)
     try:
@@ -4565,6 +5810,7 @@ def _load_and_connect():
 
 def main():
     parser = argparse.ArgumentParser(description="Stake AutoBot v" + VERSION + " -- Multi-Game")
+    parser.add_argument("--version", action="version", version=f"Stake AutoBot v{VERSION}")
     parser.add_argument("--resume",  action="store_true", help="Skip wizard, reuse saved config")
     parser.add_argument("--daemon",  action="store_true", help="Run in background (no TUI, implies --resume)")
     parser.add_argument("--setup-only", action="store_true", help="Run wizard, save config, don't start betting")
@@ -4579,6 +5825,20 @@ def main():
                             "breakdowns by game, strategy and lane. Complement to --stats.")
     group.add_argument("--last-bets", type=int, metavar="N", help="Show last N bets from database")
     group.add_argument("--session-bets", type=int, metavar="ID", help="Show bets for a specific session")
+    group.add_argument("--config-show", action="store_true",
+                       help="Show the saved config as a table (no wizard, no side effects)")
+    group.add_argument("--config-set", nargs="+", metavar="KEY=VALUE",
+                       help="Change saved config without the wizard; a running daemon reloads "
+                            "live-safe keys (SIGHUP). Aliases match the T hotkey (delay=0.35, "
+                            "maxprofit=0.005, dbmode=sync, ...). Credentials are refused.")
+    group.add_argument("--cleanup", nargs="?", type=int, metavar="DAYS", const=-1,
+                       help="Purge bet rows of sessions older than DAYS (default: purge_days, "
+                            "clamped 1-30). Session rows are kept.")
+    group.add_argument("--benchmark", nargs="?", type=int, metavar="N", const=20,
+                       help="API latency probe: N read-only GraphQL UserBalances calls "
+                            "(default 20, clamped 3-200). No bets placed.")
+    group.add_argument("--diagnose", action="store_true",
+                       help="Bottleneck analysis of the running session (reads the state file)")
     # Modifiers, not commands: they combine WITH --stats / --analytics, so they
     # stay outside the mutually-exclusive group (WolfBet v2.30.9).
     parser.add_argument("--since", metavar="DATE",
@@ -4612,8 +5872,14 @@ def main():
             sys.exit(2)
 
     if args.proxy:
+        try:
+            args.proxy = validate_proxy(args.proxy) or ""
+        except ValueError as e:
+            console.print(f"[red]--proxy: {e}[/]")
+            sys.exit(2)
         state.proxy = args.proxy
         _recreate_http()
+
 
     if args.api_base:
         global API_BASES, API_BASE
@@ -4648,6 +5914,21 @@ def main():
     if args.session_bets is not None:
         cmd_session_bets(args.session_bets)
         return
+    if args.config_show:
+        cmd_config_show()
+        return
+    if args.config_set:
+        cmd_config_set(args.config_set)
+        return
+    if args.cleanup is not None:
+        cmd_cleanup(None if args.cleanup == -1 else args.cleanup)
+        return
+    if args.benchmark is not None:
+        cmd_benchmark(args.benchmark, proxy=args.proxy)
+        return
+    if args.diagnose:
+        cmd_diagnose()
+        return
 
     if args.setup_only:
         init_db()
@@ -4662,11 +5943,11 @@ def main():
             console.print(f"[red]Preset '{args.preset}' not found.[/]")
             cmd_list_presets()
             sys.exit(1)
+        saved = {}
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH) as f:
+                saved = json.load(f)
         if not state.access_token:
-            saved = {}
-            if os.path.exists(CONFIG_PATH):
-                with open(CONFIG_PATH) as f:
-                    saved = json.load(f)
             if saved.get("access_token"):
                 state.access_token = saved["access_token"]
                 state.lockdown_token = saved.get("lockdown_token", "")
@@ -4674,6 +5955,10 @@ def main():
             else:
                 console.print("[red]No access token found. Run wizard first.[/]")
                 sys.exit(1)
+        if saved.get("proxy") and not args.proxy:
+            # v1.12.0 fix: presets carry no proxy; use the saved one like --resume does
+            _set_config_value("proxy", saved["proxy"])
+            _recreate_http()
         game_label = GAMES.get(state.game, {}).get("label", state.game)
         console.print(f"[green]Loaded preset '{args.preset}' -- {game_label} / {state.strategy} on "
                       f"{state.currency.upper()} @ {state.base_bet:.8f}[/]")
@@ -4685,9 +5970,13 @@ def main():
             sys.exit(1)
 
     elif args.resume or args.daemon:
-        _load_and_connect()
+        _load_and_connect(proxy=args.proxy)
     else:
         setup_wizard()
+
+    if state.proxy and not _HAS_CFFI:
+        console.print("[yellow]Proxy set but curl_cffi is not installed -- the proxy is ignored. "
+                      "Install it: pip install curl_cffi[/]")
 
     state.session_id    = _db_start_session()
     state.session_start = time.time()
@@ -4711,6 +6000,7 @@ def main():
         state.status  = "Interrupted -- saving session..."
         logger.warning("SESSION END (signal)  bets=%d  profit=%+.8f  balance=%.8f",
                     state.total_bets, state.profit, state.current_balance)
+        _stop_bet_writer(timeout=5.0)   # v1.12.0 — drain queued bet rows
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -4732,8 +6022,24 @@ def main():
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _sig_reload)
 
+    # v1.12.0 — startup retention purge (WolfBet v2.26.0)
+    try:
+        purged = cleanup_old_bets(DB_PATH, bet_age_days=state.purge_days)
+        if purged:
+            logger.info("STARTUP RETENTION purged %d old bet rows (>%dd)", int(purged), state.purge_days)
+    except Exception as e:
+        logger.warning("startup retention purge failed: %s", e)
+
+    # v1.12.0 — async bet writer (WolfBet v2.27.0)
+    if state.db_write_mode == "async":
+        _start_bet_writer()
+        logger.info("BET WRITER started (async, batch=%d)", _BET_WRITER_BATCH_SIZE)
+
     t_bet = threading.Thread(target=betting_loop, daemon=True, name="BettingLoop")
     t_bet.start()
+
+    t_retention = threading.Thread(target=_retention_worker, daemon=True, name="Retention")
+    t_retention.start()
 
     def periodic_save():
         while state.running or state.paused:
@@ -4756,6 +6062,7 @@ def main():
         except KeyboardInterrupt:
             pass
         state.running = False
+        _stop_bet_writer(timeout=5.0)
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -4807,6 +6114,7 @@ def main():
         sys.stdout.write("\033c")
         sys.stdout.flush()
 
+    _stop_bet_writer(timeout=5.0)
     _db_save_session()
     _cleanup_state_file()
     _print_summary()
