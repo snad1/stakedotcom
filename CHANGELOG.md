@@ -1,5 +1,22 @@
 # Changelog
 
+## CLI v1.10.0 — Recurring and streak-reset cycles, live reload (2026-11-14)
+
+Mirrors WolfBet CLI v2.16.0 (recurring, streak delays, `streakbet_loss`, `basebet_pct`, milestones), v2.25.3 / v2.30.6 (`recurring_delay` 0..86400 with a clamp message), v2.28.2 (config persistence), v2.28.3 (SIGHUP live reload), v2.28.4 (uptime freezes in the pause), v2.30.1 / v2.30.7 (`next_profit_milestone` persisted, `Ms` per-window progress), v2.32.0 (streak reset) and v2.32.1 (insufficient balance terminal). TG unchanged. Cloudflare bypass chain and its 403 handling unchanged. Uses `shared.core.session_rules`.
+
+- **Cycles.** With `recurring` on, a profit-target / max-bets / max-wins stop at profit ≥ 0 closes the `sessions` row, pauses `recurring_delay` (default 60 s) and opens a new row. `streak_reset_losses` N stops on the first win after N+ losses (profit ≥ 0) and restarts after `streak_reset_delay` (default 600 s), even with `recurring` off. Each new cycle zeroes counters and streaks, keeps the bumped `base_bet` and re-arms `next_profit_milestone` from `profit_threshold`. `[Q]` / SIGTERM during the pause stops without opening a new row.
+- **Balance at cycle start.** Stake returns no balance in the bet reply, so the CLI tracks it locally. Each new cycle reads the real balance once via the GraphQL `UserBalances` call; if that fails, the local balance is kept.
+- **Loop hooks.** `streak_delay_loss/win/bets` ("N:sec") sleep before the next bet; `streakbet_loss` ("N:mult") scales the next bet every N losses; `basebet_pct` re-sizes the base bet from the balance every 10 bets; `milestone_bets/wins/losses/profit` log and show `Milestone: …`.
+- **Uptime.** During a cycle pause `uptime_sec` freezes at the last bet (and the session's `ended_at` uses it); the state file adds `pause_remaining_sec`, `pause_total_sec` and `run_uptime_sec` (never resets across cycles). Monitor and TUI headers show `◐ PAUSED x/y` and `Run …`; `--status` shows `Recurring pause: X remaining / Y total`, `Running for`, `Recurring` and `Streak Reset`.
+- **CFG row.** `Ms` reads `next_profit_milestone` (it read `last_profit_milestone`, which the CLI never set) and shows progress inside the current window; `Rec on(Xs)` now appears (the state file writes `recurring`); new `SR nL→Ss` segment.
+- **Persistence + reload.** Every new key is in the config file and presets (streak pairs stored as `"N:X"`, `null` when off; delays clamped on load). No wizard prompts yet (wizard Step 5b is E5): set the keys in the config file or a preset, then SIGHUP. `SIGHUP` re-reads the config and applies only live-safe keys (stops, delays, cycle keys, streak pairs, milestones, `profit_increment` / `profit_threshold`, `custom_rules_text`, `proxy`); other changed keys are logged as skipped. SIGUSR1 / SIGUSR2 pause / resume unchanged.
+- **Fix: bet error envelope.** An HTTP-200 `{"errors": [...]}` bet reply was booked as a 0-amount loss; it is now an error (backoff, no bet row). Insufficient balance matches "insufficient" only (the `ConnectionError` path matched any message containing "balance"). Insufficient balance is terminal: no recurring or streak-reset restart.
+- **Fix: parsers** fall back to `state.result` when the reply has no top-level `resultMultiplier` / `resultTarget` / `result`.
+- **N/A:** server-side auto-bet and its auto-UUID clearing, the mid-chain auto guard, `--pipeline` — Stake bets are one request each. **Later:** chain-depth risky-config warning and `config-set` (E5), lanes (E5-S8).
+- Tests: `tests/test_wolfbet_sync_e3.py` (52); `test_portability_v1.py` version pin.
+
+`VERSION` `1.9.1` → `1.10.0`.
+
 ## TG v1.12.0 — Streak reset, delay caps, analytics window (2026-11-14)
 
 Mirrors WolfBet TG 1.20.0: v2.30.6 (delay cap), v2.32.0 (streak reset), v2.32.1 (insufficient balance terminal), v2.33.0 (time-of-day window). CLI unchanged. Cloudflare bypass chain unchanged.
