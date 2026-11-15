@@ -1,4 +1,4 @@
-"""Configuration — environment variables, constants, tier definitions."""
+"""Configuration -- environment variables, constants, tier definitions."""
 
 import os
 import logging
@@ -51,7 +51,7 @@ CONFIG_KEYS = [
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
-    "profit_increment", "profit_threshold",
+    "profit_increment", "profit_threshold", "profit_increment_scope",
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets",
     "streak_reset_losses", "streak_reset_delay",
     "proxy",
