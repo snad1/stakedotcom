@@ -1,5 +1,16 @@
 # Changelog
 
+## CLI v1.14.0 — Lane split minimum bet (2026-11-15)
+
+Completes WolfBet CLI v2.36.0 (`lane_split`, `6174b96`) with the stakedotcom adapt from backlog Epic 9. The rest of v2.36.0 shipped in 1.13.0. TG unchanged.
+
+- **Minimum bet** — in `bet` / `both`, a split `base_bet` or `basebet_pct` bet below Stake's minimum (0.0001) now stays full, with a warning in the log. Before, it was divided and then raised to 0.0001 at bet time. Same on load and on SIGHUP reload; an untouched full bet is still saved as is. A lane's own `base_bet` override is never divided. Uses `lane_config(..., min_bet)` and `split_base_bet` from casino-shared 0.3.0.
+- **No default change** — stakedotcom 1.13.0 already shipped `lane_split=none` as the default, so lanes never had the always-on v2.35.0 budget guard here. The budget stop applies only with `lane_split=budget` or `both`, as before.
+- N/A: nothing new.
+- Tests: `tests/test_wolfbet_sync_e9.py` (13). `test_portability_v1.py` pins 1.14.0.
+
+`VERSION` `1.13.0` → `1.14.0`.
+
 ## CLI v1.13.0 — Parallel lanes (2026-11-14)
 
 Mirrors WolfBet CLI v2.35.0 (parallel lanes) and v2.36.0 (`lane_split`); where the two differ, v2.36.0 code wins. Lane helpers come from `shared.core.lanes` (casino-shared 0.2.0). TG unchanged. Cloudflare bypass chain unchanged.
