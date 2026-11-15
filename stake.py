@@ -24,7 +24,7 @@ from shared.core.net import validate_proxy, mask_proxy
 from shared.core.lanes import (
     LANES_MAX, LANE_SPLIT_HELP, LANE_UNSET_VALUES,
     lane_path, validate_lane, lanes_count, lane_split, lane_config,
-    lane_overrides, split_budget_on, split_bet_divisor, split_lane_pairs,
+    lane_overrides, split_budget_on, split_base_bet, split_lane_pairs,
     check_lane_keys, lane_share, lane_equity, lane_budget_exceeded, recommend_lanes,
 )
 try:
@@ -458,7 +458,7 @@ STATE_PATH   = os.path.expanduser("~/.stake_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.13.0"
+VERSION      = "1.14.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -770,7 +770,8 @@ def _apply_lane_config(data: dict) -> dict:
     and return the config this lane runs: base + its overrides + bet split."""
     state.lanes_count = lanes_count(data)
     state.lane_split = lane_split(data)
-    merged, warning = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS)
+    # v1.14.0 (wolfbet v2.36.0) — a split bet below MIN_BET stays full.
+    merged, warning = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS, MIN_BET)
     if warning:
         logger.warning(warning)
     state.base_bet_disk = data.get("base_bet")
@@ -815,7 +816,7 @@ def _reload_live_config() -> dict:
     except (OSError, ValueError):
         return {}
     # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — this lane's overrides + bet split.
-    data = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS)[0]
+    data = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS, MIN_BET)[0]
     changed = {}
     with state.lock:
         for k in _LIVE_RELOAD_KEYS:
@@ -2219,8 +2220,12 @@ def _apply_basebet_pct() -> bool:
     if state.basebet_pct <= 0 or state.current_balance <= 0:
         return False
     # v1.13.0 (wolfbet v2.36.0) — bet split divides by the lane count.
-    new_base = round(state.current_balance * state.basebet_pct
-                     / split_bet_divisor(state.lanes_count, state.lane_split), 8)
+    # v1.14.0 — a split bet that rounds to 0 or is below MIN_BET stays full.
+    new_base, note = split_base_bet(
+        round(state.current_balance * state.basebet_pct, 8),
+        state.lanes_count, state.lane_split, False, MIN_BET)
+    if note:
+        logger.warning(note)
     if new_base <= 0 or abs(new_base - state.base_bet) < 1e-12:
         return False
     with state.lock:
