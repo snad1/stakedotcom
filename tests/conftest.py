@@ -1,4 +1,4 @@
-"""Test sandbox + fake casino fixtures (E0-S2).
+"""Test sandbox + fake casino fixtures.
 
 Module top runs before any test imports `stake` or `tg`: path constants are
 bound at import from HOME / STAKE_TG_DATA / STAKE_API_BASE, so they must be
@@ -46,7 +46,7 @@ def sleeps():
 @pytest.fixture(autouse=True)
 def _sandbox(tmp_path, monkeypatch, sleeps):
     for name in ("DB_PATH", "CONFIG_PATH", "STATE_PATH", "PID_PATH", "PRESET_PATH",
-                 "CF_CACHE_PATH"):
+                 "CF_CACHE_PATH", "RUN_PATH"):
         monkeypatch.setattr(st, name, str(tmp_path / f"cli_{name.lower()}"))
     monkeypatch.setattr(tg_database, "DATA_DIR", str(tmp_path / "tg"))
     monkeypatch.setattr(st, "state", st.BotState())

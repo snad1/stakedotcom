@@ -1,0 +1,234 @@
+name: x-check
+
+# casino rule check — runs on PR + push, blocks merges with critical violations.
+#
+# This file is deployed by .claude/scripts/install-workflows.sh.
+# Source of truth: .claude/workflows/x-check.yml
+# To update: edit the source, then re-run install-workflows.sh all --force, then commit + push the changes.
+#
+# Bypass: not possible from CI. To bypass locally, use git commit --no-verify (which the precommit
+# hook respects), then push. CI will still flag it on the PR.
+
+on:
+  pull_request:
+    branches:
+      - main
+      - production
+      - staging
+      - development
+  push:
+    branches:
+      - main
+      - production
+      - staging
+      - development
+
+permissions:
+  contents: read
+  pull-requests: write  # required to post PR comments
+  actions: read         # required by verified_tree.sh to look up the marker artifact
+
+# A rapid follow-up push supersedes the in-flight run rather than queueing a second one.
+# Distinct prefix so it never collides with a project's own CI concurrency group.
+concurrency:
+  group: x-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rule-check:
+    name: Rule check (bash)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout (full history for diff)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # An identical code tree is scanned once, not again at every promotion hop.
+      # Note the scan is diff-scoped, so the marker records "this tree was scanned against
+      # some base", not against this particular base. See templates/ci/verified_tree.md.
+      - name: Already verified?
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Its own marker namespace. A project that gates its own CI workflow on the
+          # default salt must not be able to skip it on this scanner's evidence.
+          VERIFY_SALT: x-check-v1
+        run: bash .github/scripts/verified_tree.sh
+
+      - name: Determine base ref
+        id: base
+        if: steps.gate.outputs.verified != 'true'
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.event.pull_request.base.ref }}"
+          else
+            # Push event: compare against the previous commit
+            BASE="HEAD~1"
+          fi
+          echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Base ref: $BASE"
+
+      - name: Verify x-precommit.sh script is present
+        if: steps.gate.outputs.verified != 'true'
+        run: |
+          if [ ! -f .github/scripts/x-precommit.sh ]; then
+            echo "::error::Script .github/scripts/x-precommit.sh is missing from this repo."
+            echo "Run 'bash <project-root>/.claude/scripts/install-workflows.sh <repo>' to deploy it."
+            exit 1
+          fi
+          chmod +x .github/scripts/x-precommit.sh
+
+      - name: Run x-precommit in CI mode
+        id: check
+        if: steps.gate.outputs.verified != 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          NO_COLOR=1 bash .github/scripts/x-precommit.sh --ci ${{ steps.base.outputs.ref }} 2>&1 | tee x-check-output.txt
+          EXIT=${PIPESTATUS[0]}
+          NO_COLOR=1 bash .github/scripts/x-precommit.sh --ci-messages ${{ steps.base.outputs.ref }} 2>&1 | tee -a x-check-output.txt
+          [ "${PIPESTATUS[0]}" -ne 0 ] && EXIT=1
+          # Count violations from output for the summary.
+          # Use `|| true` (NOT `|| echo 0`): when grep finds 0 matches it prints "0" AND exits 1,
+          # so `|| echo 0` appends a second "0" and produces multi-line output, which breaks $GITHUB_OUTPUT.
+          CRITICAL=$(grep -c "^🔴" x-check-output.txt 2>/dev/null || true)
+          WARNINGS=$(grep -c "^🟡" x-check-output.txt 2>/dev/null || true)
+          CRITICAL=${CRITICAL:-0}
+          WARNINGS=${WARNINGS:-0}
+          # Normalize to single-line integer (defensive)
+          CRITICAL=$(printf '%s' "$CRITICAL" | head -n1 | tr -cd '0-9')
+          WARNINGS=$(printf '%s' "$WARNINGS" | head -n1 | tr -cd '0-9')
+          CRITICAL=${CRITICAL:-0}
+          WARNINGS=${WARNINGS:-0}
+          {
+            echo "exit_code=$EXIT"
+            echo "critical=$CRITICAL"
+            echo "warnings=$WARNINGS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Add results to job summary
+        if: always() && steps.gate.outputs.verified != 'true'
+        run: |
+          {
+            echo "## Rule check"
+            echo ""
+            echo "- **Base ref**: \`${{ steps.base.outputs.ref }}\`"
+            echo "- **Critical violations**: ${{ steps.check.outputs.critical }}"
+            echo "- **Warnings**: ${{ steps.check.outputs.warnings }}"
+            echo "- **Exit code**: ${{ steps.check.outputs.exit_code }}"
+            echo ""
+            echo "<details><summary>Full output</summary>"
+            echo ""
+            echo '```'
+            cat x-check-output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR (only on same-repo PRs to avoid fork permission errors)
+        if: |
+          steps.gate.outputs.verified != 'true' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.check.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('x-check-output.txt', 'utf8');
+            const critical = '${{ steps.check.outputs.critical }}';
+            const warnings = '${{ steps.check.outputs.warnings }}';
+
+            // Check if a previous x-check comment exists; update it instead of duplicating
+            const comments = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('<!-- x-check-marker -->')
+            );
+
+            const body = [
+              '<!-- x-check-marker -->',
+              `## ❌ Rule check — ${critical} critical violation(s), ${warnings} warning(s)`,
+              '',
+              '<details><summary>Click for full output</summary>',
+              '',
+              '```',
+              output.length > 50000 ? output.slice(0, 50000) + '\n...(truncated)' : output,
+              '```',
+              '',
+              '</details>',
+              '',
+              '### How to fix',
+              '',
+              '1. Run locally: `bash .github/scripts/x-precommit.sh --ci origin/' + context.payload.pull_request.base.ref + '`',
+              '2. Or in Claude Code: `/x-check` (full LLM-based scan) or `/x-implement` (auto-fix)',
+              '3. Push your fixes — this comment will update automatically',
+              '',
+              '_Bypass (NOT recommended): commit with `--no-verify` and the PR will still fail this check until you fix it._',
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                comment_id: existing.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }
+
+      - name: Update PR comment on success (mark as resolved)
+        if: |
+          steps.gate.outputs.verified != 'true' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.check.outputs.exit_code == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comments = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('<!-- x-check-marker -->')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                comment_id: existing.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: '<!-- x-check-marker -->\n## ✅ Rule check — passed\n\nAll critical rules satisfied. Latest run: ' + new Date().toISOString(),
+              });
+            }
+
+      - name: Fail the job if critical violations
+        if: steps.gate.outputs.verified != 'true' && steps.check.outputs.exit_code != '0'
+        run: |
+          echo "::error::x-check failed with ${{ steps.check.outputs.critical }} critical violation(s). See job summary above for details."
+          exit 1
+
+      - name: Mark verified
+        if: steps.gate.outputs.verified != 'true'
+        run: echo "${{ github.sha }}" > verified.txt
+      - name: Upload the marker
+        if: steps.gate.outputs.verified != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.gate.outputs.marker }}
+          path: verified.txt
+          retention-days: 30

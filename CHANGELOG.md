@@ -1,5 +1,21 @@
 # Changelog
 
+## CLI v1.15.0 + TG v1.13.0 — Run-wide profit increment (2026-11-15)
+
+Mirrors WolfBet CLI v2.37.0 (`0b7e71a`) and TG v1.21.0 (`58d6e4d`), `profit_increment_scope` / `piscope`. Helpers come from `shared.core.run_increment` (casino-shared 0.3.0). Cloudflare chain, auth and the bet client are untouched: a bumped base bet only changes the amount of the next bet.
+
+- **Scope.** `profit_increment_scope`: `session` (default, unchanged: this session's profit, milestone reset each recurring cycle) or `run` (the lane's sessions since the run began, plus the live session; DB sum + run file, so the milestone survives recurring cycles and restarts). CLI aliases `piscope` / `pscope`; wizard asks the scope after the increment prompts; `--config-set piscope=run` validates (exit 2) and says a restart is needed; `--config-show` shows it.
+- **Run file.** `~/.stake_run.json` (`STAKE_RUN_PATH`), one per lane: `~/.stake_run.laneK.json` for lane K. Written atomically (0600) on each bump. A file pointing past the DB's last session (stats reset) starts a new run. Start: `base_bet = config base + bumps × increment`, next milestone `(bumps + 1) × threshold`. Recurring cycles attach the new session row to the same run.
+- **Off values.** `profit_increment` / `profit_threshold` set to `none` / `off` / `0` / `0.0` (≤ 0) are fully off: no bumps, no background run; the run file is removed at start or on SIGHUP, and re-enabling starts a fresh run on the current session.
+- **Merged check.** The inline increment blocks are one `_check_profit_increment()` (CLI) / `_maybe_profit_increment()` (TG).
+- **Display.** CLI `--status` adds a `Run Profit` row (`since #N, bumps, next at X`) and the monitor shows `RunMs` instead of `Ms`; the state file carries `profit_increment_scope`, `run_profit_total`, `run_first_session`, `run_bumps`. TG `/config` and `/status` show the scope and run total; the web settings page shows the increment block.
+- **Reset.** CLI `--run-reset [--lane K]`; TG `/runreset` refuses while sessions or recurring restarts are pending, then asks for confirmation before deleting the run file. `stakectl run-reset` comes with E7.
+- **TG run sharing.** One run per user across every slot: a bump in one slot raises the others' base bet on their next refresh, and `_run_base_origin` keeps recurring restarts from stacking a bump twice. `/tweak piscope` is refused (the scope applies on the next session; use `/set piscope`) — a deviation from WolfBet, which has no live scope change either.
+- **N/A:** the auto-bet UUID restart on a bump — Stake has no server-side auto-bet, so the bumped base applies to the next bet.
+- Tests: `tests/test_wolfbet_sync_e10.py`. `test_portability_v1.py` pins 1.15.0.
+
+`VERSION` `1.14.0` → `1.15.0`; TG `1.12.0` → `1.13.0`.
+
 ## CLI v1.14.0 — Lane split minimum bet (2026-11-15)
 
 Completes WolfBet CLI v2.36.0 (`lane_split`, `6174b96`) with the stakedotcom adapt from backlog Epic 9. The rest of v2.36.0 shipped in 1.13.0. TG unchanged.
@@ -52,7 +68,7 @@ Mirrors WolfBet CLI v2.17.0 (API timing + on-target %), v2.18.0 (wizard Step 5b 
 - **Live editing.** `T` in the TUI opens the tweak prompt (`param value`, aliases like `delay`, `maxprofit`, `bbpct`, `srloss`, `recdelay`, `mult`, `dbmode`). `_apply_mutation` validates and clamps with `⚠` lines; a new base bet or multiplier applies to the next bet; a dice multiplier re-derives the target with the wizard's formula. `--config-show` prints the saved config (tokens, cookie and proxy masked). `--config-set KEY=VALUE …` saves, prints old → new and clamp warnings, names the keys that need a restart and SIGHUPs a running daemon; credentials are refused (exit 2).
 - **Wizard.** New Step 6b (optional: recurring, delays, streak reset, `basebet_pct`, streak pairs, milestones, `purge_days`, `db_write_mode`) and Step 7 (save preset: `save_preset` was never reachable before). Step 8 shows risky-config hints: aggressive Martingale, no `max_loss` on Martingale (`2`) / Delay Martingale (`6`), the chain-depth warning with a streak reset, Anti-Martingale with no `max_profit`, Rule-Based (`7`) with no `max_bets`, base bet > 1 % of balance, multiplier > 10, recurring with no cap, `basebet_pct` ≥ 5 %, `http://` proxy. The banner shows `VERSION` (was "v1.2").
 - **Monitor.** Footer adds `--config-set KEY=VALUE` and `--stats / --analytics` hints. `[S]top` uses `systemctl --user stop stake` when the daemon runs in the `stake` unit (so `Restart=` does not respawn it), else SIGTERM.
-- **N/A:** rate-limit row and rate-limit advice (Stake sends no rate-limit headers); pipelining and its warnings / advice; auto-UUID clearing on tweak (no server auto-bet); max-nonce recovery. Presets keep excluding `proxy` (WolfBet includes it): a preset must not change the network path the CF cookies were solved on. **Later:** `--benchmark --lanes` and lane runtime (E5-S8), `stakectl` pass-throughs for the new commands (E7).
+- **N/A:** rate-limit row and rate-limit advice (Stake sends no rate-limit headers); pipelining and its warnings / advice; auto-UUID clearing on tweak (no server auto-bet); max-nonce recovery. Presets keep excluding `proxy` (WolfBet includes it): a preset must not change the network path the CF cookies were solved on. **Later:** `--benchmark --lanes` and lane runtime, `stakectl` pass-throughs for the new commands.
 - Tests: `tests/test_wolfbet_sync_e5.py` (92); `test_portability_v1.py` version pin.
 
 `VERSION` `1.11.0` → `1.12.0`.
@@ -64,9 +80,9 @@ Mirrors WolfBet CLI v2.23.0 (`--analytics`), v2.30.9 / v2.31.0 (date-windowed st
 - **Fix: time-of-day window.** `--since "2026-11-13 14:00"` matched the whole day (`' ' < 'T'`). The window now comes from `shared.core.stats.stats_date_window`: the space becomes `T`, a bad bound prints `Invalid --since/--until "…": use YYYY-MM-DD[ HH:MM[:SS]]` and no rows, and a bare `--until` date runs to `T23:59:59.999999`.
 - **`--stats` totals** add `Sessions: N  (first -> last)`, `Time Span … Bet Time …` (span includes pauses between sessions; bet time sums each session, a running one ends now), `Wins/Session: Max N Avg N.N` and `Losses/Session: Max N Avg N.N`, all window-aware. "No database found" now shows when there is no DB (the DB used to be created first).
 - **New `--analytics [--since --until --lane]`**: Overall panel (sessions in profit / loss, bets, win rate, wagered, P/L, best / worst session, `Time range` / `Time span` / `Bet time`), By game (Limbo / Dice), By strategy, Top 5 best / worst sessions. `stakectl analytics` passes through.
-- **Lanes (v2.35.0).** `sessions.lane` is added to older DBs by `init_db` (`ensure_sessions_lane`; old rows read as lane 1). `--stats` / `--analytics --lane K` filter to one lane (1-10, else exit 2); session headers show `[LK]` for lane > 1; analytics shows "By lane" when more than one lane has sessions. Running lanes lands in E5-S8, so until then every row is lane 1.
+- **Lanes (v2.35.0).** `sessions.lane` is added to older DBs by `init_db` (`ensure_sessions_lane`; old rows read as lane 1). `--stats` / `--analytics --lane K` filter to one lane (1-10, else exit 2); session headers show `[LK]` for lane > 1; analytics shows "By lane" when more than one lane has sessions. Running lanes arrived in a later release, so until then every row is lane 1.
 - `Run …` in the TUI / monitor headers and `--status` "Running for" already shipped in 1.10.0.
-- **N/A:** none. **Later:** lane runtime (E5-S8), `stakectl lanes` / `--lane` pass-through (E7).
+- **N/A:** none. **Later:** lane runtime, `stakectl lanes` / `--lane` pass-through.
 - Tests: `tests/test_wolfbet_sync_e4.py` (19); `test_portability_v1.py` window and version pins updated.
 
 `VERSION` `1.10.0` → `1.11.0`.
@@ -83,7 +99,7 @@ Mirrors WolfBet CLI v2.16.0 (recurring, streak delays, `streakbet_loss`, `basebe
 - **Persistence + reload.** Every new key is in the config file and presets (streak pairs stored as `"N:X"`, `null` when off; delays clamped on load). No wizard prompts yet (wizard Step 5b is E5): set the keys in the config file or a preset, then SIGHUP. `SIGHUP` re-reads the config and applies only live-safe keys (stops, delays, cycle keys, streak pairs, milestones, `profit_increment` / `profit_threshold`, `custom_rules_text`, `proxy`); other changed keys are logged as skipped. SIGUSR1 / SIGUSR2 pause / resume unchanged.
 - **Fix: bet error envelope.** An HTTP-200 `{"errors": [...]}` bet reply was booked as a 0-amount loss; it is now an error (backoff, no bet row). Insufficient balance matches "insufficient" only (the `ConnectionError` path matched any message containing "balance"). Insufficient balance is terminal: no recurring or streak-reset restart.
 - **Fix: parsers** fall back to `state.result` when the reply has no top-level `resultMultiplier` / `resultTarget` / `result`.
-- **N/A:** server-side auto-bet and its auto-UUID clearing, the mid-chain auto guard, `--pipeline` — Stake bets are one request each. **Later:** chain-depth risky-config warning and `config-set` (E5), lanes (E5-S8).
+- **N/A:** server-side auto-bet and its auto-UUID clearing, the mid-chain auto guard, `--pipeline` — Stake bets are one request each. **Later:** chain-depth risky-config warning and `config-set`, lanes.
 - Tests: `tests/test_wolfbet_sync_e3.py` (52); `test_portability_v1.py` version pin.
 
 `VERSION` `1.9.1` → `1.10.0`.

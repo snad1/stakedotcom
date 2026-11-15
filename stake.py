@@ -27,6 +27,11 @@ from shared.core.lanes import (
     lane_overrides, split_budget_on, split_base_bet, split_lane_pairs,
     check_lane_keys, lane_share, lane_equity, lane_budget_exceeded, recommend_lanes,
 )
+from shared.core.run_increment import (
+    PROFIT_INCREMENT_SCOPES, check_profit_increment, db_max_session_id,
+    increment_on, load_run, next_milestone, parse_scope, resume_base_bet,
+    run_is_stale, run_path, run_profit_done, save_run,
+)
 try:
     import readline
 except ImportError:
@@ -88,7 +93,7 @@ def _recreate_http(impersonate: str = "chrome"):
 # FlareSolverr: solve Cloudflare challenges, then use cookies with curl_cffi
 FLARESOLVERR_URL = os.environ.get("FLARESOLVERR_URL", "http://localhost:8191/v1")
 CF_CACHE_PATH = os.path.expanduser("~/.stake_cf_cookies.json")
-CF_CACHE_TTL  = 1800  # 30 minutes — cf_clearance typically lasts ~30min
+CF_CACHE_TTL  = 1800  # 30 minutes -- cf_clearance typically lasts ~30min
 _cf_cookie_str = ""   # Cloudflare cookies from FlareSolverr
 _cf_user_agent = ""   # User-Agent that solved the challenge
 
@@ -132,7 +137,7 @@ def _cf_cache_save():
             pass
 
 class _cf_reauth_lock:
-    """v1.13.0 — cross-lane (cross-process) lock around Cloudflare re-auth:
+    """v1.13.0 -- cross-lane (cross-process) lock around Cloudflare re-auth:
     an fcntl lock file next to CF_CACHE_PATH, so only one lane runs the CF
     solvers at a time; a lane that waited then finds the fresh cookies."""
     def __enter__(self):
@@ -259,7 +264,7 @@ def _solve_cf_playwright(site_url: str) -> bool:
                 cf = next((c for c in cookies if c["name"] == "cf_clearance"), None)
                 return cf, cookies
 
-            # Phase 1: passive wait (15s) — many CF challenges auto-resolve
+            # Phase 1: passive wait (15s) -- many CF challenges auto-resolve
             for _ in range(15):
                 cf, cookies = _check_cookies()
                 if cf:
@@ -377,7 +382,7 @@ def _patch_nodriver_cdp():
         pass
 
 def _solve_cf_nodriver(site_url: str) -> bool:
-    """Use nodriver (undetected-chromedriver successor) — last-resort CF bypass."""
+    """Use nodriver (undetected-chromedriver successor) -- last-resort CF bypass."""
     global _cf_cookie_str, _cf_user_agent
     try:
         import asyncio
@@ -434,7 +439,7 @@ def _solve_cf_nodriver(site_url: str) -> bool:
     try:
         return asyncio.run(asyncio.wait_for(_run(), timeout=120))
     except asyncio.TimeoutError:
-        console.print("  [red]nodriver: hard 120s timeout — process was hanging[/]")
+        console.print("  [red]nodriver: hard 120s timeout -- process was hanging[/]")
         return False
     except Exception as e:
         console.print(f"  [red]nodriver error: {type(e).__name__}: {e}[/]")
@@ -445,7 +450,7 @@ def _solve_cf_nodriver(site_url: str) -> bool:
 # ===========================================================
 # stake.bet uses REST API and has lighter Cloudflare than stake.com
 # Override with STAKE_API_BASE env var or --api-base flag (useful when proxying
-# through a Cloudflare Worker — then API_BASES becomes [worker_url + "/_api/casino"]).
+# through a Cloudflare Worker -- then API_BASES becomes [worker_url + "/_api/casino"]).
 _API_BASE_OVERRIDE = os.environ.get("STAKE_API_BASE", "").rstrip("/")
 if _API_BASE_OVERRIDE:
     API_BASES = [_API_BASE_OVERRIDE + "/_api/casino"]
@@ -456,9 +461,11 @@ DB_PATH      = os.path.expanduser("~/.stake_autobot.db")
 CONFIG_PATH  = os.path.expanduser("~/.stake_autobot.json")
 STATE_PATH   = os.path.expanduser("~/.stake_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
+# v1.15.0 -- run-wide profit increment tracking (one file per lane)
+RUN_PATH     = os.environ.get("STAKE_RUN_PATH", os.path.expanduser("~/.stake_run.json"))
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.14.0"
+VERSION      = "1.15.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -664,7 +671,7 @@ def init_db():
             c.execute(f"ALTER TABLE bets ADD COLUMN {col} {defn}")
         except sqlite3.OperationalError:
             pass
-    ensure_sessions_lane(conn)  # v1.11.0 — sessions.lane (WolfBet v2.35.0)
+    ensure_sessions_lane(conn)  # v1.11.0 -- sessions.lane (WolfBet v2.35.0)
     conn.commit()
     conn.close()
 
@@ -677,13 +684,13 @@ _CONFIG_KEYS = [
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
-    "profit_increment", "profit_threshold", "proxy",
-    # v1.10.0 — WolfBet v2.16.0 / v2.28.2 / v2.32.0 session behaviour
+    "profit_increment", "profit_threshold", "profit_increment_scope", "proxy",
+    # v1.10.0 -- WolfBet v2.16.0 / v2.28.2 / v2.32.0 session behaviour
     "recurring", "recurring_delay", "streak_reset_losses", "streak_reset_delay",
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "basebet_pct", "milestone_bets", "milestone_wins", "milestone_losses",
     "milestone_profit",
-    # v1.12.0 — WolfBet v2.26.0 retention / v2.27.0 async bet writer
+    # v1.12.0 -- WolfBet v2.26.0 retention / v2.27.0 async bet writer
     "purge_days", "db_write_mode",
 ]
 
@@ -723,6 +730,18 @@ def _set_config_value(k: str, v):
             v = 3
     elif k == "db_write_mode":
         v = v if v in ("async", "sync") else "async"
+    elif k == "profit_increment_scope":
+        try:
+            v = parse_scope(v)
+        except ValueError:
+            logger.warning("saved profit_increment_scope ignored: %r", v)
+            v = "session"
+    elif k in ("profit_increment", "profit_threshold"):
+        # v1.15.0 -- 0 / negative in the config file means off, as `none` does.
+        try:
+            v = float(v) if v is not None and float(v) > 0 else None
+        except (TypeError, ValueError):
+            v = None
     setattr(state, k, v)
 
 def _apply_loaded(data: dict, keys: list):
@@ -744,15 +763,15 @@ def _mask_key(key: str) -> str:
 
 def save_config():
     if state.lane > 1:
-        # v1.13.0 (wolfbet v2.35.0) — a lane's state holds base + its overrides;
+        # v1.13.0 (wolfbet v2.35.0) -- a lane's state holds base + its overrides;
         # writing it back would leak them into the shared base config.
         logger.info("save_config skipped on lane %d (base config is lane 1's)", state.lane)
         return
     data = {k: _config_value(k) for k in _CONFIG_KEYS}
-    # v1.13.0 (wolfbet v2.36.0) — an untouched split base bet is saved as the full one.
+    # v1.13.0 (wolfbet v2.36.0) -- an untouched split base bet is saved as the full one.
     if state.base_bet_split is not None and state.base_bet == state.base_bet_split:
         data["base_bet"] = state.base_bet_disk
-    # v1.13.0 (wolfbet v2.35.0) — keep the lanes block (count, split, overrides).
+    # v1.13.0 (wolfbet v2.35.0) -- keep the lanes block (count, split, overrides).
     try:
         with open(CONFIG_PATH) as f:
             old = json.load(f)
@@ -766,11 +785,11 @@ def save_config():
     logger.info("Config saved (token=%s)", _mask_key(data.get("access_token", "")))
 
 def _apply_lane_config(data: dict) -> dict:
-    """v1.13.0 (wolfbet v2.35.0 / v2.36.0) — read the lane count and split mode
+    """v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- read the lane count and split mode
     and return the config this lane runs: base + its overrides + bet split."""
     state.lanes_count = lanes_count(data)
     state.lane_split = lane_split(data)
-    # v1.14.0 (wolfbet v2.36.0) — a split bet below MIN_BET stays full.
+    # v1.14.0 (wolfbet v2.36.0) -- a split bet below MIN_BET stays full.
     merged, warning = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS, MIN_BET)
     if warning:
         logger.warning(warning)
@@ -803,7 +822,7 @@ _LIVE_RELOAD_KEYS = [
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "profit_increment", "profit_threshold", "proxy", "custom_rules_text",
-    # v1.12.0 — retention window + writer mode (a live flip only reroutes
+    # v1.12.0 -- retention window + writer mode (a live flip only reroutes
     # new rows; the writer thread starts at launch)
     "purge_days", "db_write_mode",
 ]
@@ -815,7 +834,7 @@ def _reload_live_config() -> dict:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
-    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — this lane's overrides + bet split.
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- this lane's overrides + bet split.
     data = lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS, MIN_BET)[0]
     changed = {}
     with state.lock:
@@ -827,12 +846,21 @@ def _reload_live_config() -> dict:
             new = getattr(state, k)
             if new != old:
                 changed[k] = (old, new)
-            if k == "profit_threshold" and k in changed and new:
+            if (k == "profit_threshold" and k in changed and new
+                    and state.profit_increment_scope != "run"):
                 state.next_profit_milestone = new
+        # v1.15.0 -- in run scope an increment change ends (off) or starts a run.
+        if state.profit_increment_scope == "run" and (
+                "profit_increment" in changed or "profit_threshold" in changed):
+            if not _increment_on():
+                _end_run("increment off")
+            elif state.run_first_session is None and state.session_id:
+                _attach_run(state.session_id)
+                state.next_profit_milestone = state.profit_threshold
     skipped = [k for k in _CONFIG_KEYS
                if k not in _LIVE_RELOAD_KEYS and k in data and data[k] != _config_value(k)]
     if skipped:
-        logger.warning("live reload: skipped %d unsafe field(s) — restart daemon to apply: %s",
+        logger.warning("live reload: skipped %d unsafe field(s) -- restart daemon to apply: %s",
                        len(skipped), ", ".join(skipped))
     if "custom_rules_text" in changed:
         state.custom_rules = _load_rules_from_text(state.custom_rules_text)
@@ -859,12 +887,12 @@ _PRESET_KEYS = [
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
-    "profit_increment", "profit_threshold",
+    "profit_increment", "profit_threshold", "profit_increment_scope",
     "recurring", "recurring_delay", "streak_reset_losses", "streak_reset_delay",
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "basebet_pct", "milestone_bets", "milestone_wins", "milestone_losses",
     "milestone_profit",
-    # v1.12.0 — WolfBet v2.26.0 / v2.27.0 (proxy stays out: a preset must
+    # v1.12.0 -- WolfBet v2.26.0 / v2.27.0 (proxy stays out: a preset must
     # not swap the network path the CF cookies were solved on)
     "purge_days", "db_write_mode",
 ]
@@ -918,7 +946,7 @@ COND_TYPES = {
 
 SEQ_MODES = {
     "1": ("every",         "Every N (total count)"),
-    "2": ("every_streak",  "Every N in streak (N, 2N, 3N…)"),
+    "2": ("every_streak",  "Every N in streak (N, 2N, 3N...)"),
     "3": ("first_streak",  "First streak of N (once, resets on flip)"),
     "4": ("streak_above",  "Streak above N (every bet past N)"),
     "5": ("streak_below",  "Streak below N"),
@@ -1181,7 +1209,7 @@ def apply_rules(bet_state: str):
                 elif trig == "bet":
                     triggered = (state.total_bets > 0 and state.total_bets % int(n) == 0)
             elif rule.cond_mode == "every_streak":
-                # Fires at every Nth bet in the streak (N, 2N, 3N…)
+                # Fires at every Nth bet in the streak (N, 2N, 3N...)
                 if trig == "win" and bet_state == "win":
                     triggered = (streak > 0 and streak % int(n) == 0)
                 elif trig == "loss" and bet_state == "loss":
@@ -1398,6 +1426,13 @@ class BotState:
         self.profit_increment    : Optional[float] = None
         self.profit_threshold    : Optional[float] = None
         self.next_profit_milestone: float = 0.0
+        # v1.15.0 -- run-wide increment: profit summed across sessions since
+        # the run started (kept in RUN_PATH until `--run-reset`).
+        self.profit_increment_scope = "session"
+        self.run_first_session: Optional[int] = None
+        self.run_since        : Optional[str] = None
+        self.run_bumps        = 0
+        self.run_profit_done  = 0.0
 
         # -- v1.10.0: WolfBet session behaviour (v2.16.0 .. v2.32.0) --
         self.streak_delay_loss: tuple = (0, 0.0)   # (N, sec): sleep after every N-loss streak
@@ -1586,7 +1621,7 @@ def _check_risky_config() -> list:
             "No `max_loss` set -- Martingale-style strategies can drain balance "
             "on a bad streak. Consider `maxloss <amount>` (T hotkey or --config-set)."
         )
-    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — with a split budget a lane may
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- with a split budget a lane may
     # only risk its share of the balance.
     split = split_budget_on(state.lanes_count, state.lane_split)
     bank = state.current_balance / state.lanes_count if split else state.current_balance
@@ -1660,6 +1695,8 @@ _TWEAK_ALIAS = {
     "msprofit":    "milestone_profit",
     "pi":          "profit_increment",
     "pt":          "profit_threshold",
+    "piscope":     "profit_increment_scope",
+    "pscope":      "profit_increment_scope",
     "basebet":     "base_bet",
     "multiplier":  "multiplier_target",
     "mult":        "multiplier_target",
@@ -1678,7 +1715,8 @@ _TWEAK_PARAMS = {
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
-    "profit_increment", "profit_threshold", "recurring", "recurring_delay",
+    "profit_increment", "profit_threshold", "profit_increment_scope",
+    "recurring", "recurring_delay",
     "streak_reset_losses", "streak_reset_delay",
     "base_bet", "multiplier_target", "loss_mult", "win_mult",
     "proxy", "purge_days", "db_write_mode",
@@ -1770,15 +1808,25 @@ def _apply_mutation(changes: dict) -> list:
     if "profit_increment" in changes:
         v = changes["profit_increment"]
         state.profit_increment = None if _is_off(v) else _num("profit_increment", v)
+        if state.profit_increment is not None and state.profit_increment <= 0:
+            state.profit_increment = None          # v1.15.0 -- 0 / 0.0 means off
         msgs.append(f"Profit increment: {state.profit_increment:.8f}"
                     if state.profit_increment else "Profit increment: off")
     if "profit_threshold" in changes:
         v = changes["profit_threshold"]
         state.profit_threshold = None if _is_off(v) else _num("profit_threshold", v)
+        if state.profit_threshold is not None and state.profit_threshold <= 0:
+            state.profit_threshold = None          # v1.15.0 -- 0 / 0.0 means off
         if state.profit_threshold:
-            state.next_profit_milestone = state.profit_threshold
+            # run scope: next milestone after the bumps already made
+            done = state.run_bumps if state.profit_increment_scope == "run" else 0
+            state.next_profit_milestone = next_milestone(done, state.profit_threshold)
         msgs.append(f"Profit threshold: {state.profit_threshold:.8f}"
                     if state.profit_threshold else "Profit threshold: off")
+    if "profit_increment_scope" in changes:
+        state.profit_increment_scope = parse_scope(changes["profit_increment_scope"])
+        msgs.append(f"Profit increment scope: {state.profit_increment_scope} "
+                    "(applies on next start)")
 
     if "recurring" in changes:
         state.recurring = str(changes["recurring"]).strip().lower() in ("on", "true", "yes", "y", "1")
@@ -1982,7 +2030,7 @@ def _cf_reauth(try_all_bases, err):
                     return base5, None
                 err = err5
 
-    # Pass 6: nodriver (most aggressive CF bypass — patched Chrome via CDP)
+    # Pass 6: nodriver (most aggressive CF bypass -- patched Chrome via CDP)
     if "403" in str(err):
         try:
             import nodriver  # noqa: F401
@@ -2050,7 +2098,7 @@ def api_test_connection() -> bool:
             "    2. Cloudflare Worker proxy (free, 5 min setup, 100K req/day):\n"
             "         Deploy cloudflare-worker/proxy.js → re-run with:\n"
             "         python3 stake.py --api-base https://<your-worker>.workers.dev\n"
-            "         Workers run on CF's own network — they bypass IP scoring entirely.\n"
+            "         Workers run on CF's own network -- they bypass IP scoring entirely.\n"
             "    3. Run from your local machine (free, your home IP works):\n"
             "         git clone the repo and run python3 stake.py there.\n"
             "    4. ProtonVPN free tier (free, residential exits in 3 countries):\n"
@@ -2194,7 +2242,7 @@ def should_stop() -> tuple:
     if streak_reset_triggered(state.current_streak, state.last_broken_loss_streak,
                               state.streak_reset_losses, p):
         return True, streak_reset_stop_reason(state.last_broken_loss_streak)
-    # v1.13.0 (wolfbet v2.35.0) — split budget: a lane may only risk its share.
+    # v1.13.0 (wolfbet v2.35.0) -- split budget: a lane may only risk its share.
     # Not on the restart whitelist, so the lane stops for good.
     over, reason = lane_budget_exceeded(state.current_bet, lane_equity_now())
     if over:
@@ -2206,8 +2254,150 @@ def lane_equity_now() -> Optional[float]:
     Stake's bet reply carries no balance, so equity comes from lane profit."""
     return lane_equity(state.lane_share, state.lane_run_profit, state.profit)
 
+# ── v1.15.0 -- run-wide profit increment ───────────────────
+def _increment_on() -> bool:
+    """Increment active only with both values set and > 0."""
+    return increment_on(state.profit_increment, state.profit_threshold)
+
+
+def _run_path(lane: int = None) -> str:
+    """This lane's run file (lane 1 keeps the classic path)."""
+    return run_path(RUN_PATH, getattr(state, "lane", 1) if lane is None else lane)
+
+
+def _save_run() -> None:
+    if state.run_first_session is None:
+        return
+    try:
+        save_run(_run_path(), {"first_session": state.run_first_session,
+                               "started_at": state.run_since,
+                               "bumps": state.run_bumps})
+    except OSError as e:
+        logger.warning("run file save failed: %s", e)
+
+
+def _run_profit_done_from_db(first_sid: int) -> float:
+    """Sum of this lane's session profits since `first_sid` (this one excluded)."""
+    conn = _db_conn()
+    try:
+        return run_profit_done(conn, first_sid, state.session_id, state.lane)
+    finally:
+        conn.close()
+
+
+def _run_max_session_id() -> int:
+    conn = _db_conn()
+    try:
+        return db_max_session_id(conn)
+    finally:
+        conn.close()
+
+
+def run_profit_total() -> float:
+    """Run total: the run's finished sessions plus the live session."""
+    return state.run_profit_done + state.profit
+
+
+def _check_profit_increment() -> None:
+    """Bump base_bet when profit reaches the next milestone. Caller holds state.lock.
+
+    Scope "session" measures this session's profit (milestone reset each
+    recurring cycle); scope "run" measures the total since the run started and
+    keeps each bump in the run file. Stake has no server-side auto-bet, so a
+    bumped base bet applies to the next bet.
+    """
+    if not _increment_on():
+        return
+    run = state.profit_increment_scope == "run"
+    bumped, base, milestone, bumps = check_profit_increment(
+        run_profit_total() if run else state.profit,
+        state.next_profit_milestone, state.profit_threshold,
+        state.profit_increment, state.base_bet, state.run_bumps)
+    if not bumped:
+        return
+    state.base_bet = base
+    state.next_profit_milestone = milestone
+    if run:
+        state.run_bumps = bumps
+        _save_run()
+    logger.info("%s: base_bet -> %.8f (next milestone at %.8f profit)",
+                "RUN PROFIT INCREMENT" if run else "PROFIT INCREMENT",
+                state.base_bet, state.next_profit_milestone)
+
+
+def _init_run() -> None:
+    """Restore (or prepare) the run before the first session row starts.
+
+    Scope "run" only. A saved run puts its bumps on top of the loaded base bet
+    and loads the profit of its finished sessions. A file pointing past the
+    DB's last session (the stats were reset) starts a new run. Off or
+    per-session scope removes a leftover run so old bumps never come back.
+    """
+    state.run_first_session = None
+    state.run_bumps = 0
+    state.run_profit_done = 0.0
+    if state.profit_increment_scope != "run" or not _increment_on():
+        _end_run("increment off" if state.profit_increment_scope == "run"
+                 else "scope session")
+        return
+    run = load_run(_run_path())
+    if run and run_is_stale(run, _run_max_session_id()):
+        logger.warning("RUN file points past the stats DB (reset?) -- starting a new run")
+        run = None
+    if run:
+        state.run_first_session = run["first_session"]
+        state.run_since = run["started_at"]
+        state.run_bumps = run["bumps"]
+        state.run_profit_done = _run_profit_done_from_db(run["first_session"])
+        state.base_bet = resume_base_bet(state.base_bet, state.run_bumps,
+                                         state.profit_increment)
+        state.current_bet = state.base_bet
+    state.next_profit_milestone = next_milestone(state.run_bumps, state.profit_threshold)
+    logger.warning("RUN %s  since #%s  bumps=%d  run profit=%+.8f  base_bet=%.8f",
+                   "resumed" if run else "new", state.run_first_session or "next",
+                   state.run_bumps, state.run_profit_done, state.base_bet)
+
+
+def _end_run(reason: str) -> None:
+    """Drop this lane's run: file removed, run counters cleared."""
+    had = state.run_first_session is not None
+    try:
+        os.remove(_run_path())
+        had = True
+    except OSError:
+        pass
+    state.run_first_session = None
+    state.run_since = None
+    state.run_bumps = 0
+    state.run_profit_done = 0.0
+    if had:
+        logger.warning("RUN ended (%s) -- the next run starts fresh", reason)
+
+
+def _attach_run(session_id: int) -> None:
+    """A new run begins at the first session this bot starts."""
+    if (state.profit_increment_scope == "run" and _increment_on()
+            and state.run_first_session is None and session_id):
+        state.run_first_session = session_id
+        state.run_since = datetime.now().isoformat()
+        _save_run()
+
+
+def cmd_run_reset(lane: int = None) -> int:
+    """Delete the run file(s): the next start begins a new run. Returns count removed."""
+    n = 0
+    for k in ([lane] if lane else range(1, LANES_MAX + 1)):
+        try:
+            os.remove(run_path(RUN_PATH, k))
+            n += 1
+        except OSError:
+            continue
+    console.print(f"[green]Run reset[/] -- {n} run file(s) removed. "
+                  "The next start begins a new run total.")
+    return n
+
 def _init_lane_budget() -> None:
-    """v1.13.0 (wolfbet v2.35.0) — fix this lane's share of the balance at bot
+    """v1.13.0 (wolfbet v2.35.0) -- fix this lane's share of the balance at bot
     start. The balance is the account's, read via GraphQL UserBalances."""
     state.lane_share = lane_share(state.current_balance, state.lanes_count, state.lane_split)
     if state.lane_share is not None:
@@ -2219,8 +2409,8 @@ def _apply_basebet_pct() -> bool:
     """Set base bet to balance x basebet_pct. True when it changed (WolfBet v2.16.0)."""
     if state.basebet_pct <= 0 or state.current_balance <= 0:
         return False
-    # v1.13.0 (wolfbet v2.36.0) — bet split divides by the lane count.
-    # v1.14.0 — a split bet that rounds to 0 or is below MIN_BET stays full.
+    # v1.13.0 (wolfbet v2.36.0) -- bet split divides by the lane count.
+    # v1.14.0 -- a split bet that rounds to 0 or is below MIN_BET stays full.
     new_base, note = split_base_bet(
         round(state.current_balance * state.basebet_pct, 8),
         state.lanes_count, state.lane_split, False, MIN_BET)
@@ -2288,9 +2478,12 @@ def _reset_session_for_recurring(delay: float) -> bool:
         state.session_bet_ended_at = None
         state.session_pause_started_at = None
         state.start_balance = state.highest_balance = state.lowest_balance = state.current_balance
-        # v1.13.0 (wolfbet v2.35.0) — lane equity carries the lane's result.
+        # v1.13.0 (wolfbet v2.35.0) -- lane equity carries the lane's result.
         state.lane_run_profit += state.profit
+        # v1.15.0 -- the run total keeps the finished session's result.
+        state.run_profit_done += state.profit
         state.session_id = _db_start_session()
+        _attach_run(state.session_id)
         state.session_start = time.time()
         state.total_bets = state.wins = state.losses = 0
         state.wagered = state.profit = 0.0
@@ -2303,7 +2496,8 @@ def _reset_session_for_recurring(delay: float) -> bool:
         state.current_bet = state.base_bet          # bumped base kept
         state.dalembert_unit = state.paroli_count = 0
         state._last_profit_milestone = 0.0
-        if state.profit_threshold:
+        # v1.15.0 -- run scope keeps its milestone across sessions.
+        if state.profit_threshold and state.profit_increment_scope != "run":
             state.next_profit_milestone = state.profit_threshold
         state.consecutive_errors = 0
         state.backoff_delay = 1.0
@@ -2414,11 +2608,7 @@ def betting_loop():
                 state.lowest_balance = new_balance
 
             # profit-based base bet increment
-            if (state.profit_increment and state.profit_threshold
-                    and state.profit >= state.next_profit_milestone):
-                state.base_bet += state.profit_increment
-                state.next_profit_milestone += state.profit_threshold
-                logger.info("PROFIT INCREMENT: base_bet -> %.8f", state.base_bet)
+            _check_profit_increment()
 
             if state.total_bets % 5 == 0:
                 state.profit_history.append(state.profit)
@@ -2492,7 +2682,7 @@ def betting_loop():
         if state.strategy_key == "7" and state.custom_rules:
             apply_rules(bet_state)
 
-        # calculate next bet — no cap, API rejects if insufficient balance
+        # calculate next bet -- no cap, API rejects if insufficient balance
         raw_next  = compute_next_bet(bet_state)
         next_bet  = max(state.base_bet, raw_next)
         sb_factor = streakbet_loss_factor(state.current_streak, state.streakbet_loss)
@@ -2512,7 +2702,7 @@ def betting_loop():
 def _db_conn():
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.execute("PRAGMA journal_mode=WAL")
-    # v1.8.0 — mirrors wolfbet v2.27.0. WAL-safe.
+    # v1.8.0 -- mirrors wolfbet v2.27.0. WAL-safe.
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA cache_size = -32000")
@@ -2757,6 +2947,11 @@ def _save_state_file():
             "stop_on_balance": state.stop_on_balance,
             "profit_increment": state.profit_increment,
             "profit_threshold": state.profit_threshold,
+            # v1.15.0 -- run-wide profit increment
+            "profit_increment_scope": state.profit_increment_scope,
+            "run_profit_total": run_profit_total(),
+            "run_first_session": state.run_first_session,
+            "run_bumps": state.run_bumps,
             "rule_count": len(state.custom_rules) if state.strategy_key == "7" else 0,
             "rule_descriptions": [r.description for r in state.custom_rules] if state.strategy_key == "7" else [],
             "next_profit_milestone": state.next_profit_milestone,
@@ -2773,7 +2968,7 @@ def _save_state_file():
             "milestone_wins": state.milestone_wins or None,
             "milestone_losses": state.milestone_losses or None,
             "milestone_profit": state.milestone_profit or None,
-            # v1.12.0 — observability (WolfBet v2.17.0 / v2.30.3-5)
+            # v1.12.0 -- observability (WolfBet v2.17.0 / v2.30.3-5)
             "api_ms":              state._last_api_ms,
             "api_avg_ms":          _compute_api_avg(),
             "api_peak_ms":         state.peak_api_ms,
@@ -2793,7 +2988,7 @@ def _save_state_file():
             "db_writer_stats":     dict(_bet_writer_stats),
             "db_writer_queue":     _bet_write_queue.qsize(),
             "purge_days":          state.purge_days,
-            # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — parallel lanes
+            # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- parallel lanes
             "lane":                state.lane,
             "lanes_count":         state.lanes_count,
             "lane_share":          state.lane_share,
@@ -2896,10 +3091,14 @@ def _build_config_progress_row(d: dict) -> str:
         next_ms      = float(d.get("next_profit_milestone") or threshold)
         window_start = max(0.0, next_ms - threshold)
         profit       = float(d.get("profit", 0.0) or 0.0)
+        # v1.15.0 -- run scope measures the total since the run started.
+        run_scope    = d.get("profit_increment_scope") == "run"
+        if run_scope:
+            profit = float(d.get("run_profit_total", profit) or 0.0)
         progress     = max(0.0, profit - window_start)
         pct = min(100.0, progress / threshold * 100) if threshold > 0 else 0.0
         segments.append(
-            f"{_a('dim','Ms')} "
+            f"{_a('dim','RunMs' if run_scope else 'Ms')} "
             f"{_a(_pct_color(pct), f'+{progress:.8f}/{threshold:.8f} ({pct:.0f}%)')}"
         )
 
@@ -2977,6 +3176,8 @@ def _state_dict_from_botstate() -> dict:
         "profit": state.profit,
         "profit_threshold": getattr(state, "profit_threshold", None),
         "profit_increment": getattr(state, "profit_increment", None),
+        "profit_increment_scope": getattr(state, "profit_increment_scope", "session"),
+        "run_profit_total": run_profit_total(),
         "next_profit_milestone": state.next_profit_milestone,
         "max_profit": getattr(state, "max_profit", None),
         "max_loss": getattr(state, "max_loss", None),
@@ -3715,7 +3916,7 @@ def setup_wizard():
         console.print("  [dim]You need 3 things from browser DevTools (Network tab):[/]")
         console.print("    [yellow]1.[/] x-access-token  [dim](request header)[/]")
         console.print("    [yellow]2.[/] x-lockdown-token  [dim](request header)[/]")
-        console.print("    [yellow]3.[/] Cookie  [dim](full cookie string — needed for Cloudflare)[/]")
+        console.print("    [yellow]3.[/] Cookie  [dim](full cookie string -- needed for Cloudflare)[/]")
         console.print()
         console.print("  [dim]Tip: In DevTools > Network, click any request to stake.com,[/]")
         console.print("  [dim]go to Headers tab, and copy the values from Request Headers.[/]")
@@ -3749,7 +3950,7 @@ def setup_wizard():
 
                 console.print()
                 console.print("  [dim]Now paste the full cookie string (the entire 'cookie:' header value).[/]")
-                console.print("  [dim]It's long — that's normal. Just paste the whole thing.[/]")
+                console.print("  [dim]It's long -- that's normal. Just paste the whole thing.[/]")
                 v = _ask("Paste your cookie string")
                 if v is _BACK:
                     return False
@@ -3770,17 +3971,17 @@ def setup_wizard():
 
             console.print()
             console.print("  [dim]Now paste the full cookie string (the entire 'cookie:' header value).[/]")
-            console.print("  [dim]It's long — that's normal. Just paste the whole thing.[/]")
+            console.print("  [dim]It's long -- that's normal. Just paste the whole thing.[/]")
             v = _ask("Paste your cookie string")
             if v is _BACK:
                 return False
             state.cookie = v
             saved_cookie = v
 
-        # Proxy (optional — needed when server IP is CF-blocked)
+        # Proxy (optional -- needed when server IP is CF-blocked)
         saved_proxy = state.proxy or ""
         console.print()
-        console.print("  [dim]Proxy (optional — socks5://host:port or http://user:pass@host:port).[/]")
+        console.print("  [dim]Proxy (optional -- socks5://host:port or http://user:pass@host:port).[/]")
         console.print("  [dim]Required if this bot runs on a server with a blocked IP. Press Enter to skip.[/]")
         while True:
             v = _ask("Proxy URL", default=saved_proxy or "")
@@ -3832,7 +4033,7 @@ def setup_wizard():
         console.print(Rule("[bold cyan]Step 3 / 8 -- Currency & Balance[/]"))
 
         # Fetch balances from API
-        console.print("  [dim]Fetching balances from Stake.com…[/]")
+        console.print("  [dim]Fetching balances from Stake.com...[/]")
         balances = api_get_balances()
 
         if balances:
@@ -4144,8 +4345,16 @@ def setup_wizard():
             return False
         state.profit_increment = float(v) if v else None
 
+        if state.profit_threshold and state.profit_increment:
+            v = _ask("Measure profit per session or across the whole run? (session/run)",
+                     default=state.profit_increment_scope or "session",
+                     choices=list(PROFIT_INCREMENT_SCOPES) + ["back"])
+            if v is _BACK or v == "back":
+                return False
+            state.profit_increment_scope = parse_scope(v)
+
         if state.profit_threshold:
-            state.next_profit_milestone = state.profit_threshold
+            state.next_profit_milestone = next_milestone(0, state.profit_threshold)
 
         console.print()
         return True
@@ -4180,7 +4389,8 @@ def setup_wizard():
             ("Max bets",         str(state.max_bets)   if state.max_bets   else "Unlimited"),
             ("Max wins",         str(state.max_wins)   if state.max_wins   else "Unlimited"),
             ("Min balance",      str(state.stop_on_balance) if state.stop_on_balance else "--"),
-            ("Profit increment", f"+{state.profit_increment:.8f} every {state.profit_threshold} profit"
+            ("Profit increment", f"+{state.profit_increment:.8f} every {state.profit_threshold} "
+                                 f"{'run ' if state.profit_increment_scope == 'run' else ''}profit"
                 if state.profit_increment and state.profit_threshold else "--"),
         ]
         for k, val in rows:
@@ -4517,14 +4727,14 @@ def cmd_session_bets(session_id: int):
 
     pc = "green" if profit >= 0 else "red"
     ps = "+" if profit >= 0 else ""
-    wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+    wr = f"{wins/bets*100:.1f}%" if bets > 0 else "--"
     avg_pnl = profit / bets if bets > 0 else 0
     avg_c = "green" if avg_pnl >= 0 else "red"
     avg_s = "+" if avg_pnl >= 0 else ""
     game_label = GAMES.get(game, {}).get("label", game or "?")
 
     # compute uptime
-    uptime_str = "—"
+    uptime_str = "--"
     try:
         t0 = datetime.fromisoformat(started) if started else None
         t1 = datetime.fromisoformat(ended) if ended else datetime.now()
@@ -4536,7 +4746,7 @@ def cmd_session_bets(session_id: int):
     except Exception:
         pass
 
-    console.print(Rule(f"[bold cyan]Session #{sid} — Full Stats[/]"))
+    console.print(Rule(f"[bold cyan]Session #{sid} -- Full Stats[/]"))
     console.print(f"  [dim]Started:[/]       {(started or '?').replace('T', ' ')}")
     console.print(f"  [dim]Ended:[/]         {(ended or 'running').replace('T', ' ')}")
     console.print(f"  [dim]Uptime:[/]        {uptime_str}")
@@ -5013,7 +5223,7 @@ def cmd_monitor():
 
 # ── cmd_status ────────────────────────────────────────────
 def _read_lane_states() -> list:
-    """v1.13.0 (wolfbet v2.35.0) — [(lane, state-dict | None, alive)] for lanes
+    """v1.13.0 (wolfbet v2.35.0) -- [(lane, state-dict | None, alive)] for lanes
     1..LANES_MAX that have a state file."""
     out = []
     for k in range(1, LANES_MAX + 1):
@@ -5038,7 +5248,7 @@ def _read_lane_states() -> list:
 
 
 def cmd_lanes_status():
-    """v1.13.0 (wolfbet v2.35.0) — one row per lane + totals. No Pace column:
+    """v1.13.0 (wolfbet v2.35.0) -- one row per lane + totals. No Pace column:
     Stake sends no rate-limit quota headers, so there is no soft pacing."""
     rows = _read_lane_states()
     if not rows:
@@ -5123,7 +5333,7 @@ def cmd_status():
     elif cs < 0:
         sk_now = f"L{cs}"
     else:
-        sk_now = "—"
+        sk_now = "--"
 
     # Game info string
     game = d.get("game", "limbo")
@@ -5182,7 +5392,7 @@ def cmd_status():
         ("Speed",          f"{bps:.1f}/s  {bpm:.0f}/m  Range: {lw_bps}-{pk_bps}/s  {lw_bpm}-{pk_bpm}/m"),
     ]
 
-    # v1.12.0 — observability from the state file (WolfBet v2.26.1 / v2.30.3)
+    # v1.12.0 -- observability from the state file (WolfBet v2.26.1 / v2.30.3)
     api_p50, api_p99, api_peak = d.get("api_p50_ms"), d.get("api_p99_ms"), d.get("api_peak_ms")
     if api_p50 or api_peak:
         rows.append(("API", f"p50 [cyan]{api_p50 or 0:.0f}ms[/]  · "
@@ -5225,7 +5435,16 @@ def cmd_status():
     pi = d.get("profit_increment")
     pt = d.get("profit_threshold")
     if pi and pt:
-        rows.append(("Profit Bump",   f"+{pi:.8f} every {pt} profit"))
+        if d.get("profit_increment_scope") == "run":
+            rows.append(("Profit Bump", f"+{pi:.8f} every {pt} run profit"))
+            nxt = d.get("next_profit_milestone")
+            rows.append(("Run Profit",
+                         f"{float(d.get('run_profit_total') or 0):+.8f}  "
+                         f"[dim](since #{d.get('run_first_session') or '?'}, "
+                         f"{d.get('run_bumps') or 0} bump(s)"
+                         + (f", next at {float(nxt):+.8f}" if nxt else "") + ")[/]"))
+        else:
+            rows.append(("Profit Bump", f"+{pi:.8f} every {pt} profit"))
     if d.get("recurring"):
         rows.append(("Recurring", f"on, {d.get('recurring_delay_sec', 0)}s pause"))
     if d.get("streak_reset_losses"):
@@ -5288,7 +5507,7 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found.[/]")
         return
-    init_db()  # v1.11.0 — adds sessions.lane on older DBs
+    init_db()  # v1.11.0 -- adds sessions.lane on older DBs
     try:
         where, params, window_label = stats_date_window(since, until, lane)
     except ValueError as e:
@@ -5350,7 +5569,7 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
         s_low_bpm = int(s_low_bpm or 0)
         pc = "green" if profit >= 0 else "red"
         ps = "+" if profit >= 0 else ""
-        wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+        wr = f"{wins/bets*100:.1f}%" if bets > 0 else "--"
         avg_pnl = profit / bets if bets > 0 else 0
         avg_c = "green" if avg_pnl >= 0 else "red"
         avg_s = "+" if avg_pnl >= 0 else ""
@@ -5378,7 +5597,7 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
         console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}  [dim]Best Win:[/] [green]+{hi_win:.8f}[/]  [dim]Worst Loss:[/] [red]-{big_loss:.8f}[/]")
         console.print()
 
-    # totals — same window as the listing; time span / bet time (WolfBet v2.34.0)
+    # totals -- same window as the listing; time span / bet time (WolfBet v2.34.0)
     span_first, span_last, span_sec, bet_sec = sessions_time_span(conn, where, params)
     totals = conn.execute(f"""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
@@ -5403,7 +5622,7 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
         max_wins_s, avg_wins_s, max_losses_s, avg_losses_s = totals
     pc = "green" if tot_profit >= 0 else "red"
     ps = "+" if tot_profit >= 0 else ""
-    wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "—"
+    wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "--"
     bp_c = "green" if best_profit >= 0 else "red"
     wp_c = "green" if worst_profit >= 0 else "red"
     avg_pnl = tot_profit / tot_bets if tot_bets > 0 else 0
@@ -5502,7 +5721,7 @@ def _analytics_by_strategy(where: str = "", params=()) -> list:
 
 
 def _analytics_by_lane(where: str = "", params=()) -> list:
-    """v1.11.0 — sessions per parallel lane (rows before lanes count as lane 1)."""
+    """v1.11.0 -- sessions per parallel lane (rows before lanes count as lane 1)."""
     rows = _analytics_group("COALESCE(lane, 1)", "lane", "1", where, params)
     for r in rows:
         r["lane"] = f"Lane {r['lane']}"
@@ -5547,7 +5766,7 @@ def _print_analytics_table(title: str, rows: list, key_attr: str, key_label: str
     t.add_column("P/L",      justify="right")
     t.add_column("Wagered",  justify="right")
     for r in rows:
-        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "—"
+        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "--"
         pc = 'green' if r['profit'] >= 0 else 'red'
         ps = '+' if r['profit'] >= 0 else ''
         t.add_row(str(r[key_attr]), f"{r['sessions']:,}", f"{r['bets']:,}",
@@ -5568,7 +5787,7 @@ def _print_top_sessions_table(title: str, rows: list):
     t.add_column("Wagered",  justify="right")
     t.add_column("Started",  style="dim")
     for r in rows:
-        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "—"
+        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "--"
         pc = 'green' if r['profit'] >= 0 else 'red'
         ps = '+' if r['profit'] >= 0 else ''
         started_short = (r['started_at'] or "").replace("T", " ")[:19]
@@ -5581,7 +5800,7 @@ def _print_top_sessions_table(title: str, rows: list):
 def cmd_analytics(since: str = None, until: str = None, lane: int = None):
     """Aggregates over all saved sessions, optionally windowed / per lane."""
     if not os.path.exists(DB_PATH):
-        console.print("[yellow]No database found — run a session first.[/]")
+        console.print("[yellow]No database found -- run a session first.[/]")
         return
     init_db()  # sessions.lane on DBs the bot hasn't opened yet
     try:
@@ -5591,11 +5810,11 @@ def cmd_analytics(since: str = None, until: str = None, lane: int = None):
         return
     lifetime = _analytics_lifetime(where, wparams)
     if lifetime["sessions_total"] == 0:
-        console.print("[yellow]No sessions in the DB yet — run a session first.[/]")
+        console.print("[yellow]No sessions in the DB yet -- run a session first.[/]")
         return
 
     console.print(Rule(
-        f"[bold cyan]{'Range' if (since or until or lane) else 'Lifetime'} analytics[/] — "
+        f"[bold cyan]{'Range' if (since or until or lane) else 'Lifetime'} analytics[/] -- "
         f"{lifetime['sessions_total']:,} sessions, "
         f"{lifetime['bets_total']:,} bets, {lifetime['wagered_total']:.8f} wagered"
         f"{wlabel}"))
@@ -5664,6 +5883,7 @@ _CONFIG_SHOW_FIELDS = [
     ("stop_on_balance",       "Stop when balance floor reached"),
     ("profit_increment",      "Bump base_bet by this at every profit milestone"),
     ("profit_threshold",      "Profit interval between increments"),
+    ("profit_increment_scope", "session = each session's profit - run = total since run start (--run-reset)"),
     ("recurring",             "Auto-restart cycle on non-loss stop"),
     ("recurring_delay",       "Seconds to pause between recurring cycles (0 = back-to-back)"),
     ("streak_reset_losses",   "Restart session on first win after N losses in a row (profit >= 0)"),
@@ -5732,7 +5952,7 @@ def cmd_config_show():
                       f"[dim]mode={oct(st.st_mode & 0o777)}  size={st.st_size}B[/]")
     except OSError:
         pass
-    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — lane count, split mode, overrides.
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- lane count, split mode, overrides.
     raw = _read_config_raw() or {}
     n_lanes, mode = lanes_count(raw), lane_split(raw)
     console.print(f"\n[dim]Lanes:[/] [bold]{n_lanes}[/]  [dim]split:[/] [bold]{mode}[/]"
@@ -5771,7 +5991,7 @@ def cmd_config_set(pairs: list):
             console.print("[dim]  Credentials are set in the wizard (python3 stake.py --setup-only), "
                           "never in shell history / process args.[/]")
             sys.exit(2)
-    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) — lanes=N, lane_split=MODE and
+    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- lanes=N, lane_split=MODE and
     # laneK.key=value write the lanes block directly.
     try:
         pairs, per_lane, count, split = split_lane_pairs(pairs)
@@ -5830,7 +6050,7 @@ def cmd_config_set(pairs: list):
     except (OSError, ValueError):
         console.print("[dim]Daemon PID stale; changes apply on next start.[/]")
     finally:
-        # v1.13.0 (wolfbet v2.35.0) — the base config is shared: reload lanes 2..N too.
+        # v1.13.0 (wolfbet v2.35.0) -- the base config is shared: reload lanes 2..N too.
         n_lanes = _signal_lane_daemons(range(2, LANES_MAX + 1))
         if n_lanes:
             console.print(f"[dim]{n_lanes} more lane(s) reloaded live config.[/]")
@@ -5852,7 +6072,7 @@ def _write_config_raw(data: dict) -> None:
 
 
 def _lane_override_changes(lane_pairs: list):
-    """v1.13.0 (wolfbet v2.35.0) — validate laneK.* pairs through the normal
+    """v1.13.0 (wolfbet v2.35.0) -- validate laneK.* pairs through the normal
     mutation path. Returns (sets, removals): sets = {key: config-file value},
     including derived fields (dice_target after multiplier); removals = keys
     whose override goes away (value default / unset / inherit)."""
@@ -6032,7 +6252,7 @@ def _bench_lanes(n: int, lanes: int) -> dict:
 
 
 def cmd_benchmark_lanes(n: int, lanes: int):
-    """v1.13.0 (wolfbet v2.35.0 `--benchmark --lanes M`) — probe at 1..M
+    """v1.13.0 (wolfbet v2.35.0 `--benchmark --lanes M`) -- probe at 1..M
     concurrent clients and recommend a lane count. Read-only, no CF solver."""
     lanes = max(2, min(LANES_MAX, int(lanes)))
     console.print(f"[dim]Benchmarking {n} x GraphQL UserBalances per client at 1..{lanes} "
@@ -6254,6 +6474,9 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--status",  action="store_true", help="Show status of running session")
     group.add_argument("--stop",    action="store_true", help="Stop a running daemon session")
+    group.add_argument("--run-reset", action="store_true",
+                       help="Start a new run total for the run-wide profit increment "
+                            "(all lanes, or --lane K)")
     group.add_argument("--list-presets", action="store_true", help="List saved presets")
     group.add_argument("--stats",   action="store_true", help="Show all-time session statistics")
     group.add_argument("--analytics", action="store_true",
@@ -6307,7 +6530,7 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
-    # v1.13.0 (wolfbet v2.35.0) — pick the lane before any command so status /
+    # v1.13.0 (wolfbet v2.35.0) -- pick the lane before any command so status /
     # monitor / stop / diagnose / the daemon all use that lane's files.
     try:
         _apply_lane(args.lane)
@@ -6339,6 +6562,9 @@ def main():
         return
     if args.stop:
         cmd_stop()
+        return
+    if args.run_reset:
+        cmd_run_reset(args.lane)
         return
     if args.list_presets:
         cmd_list_presets()
@@ -6402,7 +6628,7 @@ def main():
             else:
                 console.print("[red]No access token found. Run wizard first.[/]")
                 sys.exit(1)
-        # v1.13.0 — a preset run still counts the saved lanes (count / split);
+        # v1.13.0 -- a preset run still counts the saved lanes (count / split);
         # lane overrides are not applied on top of an explicit preset.
         state.lanes_count, state.lane_split = lanes_count(saved), lane_split(saved)
         if saved.get("proxy") and not args.proxy:
@@ -6428,7 +6654,7 @@ def main():
         console.print("[yellow]Proxy set but curl_cffi is not installed -- the proxy is ignored. "
                       "Install it: pip install curl_cffi[/]")
 
-    # v1.13.0 (wolfbet v2.35.0) — fix the lane's budget share, then stagger
+    # v1.13.0 (wolfbet v2.35.0) -- fix the lane's budget share, then stagger
     # lane K's first bet by (K-1)*2 s so lanes don't start in lock-step.
     if split_budget_on(state.lanes_count, state.lane_split) and state.current_balance <= 0:
         _refresh_balance()          # --preset never reads the balance otherwise
@@ -6436,7 +6662,9 @@ def main():
     if state.lane > 1:
         time.sleep((state.lane - 1) * 2.0)
 
+    _init_run()           # v1.15.0 -- restore the run-wide increment (scope run)
     state.session_id    = _db_start_session()
+    _attach_run(state.session_id)
     state.session_start = time.time()
     state.run_started_at = state.session_start
     state.initial_multiplier = state.multiplier_target
@@ -6458,7 +6686,7 @@ def main():
         state.status  = "Interrupted -- saving session..."
         logger.warning("SESSION END (signal)  bets=%d  profit=%+.8f  balance=%.8f",
                     state.total_bets, state.profit, state.current_balance)
-        _stop_bet_writer(timeout=5.0)   # v1.12.0 — drain queued bet rows
+        _stop_bet_writer(timeout=5.0)   # v1.12.0 -- drain queued bet rows
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -6480,7 +6708,7 @@ def main():
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _sig_reload)
 
-    # v1.12.0 — startup retention purge (WolfBet v2.26.0)
+    # v1.12.0 -- startup retention purge (WolfBet v2.26.0)
     try:
         purged = cleanup_old_bets(DB_PATH, bet_age_days=state.purge_days)
         if purged:
@@ -6488,7 +6716,7 @@ def main():
     except Exception as e:
         logger.warning("startup retention purge failed: %s", e)
 
-    # v1.12.0 — async bet writer (WolfBet v2.27.0)
+    # v1.12.0 -- async bet writer (WolfBet v2.27.0)
     if state.db_write_mode == "async":
         _start_bet_writer()
         logger.info("BET WRITER started (async, batch=%d)", _BET_WRITER_BATCH_SIZE)
