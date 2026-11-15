@@ -33,6 +33,7 @@ from .database import (
     load_presets, save_presets,
 )
 from core.database import init_db, cleanup_old_bets
+from shared.core.validation import finite_float
 from core.strategy import (
     STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME, StrategyRule,
     describe_rule, load_rules_from_text,
@@ -386,15 +387,44 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /config ──────────────────────────────────────────────
 CTL_NAME = "stakectl"
 REPO_DIR = os.environ.get("BOT_REPO_DIR", "/root/stake")
-DEFAULT_OWNER_ID = 680974641
+UPDATE_LOG_NAME = "update.log"
+
+
+def _owner_id() -> int | None:
+    """Configured Telegram owner id, or None when TG_OWNER_ID is missing or not numeric."""
+    owner = os.environ.get("TG_OWNER_ID", "").strip()
+    return int(owner) if owner.isdigit() else None
 
 
 def _is_owner(user_id: int) -> bool:
-    """Telegram user must match TG_OWNER_ID (env var) or the default owner."""
-    owner = os.environ.get("TG_OWNER_ID")
-    if owner and owner.isdigit():
-        return user_id == int(owner)
-    return user_id == DEFAULT_OWNER_ID
+    """True only for the explicitly configured TG_OWNER_ID."""
+    owner = _owner_id()
+    return owner is not None and user_id == owner
+
+def _validated_path(path: str, is_dir: bool) -> bool:
+    return os.path.isabs(path) and (os.path.isdir(path) if is_dir else os.path.isfile(path))
+
+
+def _update_argv(ctl_path: str, repo_dir: str, log_file: str) -> list[str]:
+    """Command for systemd-run: argv only, no shell, every value in its own element."""
+    return [
+        "systemd-run", "--user", "--collect", "--no-block",
+        f"--unit=stakedotcom-update-{int(time.time())}",
+        "--on-active=2s",
+        f"--working-directory={repo_dir}",
+        f"--property=StandardOutput=append:{log_file}",
+        f"--property=StandardError=append:{log_file}",
+        "--", ctl_path, "update",
+    ]
+
+
+def _prepare_update_log() -> str:
+    """Create the update log under the bot data dir with owner-only permissions."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    log_file = os.path.join(DATA_DIR, UPDATE_LOG_NAME)
+    fd = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.close(fd)
+    return log_file
 
 
 async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -404,21 +434,21 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Owner only.")
         return
     ctl_path = shutil.which(CTL_NAME) or f"/root/.local/bin/{CTL_NAME}"
-    if not os.path.exists(ctl_path):
+    if not _validated_path(ctl_path, False) or not os.access(ctl_path, os.X_OK):
         await update.message.reply_text(f"{CTL_NAME} not found in PATH.")
         return
-    if not shutil.which("systemd-run"):
-        await update.message.reply_text("systemd-run not found -- update manually via SSH.")
+    if not _validated_path(REPO_DIR, True):
+        logger.error("cmd_update: BOT_REPO_DIR is not an absolute existing directory: %r", REPO_DIR)
+        await update.message.reply_text("Repository directory is not configured correctly.")
         return
-    log_file = f"/tmp/{CTL_NAME}-update.log"
-    cmd = [
-        "systemd-run", "--user", "--collect", "--no-block",
-        "--", "bash", "-c",
-        f"echo \"=== Update via /update at $(date -Is) ===\" >> {log_file} 2>&1; "
-        f"sleep 2; cd {REPO_DIR} && {ctl_path} update >> {log_file} 2>&1",
-    ]
+    if not shutil.which("systemd-run"):
+        await update.message.reply_text("systemd-run not found - update manually via SSH.")
+        return
+    log_file = _prepare_update_log()
+    cmd = _update_argv(ctl_path, REPO_DIR, log_file)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True,
+                                         text=True, timeout=10)
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "no output").strip()[:300]
             logger.error("cmd_update: systemd-run rc=%d stderr=%s stdout=%s",
@@ -553,6 +583,14 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+def _finite(value, cast=float):
+    """Parse a numeric /set value, rejecting nan, inf and fractional integers."""
+    number = finite_float("value", value)
+    if cast is int and not number.is_integer():
+        raise ValueError("value must be a whole number")
+    return cast(number)
+
+
 # ── /set ─────────────────────────────────────────────────
 async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -592,7 +630,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["strategy_key"] = key
             config["strategy"] = STRATEGY_NAMES[key]
         elif param == "multiplier":
-            mult = float(value)
+            mult = _finite(value)
             if mult <= 1.0:
                 await update.message.reply_text("Multiplier must be > 1.0")
                 return
@@ -604,13 +642,13 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 config["dice_target"] = round(wc, 2)
         elif param == "basebet":
-            val = float(value)
+            val = _finite(value)
             if val < 0:
                 await update.message.reply_text("Base bet must be >= 0.")
                 return
             config["base_bet"] = val
         elif param == "dicetarget":
-            config["dice_target"] = float(value)
+            config["dice_target"] = _finite(value)
         elif param in ("dicecondition", "condition"):
             if value.lower() not in ("above", "below"):
                 await update.message.reply_text(
@@ -625,26 +663,26 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 config["dice_target"] = round(wc, 2)
         elif param == "lossmult":
-            val = float(value)
+            val = _finite(value)
             if val < 0:
                 await update.message.reply_text("Loss multiplier must be > 0.")
                 return
             config["loss_mult"] = val
         elif param == "winmult":
-            val = float(value)
+            val = _finite(value)
             if val < 0:
                 await update.message.reply_text("Win multiplier must be > 0.")
                 return
             config["win_mult"] = val
         elif param == "delay":
-            val = float(value)
+            val = _finite(value)
             if val < 0:
                 await update.message.reply_text("Delay must be >= 0.")
                 return
             config["bet_delay"] = val
         elif param == "maxprofit":
             if value.lower() != "off":
-                val = float(value)
+                val = _finite(value)
                 if val < 0:
                     await update.message.reply_text("Max profit must be > 0.")
                     return
@@ -653,7 +691,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_profit"] = None
         elif param == "maxloss":
             if value.lower() != "off":
-                val = float(value)
+                val = _finite(value)
                 if val < 0:
                     await update.message.reply_text("Max loss must be > 0.")
                     return
@@ -662,7 +700,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_loss"] = None
         elif param == "maxbets":
             if value.lower() != "off":
-                val = int(value)
+                val = _finite(value, int)
                 if val < 0:
                     await update.message.reply_text("Max bets must be > 0.")
                     return
@@ -671,7 +709,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_bets"] = None
         elif param == "maxwins":
             if value.lower() != "off":
-                val = int(value)
+                val = _finite(value, int)
                 if val < 0:
                     await update.message.reply_text("Max wins must be > 0.")
                     return
@@ -680,7 +718,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_wins"] = None
         elif param == "minbalance":
             if value.lower() != "off":
-                val = float(value)
+                val = _finite(value)
                 if val < 0:
                     await update.message.reply_text("Min balance must be >= 0.")
                     return
@@ -688,24 +726,24 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 config["stop_on_balance"] = None
         elif param == "delaythreshold":
-            config["delay_martin_threshold"] = int(value)
+            config["delay_martin_threshold"] = _finite(value, int)
         elif param in ("milestonebets", "msbets"):
-            config["milestone_bets"] = int(value)
+            config["milestone_bets"] = _finite(value, int)
         elif param in ("milestonewins", "mswins"):
-            config["milestone_wins"] = int(value)
+            config["milestone_wins"] = _finite(value, int)
         elif param in ("milestonelosses", "mslosses"):
-            config["milestone_losses"] = int(value)
+            config["milestone_losses"] = _finite(value, int)
         elif param in ("milestoneprofit", "msprofit"):
-            config["milestone_profit"] = float(value)
+            config["milestone_profit"] = _finite(value)
         elif param in ("profitthreshold", "pt"):
             # off / none / 0 all mean off (ends a run total too).
-            val = None if value.lower() in ("off", "none") else float(value)
+            val = None if value.lower() in ("off", "none") else _finite(value)
             if val is not None and val < 0:
                 await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
                 return
             config["profit_threshold"] = val or None
         elif param in ("profitincrement", "pi"):
-            val = None if value.lower() in ("off", "none") else float(value)
+            val = None if value.lower() in ("off", "none") else _finite(value)
             if val is not None and val < 0:
                 await update.message.reply_text("Profit increment must be >= 0 (or 'off').")
                 return
@@ -726,20 +764,20 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Use: `/set recurring on` or `/set recurring off`", parse_mode="Markdown")
                 return
         elif param in ("recurringdelay", "recdelay"):
-            val, note = clamp("recurring_delay", int(value), 5, RECURRING_DELAY_MAX)
+            val, note = clamp("recurring_delay", _finite(value, int), 5, RECURRING_DELAY_MAX)
             config["recurring_delay"] = int(val)
             value = str(int(val))
         elif param in ("streakreset", "srloss"):
             if value.lower() in ("off", "none", "0"):
                 config["streak_reset_losses"] = None
             else:
-                val = int(value)
+                val = _finite(value, int)
                 if val < 1:
                     await update.message.reply_text("Streak reset must be >= 1 losses (or 'off').")
                     return
                 config["streak_reset_losses"] = val
         elif param in ("streakresetdelay", "srdelay"):
-            val, note = clamp("streak_reset_delay", int(value),
+            val, note = clamp("streak_reset_delay", _finite(value, int),
                               STREAK_RESET_DELAY_MIN, RECURRING_DELAY_MAX)
             config["streak_reset_delay"] = int(val)
             value = str(int(val))
@@ -780,7 +818,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["basebet_pct"] = None
             else:
                 try:
-                    val = float(value)
+                    val = _finite(value)
                 except ValueError:
                     await update.message.reply_text("basebet_pct must be a fraction (e.g. `0.001` = 0.1% of balance)", parse_mode="Markdown")
                     return
@@ -789,7 +827,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 config["basebet_pct"] = val
         elif param in ("purgedays", "purge_days"):
-            val = int(value)
+            val = _finite(value, int)
             if val < 1 or val > 30:
                 await update.message.reply_text("Purge days must be 1-30.")
                 return

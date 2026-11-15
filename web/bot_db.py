@@ -1,4 +1,4 @@
-"""Read-only access to per-user bot SQLite databases — delegates to shared library."""
+"""Read-only access to per-user bot SQLite databases: delegates to shared library."""
 
 import sys
 from pathlib import Path
@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from .config import settings
 from shared.web.bot_db import (  # noqa: E402
+    _connect_ro as _connect_ro_shared,
     discover_users as _discover_users,
     get_user_config as _get_user_config,
     save_user_config as _save_user_config,
@@ -24,6 +25,7 @@ _CHART_COLS = "id, timestamp, amount, multiplier_target, result_value, result_di
 _TARGET_COL = "multiplier_target"
 _RESULT_COL = "result_display"
 
+_connect_ro = lambda user_id: _connect_ro_shared(settings.bot_data_dir, DB_FILENAME, user_id)
 discover_users = lambda: _discover_users(settings.bot_data_dir, DB_FILENAME)
 get_user_config = lambda user_id: _get_user_config(settings.bot_data_dir, user_id)
 save_user_config = lambda user_id, config: _save_user_config(settings.bot_data_dir, user_id, config)

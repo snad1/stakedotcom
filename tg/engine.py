@@ -126,6 +126,20 @@ def _cfg(config: dict, key: str, default, typ=float):
     return typ(v) if v is not None else typ(default)
 
 
+def _chrome_args() -> list[str]:
+    """Chromium flags; the sandbox stays on unless the bot runs as root."""
+    args = ["--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--headless=new",
+            "--disable-features=IsolateOrigins,site-per-process"]
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        args[:0] = ["--no-sandbox", "--disable-setuid-sandbox"]
+    return args
+
+
+_CHROME_SEMAPHORE = asyncio.Semaphore(1)
+
+
 class BettingEngine:
     """Self-contained betting engine for one user. Runs as an async task."""
 
@@ -511,13 +525,7 @@ window.navigator.permissions.query = (parameters) => (
                 try:
                     browser = await pw.chromium.launch(
                         headless=True,
-                        args=[
-                            "--no-sandbox", "--disable-setuid-sandbox",
-                            "--disable-dev-shm-usage",
-                            "--disable-blink-features=AutomationControlled",
-                            "--headless=new",
-                            "--disable-features=IsolateOrigins,site-per-process",
-                        ],
+                        args=_chrome_args(),
                     )
                 except Exception as e:
                     logger.warning("User %d: Chromium launch failed: %s", self.user_id, e)
@@ -672,7 +680,7 @@ window.navigator.permissions.query = (parameters) => (
                     uc.start(
                         headless=True,
                         browser_executable_path=chrome_path,
-                        browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
+                        browser_args=_chrome_args(),
                     ),
                     timeout=20,
                 )
@@ -725,6 +733,11 @@ window.navigator.permissions.query = (parameters) => (
         return r.json()
 
     async def _cf_reauth(self) -> bool:
+        """Serialise Cloudflare solves across every engine: one browser at a time."""
+        async with _CHROME_SEMAPHORE:
+            return await self._cf_reauth_unlocked()
+
+    async def _cf_reauth_unlocked(self) -> bool:
         """Re-solve Cloudflare mid-session. Profile rotation → cached cookies → FlareSolverr."""
         query = """query AuthCheck { user { id __typename } }"""
         payload = {"operationName": "AuthCheck", "query": query, "variables": {}}

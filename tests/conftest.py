@@ -25,6 +25,8 @@ for _p in (_ROOT, _CASINO):
 _SANDBOX_HOME = tempfile.mkdtemp(prefix="stake_home_")
 os.environ["HOME"] = _SANDBOX_HOME
 os.environ["APP_ENV"] = "testing"
+os.environ.setdefault("STAKE_WEB_SECRET_KEY", "test-secret-key-for-the-suite-12345678")
+os.environ.setdefault("STAKE_WEB_ADMIN_PASS", "test-admin-pass-1234")
 os.environ["STAKE_TG_DATA"] = os.path.join(_SANDBOX_HOME, "tg")
 os.environ["FLARESOLVERR_URL"] = "http://127.0.0.1:9/v1"
 os.environ.pop("STAKE_API_BASE", None)

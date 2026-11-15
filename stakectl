@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stake AutoBot — Management Command v2.1
-# Wrapped in { } so bash reads entire script before executing —
+# Stake AutoBot: Management Command v2.1
+# Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
 set -euo pipefail
@@ -17,7 +17,7 @@ SCRIPT_NAME="stakectl"
 
 usage() {
     echo ""
-    echo "  stakectl — Stake AutoBot Manager v2.1"
+    echo "  stakectl: Stake AutoBot Manager v2.1"
     echo ""
     echo "  SETUP:"
     echo "    stakectl setup       Run wizard to configure (saves config, doesn't start)"
@@ -77,7 +77,7 @@ usage() {
 }
 
 cmd_setup() {
-    echo "Running setup wizard…"
+    echo "Running setup wizard..."
     "$PYTHON" "$BOT" --setup-only
 }
 
@@ -199,7 +199,7 @@ cmd_presets() {
 cmd_update() {
     # Pull latest from git if inside a repo
     if git rev-parse --is-inside-work-tree &>/dev/null; then
-        echo "Pulling latest from git…"
+        echo "Pulling latest from git..."
         git pull --ff-only || { echo "Git pull failed. Resolve manually."; exit 1; }
     fi
     if [ ! -f "stake.py" ]; then
@@ -231,12 +231,14 @@ cmd_update() {
         echo "shared/ library updated."
     fi
 
-    # Update casino-shared pip package
-    if [ -f "$INSTALL_DIR/venv/bin/pip" ]; then
-        "$INSTALL_DIR/venv/bin/pip" install --force-reinstall --no-cache-dir --quiet \
-            "casino-shared @ git+https://github.com/snad1/casino-shared.git" 2>/dev/null && \
-            echo "casino-shared pip package updated." || \
-            echo "casino-shared pip update skipped (network issue)."
+    # Install the pinned requirements, casino-shared included
+    if [ -f "$INSTALL_DIR/venv/bin/pip" ] && [ -f "$INSTALL_DIR/requirements.txt" ]; then
+        if "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade -r "$INSTALL_DIR/requirements.txt"; then
+            echo "Requirements installed (pinned casino-shared)."
+        else
+            echo "✗ Requirements install failed; stopping before the restart." >&2
+            exit 1
+        fi
     fi
 
     # Self-update: copy this script to its installed location
@@ -278,7 +280,7 @@ cmd_update() {
 }
 
 cmd_start_all() {
-    echo "Starting all services…"
+    echo "Starting all services..."
     cmd_start 2>/dev/null || true
     cmd_tg start 2>/dev/null || true
     if systemctl --user list-unit-files "$WEB_SERVICE.service" &>/dev/null; then
@@ -289,7 +291,7 @@ cmd_start_all() {
 }
 
 cmd_stop_all() {
-    echo "Stopping all services…"
+    echo "Stopping all services..."
     systemctl --user stop "$SERVICE" 2>/dev/null || true
     systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
     systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
@@ -299,7 +301,7 @@ cmd_stop_all() {
 cmd_status_all() {
     echo ""
     echo "╔══════════════════════════════════════════╗"
-    echo "║   Stake AutoBot — Service Status          ║"
+    echo "║   Stake AutoBot: Service Status          ║"
     echo "╚══════════════════════════════════════════╝"
     echo ""
 
@@ -343,7 +345,7 @@ cmd_flaresolverr() {
                 docker start flaresolverr
                 echo "FlareSolverr started."
             else
-                docker run -d --name flaresolverr -p 8191:8191 --restart unless-stopped ghcr.io/flaresolverr/flaresolverr:latest
+                docker run -d --name flaresolverr -p 127.0.0.1:8191:8191 --restart unless-stopped ghcr.io/flaresolverr/flaresolverr:v3.5.2
                 echo "FlareSolverr started."
             fi
             ;;
@@ -423,7 +425,7 @@ cmd_tg() {
                 if [ -f "$INSTALL_DIR/.env.example" ]; then
                     cp "$INSTALL_DIR/.env.example" "$ENV_FILE"
                 else
-                    echo "# Stake AutoBot — Environment" > "$ENV_FILE"
+                    echo "# Stake AutoBot: Environment" > "$ENV_FILE"
                     echo "STAKE_TG_TOKEN=" >> "$ENV_FILE"
                 fi
             fi
@@ -490,7 +492,7 @@ cmd_web() {
             ;;
         update)
             if [ -d "web" ]; then
-                echo "Updating web app files…"
+                echo "Updating web app files..."
                 mkdir -p "$WEB_DIR/web"
                 cp -r web/* "$WEB_DIR/web/" 2>/dev/null || true
                 [ -f "web/requirements.txt" ] && cp web/requirements.txt "$WEB_DIR/requirements.txt"

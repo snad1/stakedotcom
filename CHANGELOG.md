@@ -1,5 +1,29 @@
 # Changelog
 
+## Security hotfixes: web, Telegram and limits (2026-11-15)
+
+### Web admin
+- `STAKE_WEB_SECRET_KEY` and `STAKE_WEB_ADMIN_PASS` must be non-default (32+ bytes, 12+ chars); the app exits before binding.
+- The installer generates the secret, prompts for or generates the password, writes `.env` with `printf` at 0600, refuses a weak existing `.env`, and always binds uvicorn to `127.0.0.1`.
+- Login lockout and single-use Telegram links are wired through the shared auth router.
+- Every `/api/users/{user_id}/...` route uses `require_user_access`.
+- `web/bot_db.py` exports the bound `_connect_ro(user_id)`, so the live session socket resolves.
+- The admin user page renders this service's secret keys as `hidden`.
+
+### Telegram
+- `/update` answers only to `TG_OWNER_ID`, with no fallback id and a startup warning when it is missing; the launcher is an argv list for `systemd-run` with validated paths and a 0600 log under the data dir.
+- `/set` and `/tweak` reject `nan` and `inf` for every numeric parameter, and the CLI config-set path uses the same check.
+
+### Updates
+- `stakectl update` installs the pinned requirements and stops when the install fails.
+
+### Cloudflare surfaces
+- FlareSolverr is pinned to `v3.5.2` and published on `127.0.0.1:8191` only; Docker comes from `apt-get install docker.io` instead of a piped install script.
+- The Worker requires an `X-Proxy-Key` header matching its `PROXY_KEY` secret, and the CLI sends `STAKE_PROXY_KEY` when set.
+- Telegram browser solves share one process-wide semaphore, Chromium keeps its sandbox unless the bot runs as root, and the cross-lane Cloudflare lock now times out instead of waiting forever.
+
+**Version**: see the module constants; `casino-shared` pinned to the dashboard branch.
+
 ## CLI v1.15.0 + TG v1.13.0 — Run-wide profit increment (2026-11-15)
 
 Mirrors WolfBet CLI v2.37.0 (`0b7e71a`) and TG v1.21.0 (`58d6e4d`), `profit_increment_scope` / `piscope`. Helpers come from `shared.core.run_increment` (casino-shared 0.3.0). Cloudflare chain, auth and the bet client are untouched: a bumped base bet only changes the amount of the next bet.

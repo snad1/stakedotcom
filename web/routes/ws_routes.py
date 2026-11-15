@@ -55,7 +55,7 @@ async def ws_logs(ws: WebSocket, service_label: str):
 
 @router.websocket("/ws/session/{user_id}/{session_id}")
 async def ws_session(ws: WebSocket, user_id: int, session_id: int):
-    """Live session updates — available to admin or owning TG user."""
+    """Live session updates: available to admin or owning TG user."""
     payload = await authenticate_ws(ws)
     if not payload:
         await ws.close(code=4001, reason="Unauthorized")
@@ -75,9 +75,8 @@ async def ws_session(ws: WebSocket, user_id: int, session_id: int):
     last_bet_id: int = 0
 
     try:
-        # Keep connection alive — send session stats + any new bets every 2 s
+        # Keep connection alive: send session stats + any new bets every 2 s
         while True:
-            from ..bot_db import get_session, _connect_ro
             session = get_session(user_id, session_id)
             if session:
                 await manager.send_to(ws, "session_update", session)

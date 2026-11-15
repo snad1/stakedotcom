@@ -6,7 +6,7 @@ import io
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from ..auth import get_current_admin, get_current_user
+from ..auth import get_current_admin, require_user_access
 from ..bot_db import (
     get_platform_stats, get_sessions, get_session, get_bets, get_bet_count,
     get_session_stats, get_user_config, discover_users, get_session_count,
@@ -73,7 +73,7 @@ async def api_user_sessions(
     user_id: int,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_user_access),
 ):
     sessions = get_sessions(user_id, limit=limit, offset=offset)
     total = get_session_count(user_id)
@@ -81,7 +81,7 @@ async def api_user_sessions(
 
 
 @router.get("/users/{user_id}/sessions/csv")
-async def api_sessions_csv(user_id: int, user: dict = Depends(get_current_user)):
+async def api_sessions_csv(user_id: int, user: dict = Depends(require_user_access)):
     sessions = get_sessions(user_id, limit=10000, offset=0)
 
     def generate():
@@ -96,7 +96,7 @@ async def api_sessions_csv(user_id: int, user: dict = Depends(get_current_user))
             writer = csv.writer(buf)
             total_bets = s.get("total_bets") or 0
             wins = s.get("wins") or 0
-            win_rate = f"{wins / total_bets * 100:.1f}%" if total_bets > 0 else "—"
+            win_rate = f"{wins / total_bets * 100:.1f}%" if total_bets > 0 else "-"
             writer.writerow([
                 s.get("id"),
                 s.get("game") or "",
@@ -118,7 +118,7 @@ async def api_sessions_csv(user_id: int, user: dict = Depends(get_current_user))
 
 
 @router.get("/users/{user_id}/sessions/{session_id}")
-async def api_session_detail(user_id: int, session_id: int, user: dict = Depends(get_current_user)):
+async def api_session_detail(user_id: int, session_id: int, user: dict = Depends(require_user_access)):
     return get_session(user_id, session_id)
 
 
@@ -127,7 +127,7 @@ async def api_bets(
     user_id: int, session_id: int,
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_user_access),
 ):
     bets = get_bets(user_id, session_id, limit=limit, offset=offset)
     total = get_bet_count(user_id, session_id)
@@ -135,7 +135,7 @@ async def api_bets(
 
 
 @router.get("/users/{user_id}/sessions/{session_id}/bets/csv")
-async def api_bets_csv(user_id: int, session_id: int, user: dict = Depends(get_current_user)):
+async def api_bets_csv(user_id: int, session_id: int, user: dict = Depends(require_user_access)):
     bets = get_bets(user_id, session_id, limit=100000, offset=0)
 
     def generate():
@@ -165,7 +165,7 @@ async def api_bets_csv(user_id: int, session_id: int, user: dict = Depends(get_c
 
 
 @router.get("/users/{user_id}/sessions/{session_id}/chart")
-async def api_chart_data(user_id: int, session_id: int, user: dict = Depends(get_current_user)):
+async def api_chart_data(user_id: int, session_id: int, user: dict = Depends(require_user_access)):
     """Return all bets for a session shaped for Lightweight Charts rendering."""
     return get_bets_for_chart(user_id, session_id)
 

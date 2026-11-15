@@ -1,4 +1,4 @@
-"""Admin panel routes — dashboard, users, services, logs."""
+"""Admin panel routes: dashboard, users, services, logs."""
 
 from math import ceil
 
@@ -13,6 +13,12 @@ from ..bot_db import get_platform_stats, get_sessions, get_session, get_session_
 from ..services import all_service_statuses, system_metrics, format_bytes
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+# Config keys this service treats as credentials; never render their values.
+CONFIG_SECRET_KEYS = frozenset({
+    "access_token", "lockdown_token", "cookie", "bearer_token", "device_id",
+    "proxy", "api_key", "token",
+})
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["format_bytes"] = format_bytes
 templates.env.globals["app_name"] = settings.app_name
@@ -65,6 +71,7 @@ async def user_detail(request: Request, user_id: int, page: int = Query(1, ge=1)
         "sessions": sessions,
         "stats": stats,
         "config": config,
+        "secret_keys": CONFIG_SECRET_KEYS,
         "page": page,
         "total_pages": total_pages,
         "total_sessions": total_sessions,

@@ -70,6 +70,9 @@ def main():
     atexit.register(_save_once)
     logger.info("Stake Telegram Bot v%s starting...", VERSION)
     logger.info("Data dir: %s", DATA_DIR)
+    owner = os.environ.get("TG_OWNER_ID", "").strip()
+    if not owner.isdigit():
+        logger.warning("TG_OWNER_ID is unset or not numeric: /update is disabled for everyone")
 
     async def post_init(application):
         await application.bot.set_my_commands([

@@ -21,6 +21,7 @@ from shared.core.stats import fmt_duration, sessions_time_span, stats_date_windo
 from shared.core.database import ensure_sessions_lane, cleanup_old_bets, cleanup_live_bets
 from shared.core.diagnostics import percentile, benchmark_verdict
 from shared.core.net import validate_proxy, mask_proxy
+from shared.core.validation import finite_float
 from shared.core.lanes import (
     LANES_MAX, LANE_SPLIT_HELP, LANE_UNSET_VALUES,
     lane_path, validate_lane, lanes_count, lane_split, lane_config,
@@ -136,14 +137,37 @@ def _cf_cache_save():
         except OSError:
             pass
 
+CF_LOCK_TIMEOUT = 180.0
+
+
+def _chrome_args() -> list[str]:
+    """Chromium flags; the sandbox stays on unless the bot runs as root."""
+    args = ["--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--headless=new",
+            "--disable-features=IsolateOrigins,site-per-process"]
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        args[:0] = ["--no-sandbox", "--disable-setuid-sandbox"]
+    return args
+
+
 class _cf_reauth_lock:
     """v1.13.0 -- cross-lane (cross-process) lock around Cloudflare re-auth:
     an fcntl lock file next to CF_CACHE_PATH, so only one lane runs the CF
     solvers at a time; a lane that waited then finds the fresh cookies."""
     def __enter__(self):
         self._fd = os.open(f"{CF_CACHE_PATH}.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(self._fd, fcntl.LOCK_EX)
-        return self
+        deadline = time.monotonic() + CF_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(self._fd)
+                    raise ConnectionError(
+                        "another process is still solving Cloudflare; try again shortly")
+                time.sleep(0.25)
 
     def __exit__(self, *exc):
         try:
@@ -228,12 +252,7 @@ def _solve_cf_playwright(site_url: str) -> bool:
             try:
                 browser = pw.chromium.launch(
                     headless=True,
-                    args=[
-                        "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
-                        "--disable-blink-features=AutomationControlled",
-                        "--headless=new",  # newer headless mode, harder to detect
-                        "--disable-features=IsolateOrigins,site-per-process",
-                    ],
+                    args=_chrome_args(),
                 )
             except Exception as e:
                 console.print(f"  [red]Chromium launch failed: {e}[/]")
@@ -406,7 +425,7 @@ def _solve_cf_nodriver(site_url: str) -> bool:
                 uc.start(
                     headless=True,
                     browser_executable_path=chrome_path,
-                    browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    browser_args=_chrome_args(),
                 ),
                 timeout=20,
             )
@@ -465,7 +484,7 @@ PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 RUN_PATH     = os.environ.get("STAKE_RUN_PATH", os.path.expanduser("~/.stake_run.json"))
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.15.0"
+VERSION      = "1.15.1"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -1749,10 +1768,8 @@ def _apply_mutation(changes: dict) -> list:
         return out
 
     def _num(name, v, cast=float):
-        try:
-            return cast(float(v)) if cast is int else cast(v)
-        except (TypeError, ValueError):
-            raise ValueError(f"{name} must be a number, got {v!r}")
+        number = finite_float(name, v)
+        return int(number) if cast is int else number
 
     if "bet_delay" in changes:
         state.bet_delay = max(0.0, _num("bet_delay", changes["bet_delay"]))
@@ -1931,6 +1948,9 @@ def _headers(base: str = None) -> dict:
         "Referer":          b + f"/casino/games/{state.game}",
         "User-Agent":       ua,
     }
+    proxy_key = os.environ.get("STAKE_PROXY_KEY")
+    if proxy_key:
+        h["X-Proxy-Key"] = proxy_key
     cookie_parts = []
     if _cf_cookie_str:
         cookie_parts.append(_cf_cookie_str)

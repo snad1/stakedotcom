@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stake Admin Web App — Server Installer
+# Stake Admin Web App: Server Installer
 set -euo pipefail
 
 APP_NAME="stake-web"
@@ -21,18 +21,18 @@ done
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║   Stake Admin Web App — Installer         ║"
+echo "║   Stake Admin Web App: Installer         ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
 # ── 1. System deps ──
-echo "[1/7] Checking system dependencies…"
+echo "[1/7] Checking system dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq python3 python3-venv python3-pip nginx certbot python3-certbot-nginx > /dev/null 2>&1
 echo "  ✓ System packages installed"
 
 # ── 2. Create install dir ──
-echo "[2/7] Setting up install directory…"
+echo "[2/7] Setting up install directory..."
 mkdir -p "$INSTALL_DIR"
 
 # Copy web app files
@@ -55,11 +55,11 @@ if [ -d "$SHARED_DIR" ]; then
     cp -r "$SHARED_DIR" "$INSTALL_DIR/"
     echo "  ✓ shared/ library copied"
 else
-    echo "  ⚠ $SHARED_DIR not found — shared imports may fail"
+    echo "  ⚠ $SHARED_DIR not found: shared imports may fail"
 fi
 
 # ── 3. Python venv + deps ──
-echo "[3/7] Setting up Python environment…"
+echo "[3/7] Setting up Python environment..."
 if [ ! -d "$INSTALL_DIR/venv" ]; then
     python3 -m venv "$INSTALL_DIR/venv"
 fi
@@ -68,17 +68,42 @@ fi
 echo "  ✓ Dependencies installed"
 
 # ── 4. Generate .env ──
-echo "[4/7] Configuring environment…"
-if [ ! -f "$INSTALL_DIR/.env" ]; then
+echo "[4/7] Configuring environment..."
+if [ -f "$INSTALL_DIR/.env" ]; then
+    if grep -q '^STAKE_WEB_ADMIN_PASS=changeme123$' "$INSTALL_DIR/.env" \
+       || grep -q '^STAKE_WEB_SECRET_KEY=change-me-to-a-random-64-char-string$' "$INSTALL_DIR/.env"; then
+        echo "  ✗ $INSTALL_DIR/.env still holds the shipped defaults; the app refuses to start."
+        echo "    Set STAKE_WEB_SECRET_KEY (32+ bytes) and STAKE_WEB_ADMIN_PASS (12+ chars), then re-run."
+        exit 1
+    fi
+    echo "  ✓ .env already exists (keeping existing)"
+else
     SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
+    ADMIN_PASS=""
+    ADMIN_GENERATED=0
+    if [ -t 0 ]; then
+        while [ ${#ADMIN_PASS} -lt 12 ]; do
+            read -rsp "  Admin password (12+ chars): " ADMIN_PASS || { echo ""; exit 1; }
+            echo ""
+            if [ ${#ADMIN_PASS} -lt 12 ]; then
+                echo "  ✗ Too short."
+            fi
+        done
+        if ! [[ "$ADMIN_PASS" =~ ^[A-Za-z0-9._~!@%^*+=,-]+$ ]]; then
+            echo "  ✗ Password may only use letters, digits and . _ ~ ! @ % ^ * + = , -"
+            exit 1
+        fi
+    else
+        ADMIN_PASS=$(python3 -c "import secrets; print(secrets.token_urlsafe(18))")
+        ADMIN_GENERATED=1
+    fi
     cat > "$INSTALL_DIR/.env" << EOF
-# Stake Admin Web App — Configuration
+# Stake Admin Web App: Configuration
 # Generated on $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 STAKE_WEB_SECRET_KEY=$SECRET_KEY
 STAKE_WEB_ADMIN_USER=admin
-STAKE_WEB_ADMIN_PASS=changeme123
-STAKE_WEB_HOST=$([ -n "$DOMAIN" ] && echo "127.0.0.1" || echo "0.0.0.0")
+STAKE_WEB_HOST=127.0.0.1
 STAKE_WEB_PORT=$PORT
 STAKE_WEB_DEBUG=false
 
@@ -87,15 +112,17 @@ STAKE_WEB_BOT_DATA_DIR=$HOME/.stakebot_tg
 STAKE_WEB_INSTALL_DIR=$BOT_INSTALL_DIR
 STAKE_WEB_REPO_DIR=$REPO_DIR
 EOF
+    printf 'STAKE_WEB_ADMIN_PASS=%s\n' "$ADMIN_PASS" >> "$INSTALL_DIR/.env"
     chmod 600 "$INSTALL_DIR/.env"
     echo "  ✓ .env created (secret key auto-generated)"
-    echo "  ⚠ Change the admin password: nano $INSTALL_DIR/.env"
-else
-    echo "  ✓ .env already exists (keeping existing)"
+    if [ "$ADMIN_GENERATED" = "1" ]; then
+        echo "  ✓ Admin password generated: $ADMIN_PASS"
+        echo "    Store it now; it is written to $INSTALL_DIR/.env"
+    fi
 fi
 
 # ── 5. Systemd service ──
-echo "[5/7] Creating systemd service…"
+echo "[5/7] Creating systemd service..."
 mkdir -p "$HOME/.config/systemd/user"
 cat > "$HOME/.config/systemd/user/$APP_NAME.service" << EOF
 [Unit]
@@ -106,7 +133,7 @@ After=network.target
 Type=simple
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$INSTALL_DIR/.env
-ExecStart=$INSTALL_DIR/venv/bin/uvicorn web.app:app --host $([ -n "$DOMAIN" ] && echo "127.0.0.1" || echo "0.0.0.0") --port $PORT --workers 2
+ExecStart=$INSTALL_DIR/venv/bin/uvicorn web.app:app --host 127.0.0.1 --port $PORT --workers 2
 Restart=always
 RestartSec=5
 
@@ -119,7 +146,7 @@ systemctl --user enable "$APP_NAME"
 echo "  ✓ Systemd service created and enabled"
 
 # ── 6. Nginx config ──
-echo "[6/7] Configuring Nginx…"
+echo "[6/7] Configuring Nginx..."
 if [ -n "$DOMAIN" ]; then
     sudo tee "/etc/nginx/sites-available/$APP_NAME" > /dev/null << EOF
 server {
@@ -160,7 +187,7 @@ else
 fi
 
 # ── 7. Start ──
-echo "[7/7] Starting service…"
+echo "[7/7] Starting service..."
 systemctl --user start "$APP_NAME"
 sleep 2
 if systemctl --user is-active --quiet "$APP_NAME"; then
@@ -180,7 +207,7 @@ if [ -n "$DOMAIN" ]; then
 echo "  Domain:  http://$DOMAIN"
 fi
 echo ""
-echo "  Login:   admin / changeme123"
+echo "  Login:   admin / see $INSTALL_DIR/.env"
 echo "  Config:  $INSTALL_DIR/.env"
 echo ""
 echo "  Commands:"

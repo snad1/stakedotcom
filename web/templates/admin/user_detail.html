@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "components/pagination.html" import render as pagination %}
-{% block title %}User {{ user.user_id }} — {{ app_name }}{% endblock %}
+{% block title %}User {{ user.user_id }}: {{ app_name }}{% endblock %}
 
 {% block content %}
 <div class="mb-6">
@@ -58,12 +58,10 @@
     {% if config %}
     <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-sm">
         {% for key, val in config.items() %}
-        {% if key not in ['access_token', 'lockdown_token', 'cookie'] %}
-        <div class="flex justify-between py-1 border-b border-gray-50 dark:border-gray-700">
+<div class="flex justify-between py-1 border-b border-gray-50 dark:border-gray-700">
             <span class="text-gray-500 dark:text-gray-400">{{ key }}</span>
-            <span class="font-mono text-gray-900 dark:text-gray-100">{{ val }}</span>
+            <span class="font-mono text-gray-900 dark:text-gray-100">{% if key in secret_keys %}hidden{% else %}{{ val }}{% endif %}</span>
         </div>
-        {% endif %}
         {% endfor %}
     </div>
     {% else %}
@@ -92,16 +90,16 @@
             {% for s in sessions %}
             <tr class="table-row cursor-pointer" onclick="location.href='/admin/users/{{ user.user_id }}/sessions/{{ s.id }}'">
                 <td class="px-6 py-3 text-sm font-mono">{{ s.id }}</td>
-                <td class="px-6 py-3 text-sm capitalize">{{ s.game or '—' }}</td>
-                <td class="px-6 py-3 text-sm">{{ s.strategy or '—' }}</td>
+                <td class="px-6 py-3 text-sm capitalize">{{ s.game or '-' }}</td>
+                <td class="px-6 py-3 text-sm">{{ s.strategy or '-' }}</td>
                 <td class="px-6 py-3 text-sm font-mono">{{ "{:,}".format(s.total_bets) }}</td>
                 <td class="px-6 py-3 text-sm font-mono {% if s.profit >= 0 %}text-green-600{% else %}text-red-600{% endif %}">
                     {{ "%.8f"|format(s.profit) }}
                 </td>
-                <td class="px-6 py-3 text-sm text-gray-500 dark:text-gray-400">{{ s.started_at[:16] if s.started_at else '—' }}</td>
+                <td class="px-6 py-3 text-sm text-gray-500 dark:text-gray-400">{{ s.started_at[:16] if s.started_at else '-' }}</td>
                 <td class="px-6 py-3 text-sm text-gray-500 dark:text-gray-400">
                     {% if s.ended_at and s.started_at %}
-                    —
+                    -
                     {% else %}
                     <span class="badge badge-green">Running</span>
                     {% endif %}

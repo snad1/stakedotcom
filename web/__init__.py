@@ -1,3 +1,3 @@
-"""Stake Admin Web App — Dashboard & management for Stake AutoBot."""
+"""Stake Admin Web App: Dashboard & management for Stake AutoBot."""
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"

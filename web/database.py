@@ -1,4 +1,4 @@
-"""Web database — delegates to shared library, bound to this bot's settings."""
+"""Web database: delegates to shared library, bound to this bot's settings."""
 
 import sys
 from pathlib import Path
@@ -14,6 +14,10 @@ from shared.web.database import (  # noqa: E402
     audit as _audit, get_audit_log as _get_audit_log,
     create_web_session as _create_web_session,
     is_session_valid as _is_session_valid, revoke_session as _revoke_session,
+    consume_login_token as _consume_login_token,
+    login_locked_until as _login_locked_until,
+    record_login_failure as _record_login_failure,
+    clear_login_failures as _clear_login_failures,
 )
 
 # Bind db_path from settings
@@ -30,3 +34,7 @@ get_audit_log = lambda limit=100: _get_audit_log(settings.db_path, limit)
 create_web_session = lambda user_type, user_id, expires_at: _create_web_session(settings.db_path, user_type, user_id, expires_at)
 is_session_valid = lambda jti: _is_session_valid(settings.db_path, jti)
 revoke_session = lambda jti: _revoke_session(settings.db_path, jti)
+consume_login_token = lambda jti: _consume_login_token(settings.db_path, jti)
+login_locked_until = lambda key: _login_locked_until(settings.db_path, key)
+record_login_failure = lambda key: _record_login_failure(settings.db_path, key)
+clear_login_failures = lambda key: _clear_login_failures(settings.db_path, key)

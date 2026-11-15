@@ -1,4 +1,4 @@
-"""JWT authentication — delegates to shared library."""
+"""JWT authentication: delegates to shared library."""
 
 import sys
 from pathlib import Path
@@ -27,3 +27,4 @@ get_current_admin = _auth["get_current_admin"]
 get_current_tg_user = _auth["get_current_tg_user"]
 get_current_user = _auth["get_current_user"]
 get_optional_user = _auth["get_optional_user"]
+require_user_access = _auth["require_user_access"]

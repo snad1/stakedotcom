@@ -1,4 +1,4 @@
-// stake-proxy Worker — transparent proxy from your Worker URL to stake.com / stake.bet
+// stake-proxy Worker: transparent proxy from your Worker URL to stake.com / stake.bet
 //
 // Why this works:
 //   Cloudflare Workers run on CF's own network. fetch() from a Worker to a
@@ -15,13 +15,17 @@
 //   5. Set in the bot:  /set api_base https://<name>.<account>.workers.dev
 //      (or use the wizard's API base override prompt)
 //
-// Security: this Worker is a public proxy — keep the URL secret. Anyone with
+// Security: this Worker is a public proxy: keep the URL secret. Anyone with
 // the URL can hit stake.com through your Worker. The Worker forwards your
 // access tokens unchanged, so a leaked Worker URL doesn't leak your tokens
 // (those still come from the bot), but you'll burn through your free quota.
 
 export default {
-    async fetch(request) {
+    async fetch(request, env) {
+        const expected = env.PROXY_KEY;
+        if (!expected || request.headers.get("X-Proxy-Key") !== expected) {
+            return new Response("Forbidden", { status: 403 });
+        }
         const url = new URL(request.url);
 
         // Map paths onto the right upstream:

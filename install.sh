@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────
-#  Stake AutoBot — Server Installer v1.2
+#  Stake AutoBot: Server Installer v1.2
 #  Sets up on Linux servers with apt package manager
 #  Sets up: Docker, FlareSolverr, venv, systemd, stakectl
 # ─────────────────────────────────────────────────────────
@@ -14,42 +14,42 @@ STAKECTL="$HOME/.local/bin/stakectl"
 
 echo ""
 echo "╔══════════════════════════════════════════════════╗"
-echo "║   Stake AutoBot — Server Installer v1.3            ║"
+echo "║   Stake AutoBot: Server Installer v1.3            ║"
 echo "║   CLI Bot + Telegram Bot                           ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
 # ── 1. System dependencies ─────────────────────────────
-echo "[1/8] Installing system packages…"
+echo "[1/8] Installing system packages..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq \
     python3 python3-pip python3-venv python3-dev \
     sqlite3 tmux curl
 
 # ── 2. Docker ────────────────────────────────────────
-echo "[2/8] Setting up Docker…"
+echo "[2/8] Setting up Docker..."
 if command -v docker &>/dev/null; then
     echo "   Docker already installed: $(docker --version)"
 else
-    echo "   Installing Docker…"
-    curl -fsSL https://get.docker.com | sh
+    echo "   Installing Docker..."
+    sudo apt-get install -y docker.io
     sudo usermod -aG docker "$(whoami)"
     echo "   Docker installed. NOTE: You may need to log out and back in for group changes."
 fi
 
 # ── 3. FlareSolverr (Cloudflare bypass) ──────────────
-echo "[3/8] Setting up FlareSolverr…"
+echo "[3/8] Setting up FlareSolverr..."
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
     echo "   FlareSolverr already running."
 elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
-    echo "   Starting existing FlareSolverr container…"
+    echo "   Starting existing FlareSolverr container..."
     docker start flaresolverr
 else
-    echo "   Pulling and starting FlareSolverr…"
+    echo "   Pulling and starting FlareSolverr..."
     docker run -d --name flaresolverr \
-        -p 8191:8191 \
+        -p 127.0.0.1:8191:8191 \
         --restart unless-stopped \
-        ghcr.io/flaresolverr/flaresolverr:latest
+        ghcr.io/flaresolverr/flaresolverr:v3.5.2
 fi
 # Verify
 if curl -s http://localhost:8191/v1 &>/dev/null; then
@@ -60,7 +60,7 @@ else
 fi
 
 # ── 4. Bot directory ───────────────────────────────────
-echo "[4/9] Setting up bot directory…"
+echo "[4/9] Setting up bot directory..."
 mkdir -p "$INSTALL_DIR"
 cp stake.py         "$INSTALL_DIR/"
 cp requirements.txt "$INSTALL_DIR/"
@@ -97,19 +97,19 @@ elif [ -f ".env.example" ]; then
 fi
 
 # ── 5. Python virtual environment ─────────────────────
-echo "[5/9] Creating Python virtual environment…"
+echo "[5/9] Creating Python virtual environment..."
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 
 # ── 6. Systemd user services (runs as your user, no root) ─
-echo "[6/9] Setting up systemd services…"
+echo "[6/9] Setting up systemd services..."
 mkdir -p "$SYSTEMD_DIR"
 
 # CLI bot service
 cat > "$SYSTEMD_DIR/${SERVICE_NAME}.service" << SERVICEEOF
 [Unit]
-Description=Stake AutoBot — Multi-Game Auto-Betting Engine
+Description=Stake AutoBot: Multi-Game Auto-Betting Engine
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -138,7 +138,7 @@ SERVICEEOF
 # Telegram bot service
 cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}.service" << TGSERVICEEOF
 [Unit]
-Description=Stake Telegram Bot — Multi-Game Auto-Betting via Telegram
+Description=Stake Telegram Bot: Multi-Game Auto-Betting via Telegram
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -169,7 +169,7 @@ TGSERVICEEOF
 # Watchdog: restart TG bot if heartbeat file is stale (catches stuck-but-alive)
 cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}-watchdog.service" << WDSERVICEEOF
 [Unit]
-Description=Stake Telegram Bot — Stall Watchdog
+Description=Stake Telegram Bot: Stall Watchdog
 After=${TG_SERVICE_NAME}.service
 
 [Service]
@@ -179,7 +179,7 @@ WDSERVICEEOF
 
 cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}-watchdog.timer" << WDTIMEREOF
 [Unit]
-Description=Stake Telegram Bot — Stall Watchdog Timer (every 2 min)
+Description=Stake Telegram Bot: Stall Watchdog Timer (every 2 min)
 
 [Timer]
 OnBootSec=3min
@@ -198,13 +198,13 @@ systemctl --user enable --now ${TG_SERVICE_NAME}-watchdog.timer 2>/dev/null || t
 echo "   Services installed: ${SERVICE_NAME}.service, ${TG_SERVICE_NAME}.service, ${TG_SERVICE_NAME}-watchdog.timer"
 
 # ── 7. Management scripts ─────────────────────────────
-echo "[7/9] Creating management commands…"
+echo "[7/9] Creating management commands..."
 mkdir -p "$HOME/.local/bin"
 
-# stakectl — single command to manage everything
+# stakectl: single command to manage everything
 cat > "$STAKECTL" << 'CTLEOF'
 #!/usr/bin/env bash
-# Stake AutoBot — Management Command
+# Stake AutoBot: Management Command
 set -euo pipefail
 
 INSTALL_DIR="$HOME/stake-bot"
@@ -216,7 +216,7 @@ TG_ENV="$HOME/.stake_tg_env"
 
 usage() {
     echo ""
-    echo "  stakectl — Stake AutoBot Manager"
+    echo "  stakectl: Stake AutoBot Manager"
     echo ""
     echo "  SETUP:"
     echo "    stakectl setup       Run wizard to configure (saves config, doesn't start)"
@@ -261,7 +261,7 @@ usage() {
 }
 
 cmd_setup() {
-    echo "Running setup wizard…"
+    echo "Running setup wizard..."
     "$PYTHON" "$BOT" --setup-only
 }
 
@@ -379,7 +379,7 @@ cmd_presets() {
 cmd_update() {
     # Pull latest from git if inside a repo
     if git rev-parse --is-inside-work-tree &>/dev/null; then
-        echo "Pulling latest from git…"
+        echo "Pulling latest from git..."
         git pull --ff-only || { echo "Git pull failed. Resolve manually."; exit 1; }
     fi
     if [ -f "stake.py" ]; then
@@ -403,7 +403,7 @@ cmd_update() {
             fi
             # Auto-restart TG bot gracefully (sessions auto-resume)
             if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
-                echo "Restarting Telegram bot (sessions will auto-resume)…"
+                echo "Restarting Telegram bot (sessions will auto-resume)..."
                 systemctl --user restart "$TG_SERVICE"
                 sleep 2
                 if systemctl --user is-active --quiet "$TG_SERVICE"; then
@@ -444,7 +444,7 @@ cmd_flaresolverr() {
                 docker start flaresolverr
                 echo "FlareSolverr started."
             else
-                docker run -d --name flaresolverr -p 8191:8191 --restart unless-stopped ghcr.io/flaresolverr/flaresolverr:latest
+                docker run -d --name flaresolverr -p 127.0.0.1:8191:8191 --restart unless-stopped ghcr.io/flaresolverr/flaresolverr:v3.5.2
                 echo "FlareSolverr started."
             fi
             ;;
@@ -524,7 +524,7 @@ cmd_tg() {
                 if [ -f "$INSTALL_DIR/.env.example" ]; then
                     cp "$INSTALL_DIR/.env.example" "$ENV_FILE"
                 else
-                    echo "# Stake AutoBot — Environment" > "$ENV_FILE"
+                    echo "# Stake AutoBot: Environment" > "$ENV_FILE"
                     echo "STAKE_TG_TOKEN=" >> "$ENV_FILE"
                 fi
             fi
@@ -567,7 +567,7 @@ CTLEOF
 chmod +x "$STAKECTL"
 
 # ── 8. TG bot env file placeholder ─────────────────────
-echo "[8/9] Checking Telegram bot config…"
+echo "[8/9] Checking Telegram bot config..."
 if [ -f "$HOME/.stake_tg_env" ]; then
     echo "   Telegram bot token already configured."
 else
@@ -575,7 +575,7 @@ else
 fi
 
 # ── 9. Quick-run scripts (kept for compatibility) ─────
-echo "[9/9] Creating helper scripts…"
+echo "[9/9] Creating helper scripts..."
 
 cat > "$INSTALL_DIR/run.sh" << 'EOF'
 #!/usr/bin/env bash
@@ -622,7 +622,7 @@ echo "    stakectl tg restart     Restart Telegram bot"
 echo "    stakectl tg status      Check Telegram bot status"
 echo "    stakectl tg logs        Stream Telegram bot logs"
 echo ""
-echo "  Both bots run as systemd user services — they will:"
+echo "  Both bots run as systemd user services: they will:"
 echo "    - Auto-restart on crashes (after 10s)"
 echo "    - Keep running after you log out (lingering enabled)"
 echo "    - Log to journalctl (stakectl logs)"

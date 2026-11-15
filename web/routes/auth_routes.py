@@ -1,4 +1,4 @@
-"""Authentication routes — delegates to shared library."""
+"""Authentication routes: delegates to shared library."""
 
 import sys
 from pathlib import Path
@@ -6,7 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from ..config import settings, TEMPLATES_DIR
 from ..auth import create_token, COOKIE_NAME, decode_token
-from ..database import verify_admin, create_web_session, revoke_session, audit
+from ..database import (
+    verify_admin, create_web_session, revoke_session, audit,
+    consume_login_token, login_locked_until, record_login_failure,
+    clear_login_failures,
+)
 from shared.web.routes.auth_routes import make_auth_router  # noqa: E402
 
 router = make_auth_router(
@@ -19,4 +23,8 @@ router = make_auth_router(
     create_web_session=create_web_session,
     revoke_session=revoke_session,
     audit=audit,
+    consume_login_token=consume_login_token,
+    login_locked_until=login_locked_until,
+    record_login_failure=record_login_failure,
+    clear_login_failures=clear_login_failures,
 )
