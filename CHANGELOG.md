@@ -1,5 +1,27 @@
 # Changelog
 
+## CLI v1.15.2 - the base bet you set is the base bet it bets (2026-11-23)
+
+Mirrors WolfBet CLI v2.37.2. A base saved while the bot ran never reached it, a restart re-inflated a new base by every bump earned on the old one, and `--config-show` could not show what the daemon was betting.
+
+### A saved base reaches the running daemon
+- `base_bet` is live over SIGHUP, so `--config-set basebet=...` and the wizard's save apply at once and no longer list it under "need a full restart".
+- A base change drops the run's bumps, records the new base and re-anchors the next milestone one step above the run's current profit, so the next bump needs fresh profit. The current bet resets to the new base.
+- A change is judged against this lane's configured base, not the live bumped one, so an unrelated reload (`--config-set maxloss=5`) keeps the bumps. WolfBet compares against the live base, which drops the bumps on any reload after a bump; that differs here on purpose.
+- Only numbers change on a live base change: no CF re-auth and no client rebuild (tested).
+
+### Bumps belong to the base they were earned on
+- The run file stores `base`. On start, bumps earned on another base are dropped with a `RUN base changed` warning and the milestone re-anchors above run profit; on the same base they apply as before.
+- A run file written before this version keeps its bumps once and adopts the current base.
+
+### The screen shows the live value
+- `--config-show` marks the `base_bet` row `0.00005805  (live 0.00006534, +729 bumps)` when a running daemon bets a different base.
+- `stakectl start` on an active unit says `CLI bot was already running - nothing restarted.` with the `stakectl restart` hint.
+
+N/A: WolfBet's auto-bet restart after a base change (no server-side auto-bet here). Known interaction, unchanged: with `basebet_pct > 0` the base is recomputed from the balance, so a hand-set base is transient there. No schema change; the Telegram bot is unchanged (it already keys bumps to their base).
+
+`VERSION` `1.15.1` -> `1.15.2`.
+
 ## Security hotfixes: web, Telegram and limits (2026-11-15)
 
 ### Web admin

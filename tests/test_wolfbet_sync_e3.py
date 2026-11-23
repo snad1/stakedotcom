@@ -1,4 +1,4 @@
-"""E3-S3 — stakedotcom CLI betting behaviour (WolfBet v2.16.0 .. v2.32.1).
+"""stakedotcom CLI betting behaviour (WolfBet v2.16.0 to v2.32.1).
 
 Recurring / streak-reset cycles (new sessions row per cycle), streak delays,
 streakbet_loss, basebet_pct, milestones, frozen uptime, terminal insufficient
@@ -463,10 +463,11 @@ def test_reload_applies_live_keys_only(caplog):
 
     with caplog.at_level(logging.WARNING, logger="stake"):
         changed = st._reload_live_config()
-    assert set(changed) == {"recurring", "max_bets", "streak_delay_loss"}
+    assert set(changed) == {"recurring", "max_bets", "streak_delay_loss", "base_bet"}
     s = st.state
     assert s.recurring is True and s.max_bets == 5 and s.streak_delay_loss == (3, 0.5)
-    assert s.game == "limbo" and s.base_bet == 0.001
+    assert s.game == "limbo"
+    assert s.base_bet == 1.0                       # an operator-set base applies live
     assert "unsafe" in caplog.text and "game" in caplog.text
 
 
@@ -501,6 +502,6 @@ def test_main_registers_sighup_keeps_usr_signals():
 
 
 def test_live_reload_keys_exclude_restart_keys():
-    for k in ("access_token", "currency", "game", "multiplier_target", "base_bet",
+    for k in ("access_token", "currency", "game", "multiplier_target",
               "strategy", "strategy_key", "loss_mult", "win_mult"):
         assert k not in st._LIVE_RELOAD_KEYS

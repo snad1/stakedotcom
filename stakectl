@@ -87,9 +87,16 @@ cmd_start() {
         echo "No config found. Run 'stakectl setup' first."
         exit 1
     fi
+    local was_active=0
+    if systemctl --user is-active --quiet "$SERVICE"; then
+        was_active=1
+    fi
     systemctl --user start "$SERVICE"
     sleep 1
-    if systemctl --user is-active --quiet "$SERVICE"; then
+    if systemctl --user is-active --quiet "$SERVICE" && [ "$was_active" -eq 1 ]; then
+        echo "CLI bot was already running - nothing restarted."
+        echo "  Apply a saved config:  stakectl restart"
+    elif systemctl --user is-active --quiet "$SERVICE"; then
         echo "Bot started successfully."
         echo "  Check status:  stakectl status"
         echo "  View logs:     stakectl logs"

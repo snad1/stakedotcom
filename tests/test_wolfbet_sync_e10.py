@@ -280,6 +280,125 @@ def test_one_merged_increment_helper():
     assert "state.base_bet += state.profit_increment" not in loop
 
 
+
+# ── CLI: the base the operator sets is the base it bets ──
+def _bumped_daemon(bumps=5, profit=0.007):
+    """A run-scope daemon on base 0.0001 whose live base carries `bumps` bumps."""
+    _cfg("run", thr=0.003)
+    _write_cfg(profit_increment_scope="run", profit_increment=0.0001,
+               profit_threshold=0.003)
+    s = st.state
+    s.base_bet_disk, s.base_bet_split = 0.0001, None
+    st._attach_run(5)
+    s.run_bumps = bumps
+    s.base_bet = s.current_bet = round(0.0001 + bumps * 0.0001, 8)
+    s.profit = profit
+    st._save_run()
+    return s
+
+
+def _edit_cfg(**vals):
+    data = json.load(open(st.CONFIG_PATH))
+    data.update(vals)
+    json.dump(data, open(st.CONFIG_PATH, "w"))
+
+
+def test_live_base_change_zeroes_bumps_and_reanchors(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("a base change must not rebuild the client")
+    s = _bumped_daemon()
+    monkeypatch.setattr(st, "_recreate_http", boom)
+    monkeypatch.setattr(st, "_cf_reauth", boom)
+    _edit_cfg(base_bet=0.0002)
+
+    changed = st._reload_live_config()
+
+    assert "base_bet" in changed
+    assert s.base_bet == pytest.approx(0.0002) and s.current_bet == pytest.approx(0.0002)
+    assert s.run_bumps == 0 and s.run_base_origin == pytest.approx(0.0002)
+    assert s.next_profit_milestone == pytest.approx(0.009)    # above run profit 0.007
+    run = json.load(open(_run_file()))
+    assert run["bumps"] == 0 and run["base"] == pytest.approx(0.0002)
+
+
+def test_unrelated_reload_keeps_the_bumps():
+    s = _bumped_daemon()
+    _edit_cfg(max_loss=5.0)
+
+    changed = st._reload_live_config()
+
+    assert "base_bet" not in changed
+    assert s.run_bumps == 5 and s.base_bet == pytest.approx(0.0006)
+
+
+def test_base_change_without_a_run_only_sets_the_bet():
+    _cfg("session")
+    st._rebase_run_for_base_change(0.0002)
+    assert st.state.base_bet == pytest.approx(0.0002)
+    assert st.state.current_bet == pytest.approx(0.0002)
+    assert not os.path.exists(_run_file())
+
+
+def test_resume_drops_bumps_earned_on_another_base():
+    _seed([(3, 0.025, 1)])
+    json.dump({"first_session": 3, "started_at": "x", "bumps": 4, "base": 0.0002},
+              open(_run_file(), "w"))
+    _cfg("run")
+    st._init_run()
+    assert st.state.run_bumps == 0
+    assert st.state.base_bet == pytest.approx(0.0001)
+    assert st.state.next_profit_milestone == pytest.approx(0.03)  # above run profit 0.025
+    assert json.load(open(_run_file()))["base"] == pytest.approx(0.0001)
+
+
+def test_resume_applies_bumps_on_the_same_base():
+    _seed([(3, 0.025, 1)])
+    json.dump({"first_session": 3, "started_at": "x", "bumps": 2, "base": 0.0001},
+              open(_run_file(), "w"))
+    _cfg("run")
+    st._init_run()
+    assert st.state.run_bumps == 2
+    assert st.state.base_bet == pytest.approx(0.0003)
+
+
+def test_legacy_run_file_keeps_bumps_once_and_adopts_the_base():
+    _seed([(3, 0.025, 1)])
+    json.dump({"first_session": 3, "started_at": "x", "bumps": 2}, open(_run_file(), "w"))
+    _cfg("run")
+    st._init_run()
+    assert st.state.run_bumps == 2
+    assert st.state.run_base_origin == pytest.approx(0.0001)
+    assert json.load(open(_run_file()))["base"] == pytest.approx(0.0001)
+
+
+def test_config_show_reports_the_live_base(capsys, monkeypatch):
+    _cfg("session")
+    st.save_config()
+    monkeypatch.setattr(st, "_recreate_http", lambda *a, **k: None)
+    monkeypatch.setattr(st, "_monitor_read_state",
+                        lambda: {"pid": 4242, "base_bet": 0.0006, "run_bumps": 5})
+    monkeypatch.setattr(st, "_monitor_get_pid", lambda d: 4242)
+    monkeypatch.setattr(st.console, "width", 250)
+    st.cmd_config_show()
+    out = capsys.readouterr().out
+    assert "live 0.00060000" in out and "+5 bumps" in out
+
+
+def test_config_show_without_a_daemon_shows_the_file_only(capsys, monkeypatch):
+    _cfg("session")
+    st.save_config()
+    monkeypatch.setattr(st, "_recreate_http", lambda *a, **k: None)
+    st.cmd_config_show()
+    assert "live " not in capsys.readouterr().out
+
+
+def test_ctl_start_reports_an_already_active_unit():
+    src = open(os.path.join(os.path.dirname(st.__file__), "stakectl")).read()
+    start = src[src.index("cmd_start()"):src.index("cmd_stop()")]
+    assert "was_active" in start
+    assert "already running" in start
+    assert "stakectl restart" in start
+
 # ── TG ───────────────────────────────────────────────────
 def test_tg_config_key_present():
     assert "profit_increment_scope" in CONFIG_KEYS
