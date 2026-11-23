@@ -6,7 +6,7 @@
 +----------------------------------------------------------+
 """
 
-import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, re, math, queue
+import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, re, math, queue, csv
 import fcntl
 from datetime import datetime, timedelta
 from collections import deque
@@ -48,6 +48,7 @@ try:
     from rich.prompt import Prompt, Confirm
     from rich.align import Align
     from rich.rule import Rule
+    from rich.markup import escape
     from rich import box
 except ImportError:
     print("Missing dependencies. Run:  pip install requests rich")
@@ -484,7 +485,7 @@ PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 RUN_PATH     = os.environ.get("STAKE_RUN_PATH", os.path.expanduser("~/.stake_run.json"))
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.15.2"
+VERSION      = "1.16.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -826,7 +827,7 @@ def _remember_config_base(data: dict, merged: dict) -> None:
 def _configured_base():
     return state.base_bet_split if state.base_bet_split is not None else state.base_bet_disk
 
-def load_config() -> bool:
+def load_config(rebuild_http: bool = True) -> bool:
     if not os.path.exists(CONFIG_PATH):
         return False
     try:
@@ -838,7 +839,8 @@ def load_config() -> bool:
     # v1.12.0 fix: the saved proxy only reached the HTTP client by accident
     # (a CF profile rotation). Rebuild it here so --resume / --daemon /
     # --preset and every command that loads the config use the proxy.
-    _recreate_http()
+    if rebuild_http:
+        _recreate_http()
     return True
 
 # Keys SIGHUP may change on a running bot (WolfBet v2.28.3). Everything else
@@ -2575,6 +2577,58 @@ def _reset_session_for_recurring(delay: float) -> bool:
 # ===========================================================
 #  BETTING LOOP  (runs in background thread)
 # ===========================================================
+def _record_bet_outcome(amount_used: float, payout: float, is_win: bool) -> tuple:
+    """Fold one bet result into the session totals. Caller holds state.lock.
+
+    Shared by the live loop and the backtest so both count a bet the same
+    way. The balance is tracked locally. Returns (bet_state, raw_profit, new_balance).
+    """
+    bet_state   = "win" if is_win else "loss"
+    raw_profit  = payout - amount_used
+    new_balance = state.current_balance + raw_profit
+
+    state.total_bets     += 1
+    state.wagered        += amount_used
+    state.profit         += raw_profit
+    state.current_balance = new_balance
+
+    state.current_streak, broken = record_outcome(state.current_streak, bet_state == "win")
+    if broken is not None:
+        state.last_broken_loss_streak = broken
+    if bet_state == "win":
+        state.wins += 1
+        if raw_profit > state.highest_win:
+            state.highest_win = raw_profit
+        state.max_win_streak = max(state.max_win_streak, state.current_streak)
+    else:
+        state.losses += 1
+        if amount_used > state.biggest_loss:
+            state.biggest_loss = amount_used
+        state.max_loss_streak = max(state.max_loss_streak, abs(state.current_streak))
+
+    if amount_used > state.highest_bet:
+        state.highest_bet = amount_used
+    if new_balance > state.highest_balance:
+        state.highest_balance = new_balance
+    if new_balance < state.lowest_balance:
+        state.lowest_balance = new_balance
+
+    _check_profit_increment()
+    return bet_state, raw_profit, new_balance
+
+
+def _next_bet_after(bet_state: str) -> float:
+    """Next bet from the strategy, the streakbet factor and the casino minimum."""
+    raw_next  = compute_next_bet(bet_state)
+    next_bet  = max(state.base_bet, raw_next)
+    sb_factor = streakbet_loss_factor(state.current_streak, state.streakbet_loss)
+    if sb_factor != 1.0:
+        next_bet = max(state.base_bet, next_bet * sb_factor)
+    if 0 < next_bet < MIN_BET:
+        next_bet = MIN_BET
+    return next_bet
+
+
 def betting_loop():
     last_result = "none"
 
@@ -2639,42 +2693,11 @@ def betting_loop():
         result_display = result["result_display"]
         result_value   = result["result_value"]
 
-        bet_state   = "win" if is_win else "loss"
-        raw_profit  = payout - amount_used
-        new_balance = state.current_balance + raw_profit
-
         with state.lock:
             state.consecutive_errors = 0
             state.backoff_delay      = 1.0
 
-            state.total_bets     += 1
-            state.wagered        += amount_used
-            state.profit         += raw_profit
-            state.current_balance = new_balance
-
-            state.current_streak, broken = record_outcome(state.current_streak, bet_state == "win")
-            if broken is not None:
-                state.last_broken_loss_streak = broken
-            if bet_state == "win":
-                state.wins += 1
-                if raw_profit > state.highest_win:
-                    state.highest_win = raw_profit
-                state.max_win_streak = max(state.max_win_streak, state.current_streak)
-            else:
-                state.losses += 1
-                if amount_used > state.biggest_loss:
-                    state.biggest_loss = amount_used
-                state.max_loss_streak = max(state.max_loss_streak, abs(state.current_streak))
-
-            if amount_used > state.highest_bet:
-                state.highest_bet = amount_used
-            if new_balance > state.highest_balance:
-                state.highest_balance = new_balance
-            if new_balance < state.lowest_balance:
-                state.lowest_balance = new_balance
-
-            # profit-based base bet increment
-            _check_profit_increment()
+            bet_state, raw_profit, new_balance = _record_bet_outcome(amount_used, payout, is_win)
 
             if state.total_bets % 5 == 0:
                 state.profit_history.append(state.profit)
@@ -2748,15 +2771,8 @@ def betting_loop():
         if state.strategy_key == "7" and state.custom_rules:
             apply_rules(bet_state)
 
-        # calculate next bet -- no cap, API rejects if insufficient balance
-        raw_next  = compute_next_bet(bet_state)
-        next_bet  = max(state.base_bet, raw_next)
-        sb_factor = streakbet_loss_factor(state.current_streak, state.streakbet_loss)
-        if sb_factor != 1.0:
-            next_bet = max(state.base_bet, next_bet * sb_factor)
-        if 0 < next_bet < MIN_BET:
-            next_bet = MIN_BET
-        state.current_bet = next_bet
+        # no cap: the API rejects a bet the balance cannot cover
+        state.current_bet = _next_bet_after(bet_state)
         last_result = bet_state
 
         # cycle-time metric (WolfBet v2.30.4): one full loop iteration
@@ -3422,7 +3438,7 @@ def build_dashboard_screen() -> str:
 
     # -- Row N: Status + controls --
     status_txt = state.status[:60]
-    keys = "[P]ause [R]esume [Q]uit [H]istory [T]weak"
+    keys = "[P]ause [R]esume [Q]uit [H]istory [T]weak [E]xport"
     add(f" {_a('white', status_txt)}  {_a('dim', keys)}")
 
     return "\r\n".join(lines)
@@ -3512,6 +3528,8 @@ def input_handler():
             show_history()
         elif ch == "t":
             show_tweak()
+        elif ch == "e":
+            show_export()
 
 def _print_tweak_help():
     """Compact reference of tweakable params + example values."""
@@ -3541,6 +3559,33 @@ def _print_tweak_help():
     for p, ex, note in rows:
         t.add_row(f"[cyan]{p}[/]", f"[yellow]{ex}[/]", f"[dim]{note}[/]")
     console.print(t)
+
+def show_export():
+    """`E` hotkey: pause, ask for a path, export this session, restore pause state."""
+    was_paused = state.paused
+    state.paused = True
+    time.sleep(0.15)
+    console.clear()
+    console.print(Rule("[bold cyan]Export session[/]"))
+    default_path = os.path.expanduser(f"~/stake-session-{state.session_id}.csv")
+    console.print(f"  [dim]Default[/] [cyan]{default_path}[/]")
+    console.print("  [dim]Enter keeps the default, 'back' cancels, '.json' switches format.[/]\n")
+    try:
+        raw = input("  Path: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raw = "back"
+    if raw.lower() not in ("back", "cancel", "q", "quit"):
+        path = raw or default_path
+        try:
+            n, fmt = _export_session(state.session_id, path)
+            console.print(f"  [green]OK[/] Exported [bold]{n}[/] bets to [cyan]{escape(path)}[/] ({fmt.upper()})")
+            logger.info("EXPORT: session=%d format=%s bets=%d path=%s",
+                        state.session_id, fmt, n, path)
+        except (OSError, ValueError, sqlite3.Error) as e:
+            console.print(f"  [red]Export failed:[/] {escape(str(e))}")
+        time.sleep(2)
+    state.paused = was_paused
+
 
 def show_tweak():
     """Modal runtime tweak (WolfBet v2.19.0): pause, apply `param value`, restore."""
@@ -4645,6 +4690,7 @@ def _print_summary():
     game_label = GAMES.get(state.game, {}).get("label", state.game)
     pairs = [
         ("Session ID",      str(state.session_id)),
+        ("Stop reason",     escape(state.status) if state.status else "-"),
         ("Platform",        f"Stake.com -- {game_label}"),
         ("Total Bets",      str(state.total_bets)),
         ("Wins / Losses",   f"{state.wins} / {state.losses}"),
@@ -4664,6 +4710,218 @@ def _print_summary():
               "red"   if ("profit" in k.lower() and state.profit <  0) else "white")
         console.print(f"  [dim]{k:18s}[/] [{sty}]{v}[/]")
     console.print()
+
+# ===========================================================
+#  EXPORT + BACKTEST  (wolfbet v2.20.0 / v2.21.0)
+# ===========================================================
+def _read_session(session_id: int) -> Optional[dict]:
+    conn = _db_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def _read_bets(session_id: int) -> list:
+    conn = _db_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM bets WHERE session_id = ? ORDER BY id",
+                            (session_id,)).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def _latest_session_id() -> int:
+    conn = _db_conn()
+    try:
+        row = conn.execute("SELECT MAX(id) FROM sessions").fetchone()
+    finally:
+        conn.close()
+    return int(row[0]) if row and row[0] else 0
+
+
+def _export_session(session_id: int, path: str) -> tuple:
+    """Write a session and its bets to `path` (mode 0600). Returns (bet_count, format).
+
+    A `.json` path writes {"session", "bets"}; anything else writes CSV with
+    the session as leading `# key: value` lines. Raises ValueError when the
+    session does not exist.
+    """
+    path = os.path.expanduser(path)
+    fmt = "json" if path.lower().endswith(".json") else "csv"
+    session = _read_session(session_id)
+    if not session:
+        raise ValueError(f"Session #{session_id} not found")
+    bets = _read_bets(session_id)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", newline="") as f:
+        if fmt == "json":
+            json.dump({"session": session, "bets": bets}, f, indent=2, default=str)
+        else:
+            for k, v in session.items():
+                f.write(f"# {k}: {v}\n")
+            if bets:
+                w = csv.DictWriter(f, fieldnames=list(bets[0].keys()))
+                w.writeheader()
+                w.writerows(bets)
+    return len(bets), fmt
+
+
+def _simulate_bet_outcome(rng) -> dict:
+    """One virtual bet at the current bet size, from stake's 1% house edge.
+
+    Win chance is 99 / multiplier_target percent, the formula the wizard and
+    the dice target use. Limbo draws a crash multiplier 0.99 / U; dice rolls
+    0-100 against dice_target. Same shape as the game parsers return.
+    """
+    amount, target = state.current_bet, state.multiplier_target
+    if state.game == "dice":
+        roll = rng.random() * 100.0
+        is_win = roll > state.dice_target if state.dice_condition == "above" else roll < state.dice_target
+        value, display = roll, f"{roll:.2f}"
+    else:
+        value = 0.99 / max(rng.random(), 1e-12)
+        is_win = value >= target
+        display = f"{value:.4f}x"
+    return {"amount": amount, "payout": amount * target if is_win else 0.0,
+            "is_win": is_win, "result_value": value, "result_display": display}
+
+
+def _replay_bets_from_db(session_id: int):
+    """Yield a stored session's outcomes, sized and paid by the current strategy."""
+    saved = _read_bets(session_id)
+    if not saved:
+        raise ValueError(f"Session #{session_id} has no bets to replay")
+
+    def _gen():
+        for hist in saved:
+            amount = state.current_bet
+            is_win = hist.get("state") == "win"
+            yield {"amount": amount,
+                   "payout": amount * state.multiplier_target if is_win else 0.0,
+                   "is_win": is_win,
+                   "result_value": hist.get("result_value") or 0.0,
+                   "result_display": hist.get("result_display") or ""}
+    return _gen()
+
+
+def backtest_loop(source, progress_every: int = 100) -> None:
+    """Run the strategy over `source` with no API call and no DB write.
+
+    Uses the live loop's stop check, outcome bookkeeping, rules, milestones
+    and next-bet code. A stop ends the backtest (no recurring restart).
+    """
+    for result in source:
+        if not state.running:
+            break
+        stop, reason = should_stop()
+        if stop:
+            state.status = f"[BACKTEST] STOPPED: {reason}"
+            break
+        with state.lock:
+            bet_state, _, _ = _record_bet_outcome(result["amount"], result["payout"],
+                                                  result["is_win"])
+            _check_milestone(bet_state)
+        if state.strategy_key == "7" and state.custom_rules:
+            apply_rules(bet_state)
+        state.current_bet = _next_bet_after(bet_state)
+        state.status = (f"[BACKTEST] bet {state.total_bets}: {bet_state}  "
+                        f"bal {state.current_balance:.8f}  p/l {state.profit:+.8f}")
+        if progress_every > 0 and state.total_bets % progress_every == 0:
+            console.print(f"  [dim]BACKTEST[/] {state.total_bets} bets  "
+                          f"W:{state.wins} L:{state.losses}  P/L: {state.profit:+.8f}  "
+                          f"bal: {state.current_balance:.8f}")
+
+
+def _reset_backtest_session() -> None:
+    """In-memory session on a 1.0 sandbox balance; nothing is written to the DB."""
+    s = state
+    s.session_id, s.session_start = -1, time.time()
+    s.running, s.paused, s.status = True, False, ""
+    s.total_bets = s.wins = s.losses = 0
+    s.profit = s.wagered = 0.0
+    s.current_streak = s.max_win_streak = s.max_loss_streak = s.last_broken_loss_streak = 0
+    s.highest_bet = s.highest_win = s.biggest_loss = 0.0
+    s.start_balance = s.current_balance = s.highest_balance = s.lowest_balance = 1.0
+    s.current_bet = s.base_bet
+    s.dalembert_unit = s.paroli_count = 0
+    s._last_profit_milestone = 0.0
+    s.next_profit_milestone = s.profit_threshold or 0.0
+    s.profit_increment_scope = "session"
+    s.lanes_count, s.lane_split = 1, "none"
+
+
+def _run_backtest(args) -> int:
+    """--backtest: load a preset / the saved config / defaults, then simulate or replay.
+
+    Never builds an HTTP client, solves Cloudflare or starts a browser.
+    """
+    console.print("[bold cyan]BACKTEST MODE[/]  [dim]no API calls, no real balance at risk[/]\n")
+    init_db()
+    if args.preset:
+        if not load_preset(args.preset):
+            console.print(f"[red]Preset '{escape(args.preset)}' not found.[/]")
+            return 1
+        console.print(f"  [dim]Loaded preset:[/] [cyan]{escape(args.preset)}[/]")
+    elif load_config(rebuild_http=False):
+        console.print(f"  [dim]Loaded saved config from[/] [cyan]{CONFIG_PATH}[/]")
+    else:
+        console.print("  [dim]Using backtest defaults (Martingale, limbo 2x).[/]")
+        state.strategy, state.strategy_key = "Martingale", "2"
+        state.game, state.multiplier_target = "limbo", 2.0
+        state.base_bet, state.loss_mult, state.win_mult = MIN_BET, 2.0, 1.0
+        state.currency = "usdt"
+    _reset_backtest_session()
+    if state.custom_rules_text:
+        state.custom_rules = _load_rules_from_text(state.custom_rules_text)
+
+    if args.replay_session:
+        try:
+            source = _replay_bets_from_db(args.replay_session)
+        except ValueError as e:
+            console.print(f"[red]{escape(str(e))}[/]")
+            return 1
+        console.print(f"  [dim]Replaying session[/] [cyan]#{args.replay_session}[/]\n")
+        n = 1000
+    else:
+        n = args.simulate or 1000
+        rng = random.Random(args.seed)
+        seed_str = f"seed={args.seed}" if args.seed is not None else "seed=system-entropy"
+        console.print(f"  [dim]Simulating[/] [cyan]{n}[/] [dim]bets with[/] [cyan]{seed_str}[/]\n")
+        source = (_simulate_bet_outcome(rng) for _ in range(n))
+
+    console.print(f"  [dim]Strategy:[/] [bold]{escape(state.strategy)}[/]  "
+                  f"[dim]game:[/] {state.game}  [dim]base_bet:[/] {state.base_bet:.8f}  "
+                  f"[dim]multiplier:[/] {state.multiplier_target}x\n")
+    backtest_loop(source, progress_every=max(100, n // 20))
+    if state.status.startswith("[BACKTEST] bet"):
+        state.status = f"[BACKTEST] complete: {state.total_bets} bets"
+    _print_summary()
+    return 0
+
+
+def cmd_export(path: str, session_id: Optional[int] = None) -> int:
+    """--export: write one session (default: the latest) to PATH."""
+    init_db()
+    sid = session_id or _latest_session_id()
+    if sid <= 0:
+        console.print("[red]No sessions in the DB yet.[/]")
+        return 1
+    try:
+        n, fmt = _export_session(sid, path)
+    except (OSError, ValueError, sqlite3.Error) as e:
+        console.print(f"[red]Export failed:[/] {escape(str(e))}")
+        if "not found" in str(e).lower():
+            console.print("[dim]  Tip: run `stake.py --stats` to see recent session IDs.[/]")
+        return 1
+    console.print(f"[green]OK[/] Exported [bold]{n}[/] bets from session #{sid} -> "
+                  f"[cyan]{escape(os.path.expanduser(path))}[/] ({fmt.upper()})")
+    return 0
+
 
 # ===========================================================
 #  CLI COMMANDS
@@ -6598,6 +6856,18 @@ def main():
     parser.add_argument("--api-base", type=str, metavar="URL",
                         help="Override stake.com base with a Cloudflare Worker proxy URL "
                              "(e.g. https://my-bot.example.workers.dev). See cloudflare-worker/proxy.js.")
+    parser.add_argument("--export", type=str, metavar="PATH",
+                        help="Export a session to PATH (.json = JSON, else CSV)")
+    parser.add_argument("--export-session-id", type=int, metavar="ID",
+                        help="Session ID for --export (default: latest)")
+    parser.add_argument("--backtest", action="store_true",
+                        help="Run the strategy offline: no API calls, no Cloudflare, no real balance")
+    parser.add_argument("--replay-session", type=int, metavar="ID",
+                        help="With --backtest: replay a stored session's outcomes")
+    parser.add_argument("--simulate", type=int, metavar="N",
+                        help="With --backtest: simulate N bets (default 1000)")
+    parser.add_argument("--seed", type=int, metavar="N",
+                        help="With --simulate: RNG seed for a repeatable run")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable debug logging (dev mode)")
 
@@ -6613,6 +6883,11 @@ def main():
     except ValueError as e:
         console.print(f"[red]{e}[/]")
         sys.exit(2)
+
+    if args.export:
+        sys.exit(cmd_export(args.export, args.export_session_id))
+    if args.backtest:
+        sys.exit(_run_backtest(args))
 
     if args.proxy:
         try:
@@ -6826,6 +7101,8 @@ def main():
         state.running = False
         _stop_bet_writer(timeout=5.0)
         _db_save_session()
+        logger.warning("DAEMON EXIT  session=%d  bets=%d  profit=%+.8f  reason=%s",
+                       state.session_id, state.total_bets, state.profit, state.status)
         _save_state_file()
         _cleanup_state_file()
         _print_summary()

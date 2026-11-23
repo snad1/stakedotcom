@@ -275,7 +275,7 @@ def test_bump_never_touches_cloudflare_or_http(monkeypatch):
 
 def test_one_merged_increment_helper():
     src = open(st.__file__).read()
-    loop = src[src.index("def betting_loop"):]
+    loop = src[src.index("def _record_bet_outcome"):]
     assert loop.count("_check_profit_increment()") == 1
     assert "state.base_bet += state.profit_increment" not in loop
 

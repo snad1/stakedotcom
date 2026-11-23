@@ -1,5 +1,32 @@
 # Changelog
 
+## CLI v1.16.0 - exit reason, session export and offline backtest (2026-11-23)
+
+Mirrors WolfBet CLI v2.20.0 (export), v2.21.0 (backtest) and v2.37.1 (exit reason), as goated CLI v1.13.0 does.
+
+### Why the bot stopped
+- The exit summary has a `Stop reason` row: the final status, or `-` when there is none.
+- The daemon logs `DAEMON EXIT  session=N  bets=B  profit=+P  reason=...` after the session is saved and before the last state write, so the saved `status` and the log agree and a stop is never a silent clean exit.
+
+### Export
+- `--export PATH [--export-session-id ID]` writes one session (default: the latest). A `.json` path gives `{"session": ..., "bets": [...]}`; anything else gives CSV with the session as `# key: value` lines over the bets table. Files are mode 0600.
+- `E` in the TUI exports the current session (default `~/stake-session-<id>.csv`).
+- `stakectl export PATH [SID]`.
+
+### Backtest
+- `--backtest --simulate N --seed S` bets virtually from stake's own 1% edge: win chance `99 / multiplier_target` percent, limbo draws a crash multiplier `0.99 / U`, dice rolls 0-100 against `dice_target`. The same seed gives the same result.
+- `--backtest --replay-session ID` replays a stored session's win / loss sequence with the current strategy's bet sizes and multiplier.
+- Config comes from `--preset NAME`, else the saved config, else Martingale limbo 2x. The run is in memory on a 1.0 sandbox balance: no API call, no DB write, no run file.
+- The backtest never builds an HTTP client, solves Cloudflare or opens a browser: `load_config(rebuild_http=False)` skips the client rebuild that every other caller still gets (tested with the client, CF solvers and sockets patched to fail, and no browser module imported).
+- The live loop's stats update and next-bet code moved into `_record_bet_outcome` and `_next_bet_after`; the live loop and the backtest both call them, so the maths cannot drift. Stop conditions use the same `should_stop`.
+- `stakectl backtest [args]`.
+
+N/A or not ported: WolfBet's Rich-panel session summary (the existing summary table carries the stop reason instead); recurring restarts inside a backtest (a stop ends it); WolfBet's later `--json` export report and multi-session backtest.
+
+**Tests**: `tests/test_wolfbet_sync_e6.py` (26). **429 total passing.**
+
+`VERSION` `1.15.2` -> `1.16.0`.
+
 ## CLI v1.15.2 - the base bet you set is the base bet it bets (2026-11-23)
 
 Mirrors WolfBet CLI v2.37.2. A base saved while the bot ran never reached it, a restart re-inflated a new base by every bump earned on the old one, and `--config-show` could not show what the daemon was betting.

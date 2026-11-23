@@ -47,6 +47,8 @@ usage() {
     echo "    stakectl analytics   Aggregates by game / strategy / lane (--since/--until/--lane)"
     echo "    stakectl session ID  Full stats + streak distribution for a session"
     echo "    stakectl presets     List saved presets"
+    echo "    stakectl export PATH [SID]  Export a session (CSV, or JSON by .json extension)"
+    echo "    stakectl backtest [args]    Backtest / replay offline (no API calls, no Cloudflare, no real balance)"
     echo "    stakectl update      Update bot from current directory"
     echo ""
     echo "  TELEGRAM BOT:"
@@ -104,6 +106,23 @@ cmd_start() {
         echo "Failed to start. Check logs: stakectl logs-full"
         exit 1
     fi
+}
+
+cmd_export() {
+    local path="${1:-}" sid="${2:-}"
+    if [ -z "$path" ]; then
+        echo "Usage: stakectl export PATH [SESSION_ID]"
+        exit 1
+    fi
+    if [ -n "$sid" ]; then
+        "$PYTHON" "$BOT" --export "$path" --export-session-id "$sid"
+    else
+        "$PYTHON" "$BOT" --export "$path"
+    fi
+}
+
+cmd_backtest() {
+    "$PYTHON" "$BOT" --backtest "$@"
 }
 
 cmd_stop() {
@@ -540,6 +559,8 @@ case "${1:-}" in
     analytics)    cmd_analytics "${@:2}" ;;
     session)      cmd_session "${2:-}" ;;
     presets)      cmd_presets ;;
+    export)       cmd_export "${2:-}" "${3:-}" ;;
+    backtest)     shift; cmd_backtest "$@" ;;
     update)       cmd_update ;;
     tg)           cmd_tg "${2:-}" ;;
     web)          cmd_web "${@:2}" ;;
