@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stake AutoBot: Management Command v2.1
+# Stake AutoBot: Management Command v2.2
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -10,46 +10,73 @@ WEB_DIR="$HOME/stake-web"
 SERVICE="stake"
 TG_SERVICE="stake-tg"
 WEB_SERVICE="stake-web"
+# Parallel lanes: lane 1 = $SERVICE, lanes 2..N = stake-lane@K
+LANE_SERVICE="stake-lane"
+LANES_MAX=10
+SYSTEMD_DIR="$HOME/.config/systemd/user"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/stake.py"
 TG_ENV="$HOME/.stake_tg_env"
+CONFIG="$HOME/.stake_autobot.json"
+DB="$HOME/.stake_autobot.db"
 SCRIPT_NAME="stakectl"
+# Grep-parsed by update / refresh / doctor to spot an installed copy older
+# than the repo copy: keep the format `STAKECTL_VERSION=X.Y`.
+STAKECTL_VERSION=2.2
 
 usage() {
     echo ""
-    echo "  stakectl: Stake AutoBot Manager v2.1"
+    echo "  stakectl: Stake AutoBot Manager v$STAKECTL_VERSION"
     echo ""
     echo "  SETUP:"
     echo "    stakectl setup       Run wizard to configure (saves config, doesn't start)"
     echo ""
     echo "  RUNNING:"
-    echo "    stakectl start       Start bot as background daemon"
-    echo "    stakectl stop        Stop the bot"
-    echo "    stakectl restart     Restart the bot"
+    echo "    stakectl start       Start bot as background daemon (every lane)"
+    echo "    stakectl stop        Stop the bot (every lane)"
+    echo "    stakectl restart     Restart the bot (every lane)"
+    echo "    stakectl lanes [N] [--split none|budget|bet|both]   Show or set parallel lanes (1-$LANES_MAX)"
+    echo "    stakectl preset NAME Load a named preset and start as a daemon"
     echo ""
     echo "  MONITORING:"
-    echo "    stakectl monitor     Attach live TUI to running daemon (Q=detach, S=stop)"
+    echo "    stakectl monitor [K] Attach live TUI to running daemon, lane K (Q=detach, S=stop)"
     echo "    stakectl status      Show bot status snapshot (non-interactive)"
     echo "    stakectl logs        Stream live logs"
     echo "    stakectl logs-full   Show last 200 log lines"
+    echo "    stakectl diagnose    Bottleneck analysis of the running session"
+    echo "    stakectl benchmark [N] [--lanes M]  Time N probe requests"
+    echo "    stakectl doctor [--fix] [--yes]     Health check; --fix applies safe fixes"
     echo ""
     echo "  BATCH:"
-    echo "    stakectl start-all   Start all services (bot + TG + web)"
-    echo "    stakectl stop-all    Stop all services"
-    echo "    stakectl status-all  Show status of all services"
+    echo "    stakectl start-all   Start CLI Bot + Telegram Bot + Web Admin"
+    echo "    stakectl stop-all    Stop  CLI Bot + Telegram Bot + Web Admin"
+    echo "    stakectl status-all  Show status of all three services"
     echo ""
     echo "  SHORTCUTS:"
     echo "    stakectl interactive Start daemon + attach monitor in one command"
     echo "    stakectl tmux        Run monitor in a detachable tmux session"
     echo ""
+    echo "  CONFIG:"
+    echo "    stakectl config-show Print the saved config (secrets masked)"
+    echo "    stakectl config-set KEY=VALUE ...  Change saved keys; a running daemon reloads"
+    echo ""
     echo "  DATA:"
-    echo "    stakectl stats       Show session statistics (--since/--until DATE, --lane K to filter)"
-    echo "    stakectl analytics   Aggregates by game / strategy / lane (--since/--until/--lane)"
+    echo "    stakectl stats [--since DATE] [--until DATE] [--lane K]      Session stats (optional window / lane)"
+    echo "    stakectl analytics [--since DATE] [--until DATE] [--lane K]  Aggregates: by game, strategy, lane, top 5"
     echo "    stakectl session ID  Full stats + streak distribution for a session"
+    echo "    stakectl last-bets [N]  Last N bets across all sessions (default 20)"
     echo "    stakectl presets     List saved presets"
     echo "    stakectl export PATH [SID]  Export a session (CSV, or JSON by .json extension)"
     echo "    stakectl backtest [args]    Backtest / replay offline (no API calls, no Cloudflare, no real balance)"
-    echo "    stakectl update      Update bot from current directory"
+    echo "    stakectl cleanup [DAYS]     Purge bet rows of old sessions (default: purge_days)"
+    echo "    stakectl reset [--yes]      Archive the stats DB and start fresh (never deletes)"
+    echo "    stakectl archives    List archived stats DBs"
+    echo "    stakectl run-reset [--yes]  New run total for the run-wide profit increment"
+    echo ""
+    echo "  MAINTENANCE:"
+    echo "    stakectl update      Pull, reinstall requirements, restart what was running"
+    echo "    stakectl refresh     Reinstall stakectl from the repo copy in this folder"
+    echo "    stakectl version     Bot and stakectl versions"
     echo ""
     echo "  TELEGRAM BOT:"
     echo "    stakectl tg setup    Set Telegram bot token"
@@ -83,9 +110,137 @@ cmd_setup() {
     "$PYTHON" "$BOT" --setup-only
 }
 
+# ── Parallel lanes ────────────────────────────────────
+# Configured lane count from the config file (1 when unset / unreadable).
+lane_count() {
+    "$PYTHON" - "$CONFIG" <<'PY' 2>/dev/null || echo 1
+import json, sys
+try:
+    n = int((json.load(open(sys.argv[1])).get("lanes") or {}).get("count") or 1)
+except Exception:
+    n = 1
+print(max(1, min(10, n)))
+PY
+}
+
+# Write the systemd template for lanes 2..N (same unit as lane 1 + --lane %i).
+ensure_lane_unit() {
+    local unit="$SYSTEMD_DIR/${LANE_SERVICE}@.service"
+    [ -f "$unit" ] && grep -q -- '--lane %i' "$unit" && grep -q '^WantedBy=' "$unit" && return 0
+    mkdir -p "$SYSTEMD_DIR"
+    cat > "$unit" << UNITEOF
+[Unit]
+Description=Stake AutoBot - parallel lane %i (CLI)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/stake.py --resume --daemon --lane %i
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+Environment=HOME=${HOME}
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+UNITEOF
+    systemctl --user daemon-reload
+}
+
+# Start and boot-enable lanes 2..count; stop and disable every lane above
+# count. With --no-start the kept lanes are only boot-enabled (bot stopped).
+sync_lanes() {
+    local n="$1" k now="--now"
+    [ "${2:-}" = "--no-start" ] && now=""
+    if [ "$n" -gt 1 ]; then
+        ensure_lane_unit
+    fi
+    for k in $(seq 2 "$LANES_MAX"); do
+        if [ "$k" -le "$n" ]; then
+            systemctl --user enable $now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+        elif systemctl --user is-enabled --quiet "${LANE_SERVICE}@${k}" 2>/dev/null \
+                || systemctl --user is-active --quiet "${LANE_SERVICE}@${k}" 2>/dev/null; then
+            systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+            echo "  lane $k stopped"
+        fi
+    done
+}
+
+stop_all_lanes() {
+    local k
+    for k in $(seq 2 "$LANES_MAX"); do
+        systemctl --user stop "${LANE_SERVICE}@${k}" 2>/dev/null || true
+    done
+}
+
+lane_split_mode() {
+    "$PYTHON" - "$CONFIG" <<'PY' 2>/dev/null || echo none
+import json, sys
+try:
+    print((json.load(open(sys.argv[1])).get("lanes") or {}).get("split") or "none")
+except Exception:
+    print("none")
+PY
+}
+
+cmd_lanes() {
+    local n="${1:-}" split=""
+    shift || true
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --split) split="${2:-}"; shift 2 || { echo "Usage: stakectl lanes N --split none|budget|bet|both"; exit 1; } ;;
+            --split=*) split="${1#--split=}"; shift ;;
+            *) echo "Unknown option: $1"; exit 1 ;;
+        esac
+    done
+    if [ -n "$split" ]; then
+        case "$split" in none|budget|bet|both) ;; *) echo "--split must be none, budget, bet or both"; exit 1 ;; esac
+    fi
+    if [ -z "$n" ]; then
+        echo "Configured lanes: $(lane_count)"
+        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+        echo "  Split: $(lane_split_mode)"
+        echo "  Change with: stakectl lanes N [--split none|budget|bet|both]   (1-$LANES_MAX)"
+        return
+    fi
+    case "$n" in ''|*[!0-9]*) echo "Usage: stakectl lanes N  (1-$LANES_MAX)"; exit 1 ;; esac
+    if [ "$n" -lt 1 ] || [ "$n" -gt "$LANES_MAX" ]; then
+        echo "lanes must be 1-$LANES_MAX"; exit 1
+    fi
+    if [ -n "$split" ]; then
+        "$PYTHON" "$BOT" --config-set "lanes=$n" "lane_split=$split" >/dev/null
+    else
+        "$PYTHON" "$BOT" --config-set "lanes=$n" >/dev/null
+    fi
+    echo "Lanes set to $n - split: $(lane_split_mode)."
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        # Restart every lane so each recomputes its budget share.
+        echo "Restarting lanes (each running chain is saved and ended)..."
+        stop_all_lanes
+        systemctl --user restart "$SERVICE"
+        sync_lanes "$n"
+        sleep 2
+        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+    else
+        sync_lanes "$n" --no-start
+        echo "Bot not running - start all $n lane(s) with: stakectl start"
+    fi
+}
+
 cmd_start() {
-    # check if config exists
-    if [ ! -f "$HOME/.stake_autobot.json" ]; then
+    if [ ! -f "$CONFIG" ]; then
         echo "No config found. Run 'stakectl setup' first."
         exit 1
     fi
@@ -95,11 +250,18 @@ cmd_start() {
     fi
     systemctl --user start "$SERVICE"
     sleep 1
-    if systemctl --user is-active --quiet "$SERVICE" && [ "$was_active" -eq 1 ]; then
-        echo "CLI bot was already running - nothing restarted."
-        echo "  Apply a saved config:  stakectl restart"
-    elif systemctl --user is-active --quiet "$SERVICE"; then
-        echo "Bot started successfully."
+    if systemctl --user is-active --quiet "$SERVICE"; then
+        local n
+        n=$(lane_count)
+        sync_lanes "$n"
+        if [ "$was_active" -eq 1 ]; then
+            echo "CLI bot was already running - nothing restarted."
+            echo "  Apply a saved config:  stakectl restart"
+        elif [ "$n" -gt 1 ]; then
+            echo "Bot started with $n lanes."
+        else
+            echo "Bot started successfully."
+        fi
         echo "  Check status:  stakectl status"
         echo "  View logs:     stakectl logs"
     else
@@ -108,32 +270,18 @@ cmd_start() {
     fi
 }
 
-cmd_export() {
-    local path="${1:-}" sid="${2:-}"
-    if [ -z "$path" ]; then
-        echo "Usage: stakectl export PATH [SESSION_ID]"
-        exit 1
-    fi
-    if [ -n "$sid" ]; then
-        "$PYTHON" "$BOT" --export "$path" --export-session-id "$sid"
-    else
-        "$PYTHON" "$BOT" --export "$path"
-    fi
-}
-
-cmd_backtest() {
-    "$PYTHON" "$BOT" --backtest "$@"
-}
-
 cmd_stop() {
+    stop_all_lanes
     systemctl --user stop "$SERVICE"
     echo "Bot stopped."
     "$PYTHON" "$BOT" --status 2>/dev/null || true
 }
 
 cmd_restart() {
+    stop_all_lanes
     systemctl --user restart "$SERVICE"
     sleep 1
+    sync_lanes "$(lane_count)"
     echo "Bot restarted."
     "$PYTHON" "$BOT" --status 2>/dev/null || true
 }
@@ -145,6 +293,10 @@ cmd_status() {
     echo ""
     echo "── Session Status ──"
     "$PYTHON" "$BOT" --status 2>/dev/null || echo "  No active session"
+    if [ "$(lane_count)" -gt 1 ]; then
+        echo ""
+        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+    fi
 }
 
 cmd_logs() {
@@ -156,15 +308,16 @@ cmd_logs_full() {
 }
 
 cmd_monitor() {
-    "$PYTHON" "$BOT" --monitor
+    local k="${1:-1}"
+    case "$k" in ''|*[!0-9]*) k=1 ;; esac
+    "$PYTHON" "$BOT" --monitor --lane "$k"
 }
 
 cmd_interactive() {
-    if [ ! -f "$HOME/.stake_autobot.json" ]; then
+    if [ ! -f "$CONFIG" ]; then
         echo "No config found. Run 'stakectl setup' first."
         exit 1
     fi
-    # Start daemon if not running
     if ! systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
         systemctl --user start "$SERVICE"
         sleep 1
@@ -174,15 +327,13 @@ cmd_interactive() {
         fi
         echo "Daemon started."
     fi
-    # Attach monitor
     "$PYTHON" "$BOT" --monitor
 }
 
 cmd_tmux() {
     SESSION="stake"
-    # Ensure daemon is running
     if ! systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
-        if [ ! -f "$HOME/.stake_autobot.json" ]; then
+        if [ ! -f "$CONFIG" ]; then
             echo "No config found. Run 'stakectl setup' first."
             exit 1
         fi
@@ -222,11 +373,444 @@ cmd_presets() {
     "$PYTHON" "$BOT" --list-presets
 }
 
+cmd_last_bets() {
+    local n="${1:-20}"
+    "$PYTHON" "$BOT" --last-bets "$n"
+}
+
+cmd_config_show() {
+    "$PYTHON" "$BOT" --config-show
+}
+
+cmd_config_set() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: stakectl config-set KEY=VALUE [KEY=VALUE ...]"
+        echo "  Aliases match the T-hotkey grammar (delay, maxprofit, basebet, ...)."
+        exit 2
+    fi
+    "$PYTHON" "$BOT" --config-set "$@"
+}
+
+cmd_version() {
+    "$PYTHON" "$BOT" --version
+    echo "  stakectl v$STAKECTL_VERSION"
+}
+
+cmd_export() {
+    local path="${1:-}" sid="${2:-}"
+    if [ -z "$path" ]; then
+        echo "Usage: stakectl export PATH [SESSION_ID]"
+        exit 1
+    fi
+    if [ -n "$sid" ]; then
+        "$PYTHON" "$BOT" --export "$path" --export-session-id "$sid"
+    else
+        "$PYTHON" "$BOT" --export "$path"
+    fi
+}
+
+cmd_backtest() {
+    "$PYTHON" "$BOT" --backtest "$@"
+}
+
+cmd_preset() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        echo "Usage: stakectl preset NAME"
+        echo "  Loads the named preset and starts it as a daemon. Attach with: stakectl monitor"
+        exit 2
+    fi
+    "$PYTHON" "$BOT" --preset "$name" --daemon
+}
+
+cmd_cleanup() {
+    local days="${1:-}"
+    if [ -z "$days" ]; then
+        "$PYTHON" "$BOT" --cleanup
+    else
+        "$PYTHON" "$BOT" --cleanup "$days"
+    fi
+}
+
+cmd_benchmark() {
+    local n="" args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --lanes) args+=(--lanes "${2:-2}"); shift 2 || shift ;;
+            --yes|-y) args+=(--yes); shift ;;
+            *[!0-9]*|'') shift ;;
+            *) n="$1"; shift ;;
+        esac
+    done
+    if [ -z "$n" ]; then
+        "$PYTHON" "$BOT" --benchmark ${args[@]+"${args[@]}"}
+    else
+        "$PYTHON" "$BOT" --benchmark "$n" ${args[@]+"${args[@]}"}
+    fi
+}
+
+cmd_diagnose() {
+    "$PYTHON" "$BOT" --diagnose
+}
+
+# Hard statistics reset. ARCHIVES the DB (mv, never deletes) so a fresh
+# statistics flow can begin while the config stays untouched. The daemon is
+# stopped if running; stale live state is cleared so --resume doesn't bring
+# the old session number into the fresh DB.
+cmd_reset() {
+    local yes=0
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) yes=1 ;;
+        esac
+    done
+    if [ ! -f "$DB" ]; then
+        echo "No DB found at $DB - nothing to reset."
+        return
+    fi
+    local sess bets size
+    sess=$(sqlite3 "$DB" "SELECT COUNT(*) FROM sessions" 2>/dev/null || echo "?")
+    bets=$(sqlite3 "$DB" "SELECT COALESCE(SUM(total_bets),0) FROM sessions" 2>/dev/null || echo "?")
+    size=$(du -h "$DB" | awk '{print $1}')
+    local was_running=0
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        was_running=1
+    fi
+    if [ "$yes" = "0" ]; then
+        echo "This will ARCHIVE (not delete) your statistics and start fresh:"
+        echo "  sessions: $sess   bets: $bets   db size: $size"
+        echo "  archive  -> ~/.stake_autobot-<timestamp>.db"
+        echo "  config   -> untouched (~/.stake_autobot.json)"
+        [ "$was_running" = "1" ] && echo "  daemon   -> will be stopped (not restarted)"
+        local reply=""
+        read -r -p "Proceed? [y/N] " reply || true
+        case "$reply" in
+            y|Y|yes|YES) ;;
+            *) echo "Aborted."; return ;;
+        esac
+    fi
+    if [ "$was_running" = "1" ]; then
+        stop_all_lanes
+        systemctl --user stop "$SERVICE"
+        echo "Daemon stopped."
+    fi
+    local ts archive
+    ts=$(date +%Y%m%d-%H%M%S)
+    archive="$HOME/.stake_autobot-$ts.db"
+    mv "$DB" "$archive"
+    rm -f "$HOME/.stake_autobot_live.json" "$HOME"/.stake_autobot_live.lane*.json
+    # Session ids restart at 1, so the run-wide profit total starts over too.
+    rm -f "$HOME/.stake_run.json" "$HOME"/.stake_run.lane*.json
+    echo "Archived -> $archive  ($sess sessions, $bets bets, $size)"
+    echo "Config untouched. Next 'stakectl start' begins fresh statistics."
+    echo "Revisit anytime: stakectl archives"
+}
+
+# Start a new run total for the run-wide profit increment.
+cmd_run_reset() {
+    local yes=0 was_running=0
+    for arg in "$@"; do
+        case "$arg" in --yes|-y) yes=1 ;; esac
+    done
+    systemctl --user is-active --quiet "$SERVICE" 2>/dev/null && was_running=1
+    if [ "$yes" = "0" ]; then
+        echo "This starts a new run total for profit_increment_scope=run:"
+        echo "  run profit -> back to 0 from the next session"
+        echo "  base_bet   -> back to the config value (run bumps dropped)"
+        echo "  statistics -> untouched"
+        [ "$was_running" = "1" ] && echo "  lanes      -> restarted (each running chain is saved and ended)"
+        local reply=""
+        read -r -p "Proceed? [y/N] " reply || true
+        case "$reply" in
+            y|Y|yes|YES) ;;
+            *) echo "Aborted."; return ;;
+        esac
+    fi
+    if [ "$was_running" = "1" ]; then
+        stop_all_lanes
+        systemctl --user stop "$SERVICE"
+    fi
+    "$PYTHON" "$BOT" --run-reset
+    if [ "$was_running" = "1" ]; then
+        systemctl --user start "$SERVICE"
+        sync_lanes "$(lane_count)"
+        echo "Lanes restarted on a new run."
+    fi
+}
+
+# List archived statistics DBs with session counts + date spans.
+cmd_archives() {
+    local found=0 total_bytes=0
+    for f in "$HOME"/.stake_autobot-*.db; do
+        [ -f "$f" ] || continue
+        found=1
+        local sess span size bytes
+        sess=$(sqlite3 "$f" "SELECT COUNT(*) FROM sessions" 2>/dev/null || echo "?")
+        span=$(sqlite3 "$f" "SELECT COALESCE(MIN(started_at),'?') || ' -> ' || COALESCE(MAX(started_at),'?') FROM sessions" 2>/dev/null || echo "?")
+        size=$(du -h "$f" | awk '{print $1}')
+        bytes=$(wc -c < "$f" | tr -d ' ')
+        total_bytes=$(( total_bytes + bytes ))
+        printf "  %s  %s sessions  %s  %s\n" "$(basename "$f")" "$sess" "$span" "$size"
+    done
+    if [ "$found" = "0" ]; then
+        echo "No archives found (~/.stake_autobot-*.db)."
+        echo "Create one with: stakectl reset"
+        return
+    fi
+    echo ""
+    echo "  Total: $(echo "$total_bytes" | awk '{printf "%.1f MB", $1/1024/1024}')"
+    echo "  Query any archive directly: sqlite3 <archive> 'SELECT ... FROM sessions'"
+}
+
+# STAKECTL_VERSION of a stakectl file ("" when unreadable).
+_ctl_version_of() {
+    grep -m1 '^STAKECTL_VERSION=' "$1" 2>/dev/null | cut -d= -f2 || true
+}
+
+_file_mode() {
+    stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo "?"
+}
+
+# Health check. Read-only by default; --fix applies the safe fixes only
+# (boot-enable the CLI unit, config mode 0600, bet-row cleanup, VACUUM,
+# journal vacuum). Privileged fixes are prescribed, never applied. On
+# virtualized hosts the CPU governor advice is [SKIP]: guests can't change it.
+cmd_doctor() {
+    local do_fix=0 do_yes=0
+    for arg in "$@"; do
+        case "$arg" in
+            --fix)     do_fix=1 ;;
+            --yes|-y)  do_yes=1 ;;
+        esac
+    done
+    local fix_enable=0 fix_perms=0 do_vacuum=0 do_journal=0
+
+    echo "--- stakectl doctor ---"
+    echo ""
+    echo "1. Install:"
+    if [ -f "$SYSTEMD_DIR/${SERVICE}.service" ]; then
+        echo "  [OK]    unit file ${SERVICE}.service"
+    else
+        echo "  [WARN]  unit file ${SERVICE}.service missing - rerun install.sh"
+    fi
+    if systemctl --user is-enabled --quiet "$SERVICE" 2>/dev/null; then
+        echo "  [OK]    ${SERVICE}.service enabled (starts on boot)"
+    else
+        echo "  [WARN]  ${SERVICE}.service is not enabled: a reboot leaves the bot down"
+        echo "          fix: systemctl --user enable ${SERVICE}"
+        fix_enable=1
+    fi
+    if [ -x "$PYTHON" ]; then
+        echo "  [OK]    venv python $PYTHON"
+        if "$PYTHON" -c "import shared" >/dev/null 2>&1; then
+            echo "  [OK]    casino-shared importable"
+        else
+            echo "  [WARN]  casino-shared does not import - run: stakectl update"
+        fi
+    else
+        echo "  [WARN]  venv python missing at $PYTHON - rerun install.sh"
+    fi
+    if [ -f "$CONFIG" ]; then
+        local mode
+        mode=$(_file_mode "$CONFIG")
+        if [ "$mode" = "600" ]; then
+            echo "  [OK]    config mode 600"
+        else
+            echo "  [WARN]  config mode $mode (holds credentials, should be 600)"
+            echo "          fix: chmod 600 $CONFIG"
+            fix_perms=1
+        fi
+    else
+        echo "  [WARN]  no config at $CONFIG - run: stakectl setup"
+    fi
+    if [ -f "$SCRIPT_NAME" ] && [ "$(_ctl_version_of "$SCRIPT_NAME")" != "$STAKECTL_VERSION" ]; then
+        echo "  [WARN]  stakectl $STAKECTL_VERSION is older than the repo copy ($(_ctl_version_of "$SCRIPT_NAME")) - run: stakectl refresh"
+    fi
+
+    echo ""
+    echo "2. Live diagnostic (stakectl diagnose):"
+    "$PYTHON" "$BOT" --diagnose 2>/dev/null || echo "  (daemon not running - start with 'stakectl start')"
+
+    echo ""
+    echo "3. Database:"
+    local frag_pct=0
+    if [ -f "$DB" ]; then
+        local db_size page_count freelist integrity
+        db_size=$(du -h "$DB" 2>/dev/null | awk '{print $1}')
+        page_count=$(sqlite3 "$DB" "PRAGMA page_count" 2>/dev/null || echo 0)
+        freelist=$(sqlite3 "$DB" "PRAGMA freelist_count" 2>/dev/null || echo 0)
+        if [ "$page_count" -gt 0 ] 2>/dev/null; then
+            frag_pct=$(( freelist * 100 / page_count ))
+        fi
+        echo "  DB: $DB  size=$db_size  fragmentation=${frag_pct}% (freelist=$freelist / pages=$page_count)"
+        integrity=$(sqlite3 "$DB" "PRAGMA integrity_check" 2>/dev/null | head -1 || true)
+        if [ "$integrity" = "ok" ]; then
+            echo "  [OK]    integrity_check ok"
+        elif [ -n "$integrity" ]; then
+            echo "  [WARN]  integrity_check: $integrity - archive with: stakectl reset"
+        else
+            echo "  [SKIP]  integrity_check (sqlite3 not installed)"
+        fi
+    else
+        echo "  DB: $DB not found (daemon has never run?)"
+    fi
+
+    echo ""
+    echo "4. Journal size (${SERVICE}.service):"
+    journalctl --user -u "$SERVICE" --disk-usage 2>/dev/null | sed 's/^/  /' \
+        || echo "  (not managed by systemd)"
+
+    echo ""
+    echo "5. System resources:"
+    echo "  Load: $(uptime | awk -F'load average[s]*: ' '{print $2}')"
+    echo "  Disk on \$HOME:"
+    df -h "$HOME" | tail -1 | sed 's/^/    /'
+    local avail_pct
+    avail_pct=$(df -P "$HOME" | awk 'NR==2 {gsub("%","",$5); print 100-$5}')
+    if [ -n "$avail_pct" ] && [ "$avail_pct" -lt 10 ] 2>/dev/null; then
+        echo "  [WARN]  only ${avail_pct}% disk free - run: stakectl cleanup 1"
+    fi
+
+    echo ""
+    echo "6. Daemon priority:"
+    local pid nice_val
+    pid=$(pgrep -f 'stake\.py.*--daemon' 2>/dev/null | head -1 || true)
+    if [ -n "$pid" ]; then
+        nice_val=$(ps -o ni= -p "$pid" 2>/dev/null | tr -d ' ')
+        echo "  PID $pid  nice=${nice_val:-?}"
+    else
+        echo "  (daemon not running)"
+    fi
+
+    echo ""
+    echo "7. FlareSolverr (Cloudflare fallback):"
+    local fs_url="${FLARESOLVERR_URL:-http://localhost:8191/v1}"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^flaresolverr$'; then
+        echo "  [INFO]  flaresolverr container running"
+    else
+        echo "  [INFO]  flaresolverr container not running (start with: stakectl flaresolverr start)"
+    fi
+    if curl -s --max-time 3 "$fs_url" >/dev/null 2>&1; then
+        echo "  [INFO]  FlareSolverr reachable at $fs_url"
+    else
+        echo "  [INFO]  FlareSolverr not reachable at $fs_url"
+    fi
+
+    echo ""
+    echo "--- Prescriptions ---"
+    if [ "$frag_pct" -ge 20 ] 2>/dev/null; then
+        echo "  [SAFE]  SQLite VACUUM (fragmentation ${frag_pct}% >= 20%):"
+        echo "          sqlite3 $DB 'VACUUM;'"
+        do_vacuum=1
+    fi
+    echo "  [SAFE]  Force bet-row retention now:"
+    echo "          stakectl cleanup 1"
+    local jsz
+    jsz=$(journalctl --user -u "$SERVICE" --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMG]' | head -1 || true)
+    if [ -n "$jsz" ] && echo "$jsz" | grep -qE '[0-9]+G|[5-9][0-9][0-9]M'; then
+        echo "  [SAFE]  Journal is large ($jsz) - vacuum to 100 M:"
+        echo "          journalctl --user --vacuum-size=100M"
+        do_journal=1
+    fi
+    if [ -n "$pid" ] && [ -n "${nice_val:-}" ] && [ "$nice_val" -gt -5 ] 2>/dev/null; then
+        echo "  [PRIV]  Raise daemon scheduling priority (needs sudo):"
+        echo "          sudo renice -n -5 -p $pid"
+        echo "          sudo ionice -c 2 -n 0 -p $pid"
+    fi
+    local virt="" gov
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        virt=$(systemd-detect-virt 2>/dev/null || echo "")
+    fi
+    gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true)
+    if [ -n "$gov" ] && [ "$gov" != "performance" ]; then
+        if [ -n "$virt" ] && [ "$virt" != "none" ]; then
+            echo "  [SKIP]  CPU governor is '$gov' but this host is virtualized ($virt):"
+            echo "          guests cannot set the governor."
+        else
+            echo "  [PRIV]  Pin CPU governor to performance (needs sudo):"
+            echo "          sudo cpupower frequency-set -g performance"
+        fi
+    elif [ -z "$gov" ] && [ -n "$virt" ] && [ "$virt" != "none" ]; then
+        echo "  [SKIP]  CPU governor not exposed on this virtualized host ($virt)."
+    fi
+
+    if [ "$do_fix" = "1" ]; then
+        echo ""
+        echo "--- Applying safe fixes (--fix) ---"
+        _doctor_run_fix() {
+            local desc="$1" reply=""
+            shift
+            if [ "$do_yes" = "0" ]; then
+                read -r -p "  $desc - apply? [y/N] " reply || true
+                case "$reply" in
+                    y|Y|yes|YES) ;;
+                    *) echo "    skipped."; return ;;
+                esac
+            fi
+            echo "  \$ $*"
+            "$@" || echo "    failed."
+        }
+        if [ "$fix_enable" = "1" ]; then
+            _doctor_run_fix "Enable ${SERVICE}.service on boot" systemctl --user enable "$SERVICE"
+        fi
+        if [ "$fix_perms" = "1" ]; then
+            _doctor_run_fix "Set the config to mode 600" chmod 600 "$CONFIG"
+        fi
+        _doctor_run_fix "Force bet-row retention (age > 1 day)" "$PYTHON" "$BOT" --cleanup 1
+        if [ "$do_vacuum" = "1" ]; then
+            _doctor_run_fix "SQLite VACUUM (reclaim fragmented pages)" sqlite3 "$DB" "VACUUM;"
+        fi
+        if [ "$do_journal" = "1" ]; then
+            _doctor_run_fix "Journal vacuum to 100 M" journalctl --user --vacuum-size=100M
+        fi
+        echo ""
+        echo "Done. Run 'stakectl diagnose' again in 5 minutes to see the delta."
+    else
+        echo ""
+        echo "To apply the safe fixes, run: stakectl doctor --fix   (add --yes to skip each prompt)"
+    fi
+}
+
+# Copy the repo's stakectl (this folder) over the installed one.
+_install_ctl() {
+    local installed="$1"
+    install -m 0755 "$SCRIPT_NAME" "$installed"
+}
+
+# Reinstall stakectl from the repo copy in the current folder. No pull, no
+# pip install, no restart.
+cmd_refresh() {
+    if [ ! -f "$SCRIPT_NAME" ]; then
+        echo "No $SCRIPT_NAME in the current folder: run this from the stake repo."
+        exit 1
+    fi
+    local installed repo_ver
+    installed="$(command -v "$SCRIPT_NAME" 2>/dev/null || echo "$HOME/.local/bin/$SCRIPT_NAME")"
+    repo_ver="$(_ctl_version_of "$SCRIPT_NAME")"
+    if [ -f "$installed" ] && cmp -s "$SCRIPT_NAME" "$installed"; then
+        echo "stakectl already current ($repo_ver) at $installed"
+        return
+    fi
+    mkdir -p "$(dirname "$installed")"
+    _install_ctl "$installed"
+    echo "stakectl $STAKECTL_VERSION -> ${repo_ver:-unknown} installed at $installed"
+}
+
 cmd_update() {
-    # Pull latest from git if inside a repo
     if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "Pulling latest from git..."
-        git pull --ff-only || { echo "Git pull failed. Resolve manually."; exit 1; }
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "Local changes detected - autostashing before pull:"
+            git status --porcelain
+        fi
+        # --autostash stashes local changes, pulls, then pops them back.
+        # A pop conflict leaves the stash in place for manual recovery.
+        if ! git pull --ff-only --autostash; then
+            echo "Git pull failed. Resolve manually."
+            echo "  If you had local changes, they were stashed."
+            echo "  Recover with: git stash list  |  git stash pop"
+            exit 1
+        fi
     fi
     if [ ! -f "stake.py" ]; then
         echo "No stake.py in current directory."
@@ -237,10 +821,6 @@ cmd_update() {
     cp requirements.txt "$INSTALL_DIR/" 2>/dev/null
     [ -f ".env.example" ] && cp .env.example "$INSTALL_DIR/"
 
-    # Update deps if requirements changed
-    "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt" 2>/dev/null || true
-
-    # Update TG bot files if present
     if [ -d "core" ]; then
         mkdir -p "$INSTALL_DIR/core"
         cp core/*.py "$INSTALL_DIR/core/"
@@ -248,13 +828,6 @@ cmd_update() {
     if [ -d "tg" ]; then
         mkdir -p "$INSTALL_DIR/tg"
         cp tg/*.py "$INSTALL_DIR/tg/"
-    fi
-
-    # Update shared/ library
-    if [ -d "../shared" ]; then
-        rm -rf "$INSTALL_DIR/shared"
-        cp -r ../shared "$INSTALL_DIR/"
-        echo "shared/ library updated."
     fi
 
     # Install the pinned requirements, casino-shared included
@@ -267,15 +840,46 @@ cmd_update() {
         fi
     fi
 
-    # Self-update: copy this script to its installed location
+    # Self-update, and say when the stakectl that is running is older than
+    # the repo copy: the old one runs this update to the end, so the operator
+    # reruns it once to get the new commands.
     if [ -f "$SCRIPT_NAME" ]; then
-        local installed
+        local installed repo_ver
         installed="$(command -v "$SCRIPT_NAME" 2>/dev/null || true)"
         if [ -n "$installed" ] && [ -f "$installed" ]; then
-            cp "$SCRIPT_NAME" "$installed"
-            chmod +x "$installed"
-            echo "Updated $SCRIPT_NAME → $installed"
+            _install_ctl "$installed"
+            echo "Updated $SCRIPT_NAME -> $installed"
         fi
+        repo_ver="$(_ctl_version_of "$SCRIPT_NAME")"
+        if [ -n "$repo_ver" ] && [ "$repo_ver" != "$STAKECTL_VERSION" ]; then
+            echo ""
+            echo "  stakectl was stale: $STAKECTL_VERSION -> $repo_ver"
+            echo "     Re-run once to use the new commands:  exec stakectl update"
+            echo ""
+        fi
+    fi
+
+    # Restart=always respawns a stopped bot; on-failure keeps a stop stopped.
+    # The CLI unit also gets Nice=-5 + IO priority. Both edits are idempotent.
+    local _sd_reload=0 _unit _unit_path
+    for _unit in "${SERVICE}.service" "${TG_SERVICE}.service" "${WEB_SERVICE}.service" "${LANE_SERVICE}@.service"; do
+        _unit_path="$SYSTEMD_DIR/$_unit"
+        [ -f "$_unit_path" ] || continue
+        if grep -q '^Restart=always$' "$_unit_path"; then
+            sed -i.bak 's/^Restart=always$/Restart=on-failure/' "$_unit_path" \
+                && rm -f "$_unit_path.bak" \
+                && echo "Migrated $_unit: Restart=always -> Restart=on-failure" \
+                && _sd_reload=1
+        fi
+        if [ "$_unit" = "${SERVICE}.service" ] && ! grep -q '^Nice=' "$_unit_path"; then
+            sed -i.bak '/^\[Service\]$/a Nice=-5\nIOSchedulingClass=best-effort\nIOSchedulingPriority=0' "$_unit_path" \
+                && rm -f "$_unit_path.bak" \
+                && echo "Added Nice=-5 + IO priority to $_unit" \
+                && _sd_reload=1
+        fi
+    done
+    if [ "$_sd_reload" = "1" ]; then
+        systemctl --user daemon-reload 2>/dev/null || true
     fi
 
     # Update web app if installed
@@ -302,7 +906,22 @@ cmd_update() {
     else
         echo "Updated. TG bot not running (skipped restart)."
     fi
-    echo "  CLI bot: stakectl restart"
+
+    # Restart the CLI daemon (and its lanes) so it runs the new stake.py;
+    # --resume keeps the session.
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        stop_all_lanes
+        systemctl --user restart "$SERVICE"
+        sleep 1
+        sync_lanes "$(lane_count)"
+        if systemctl --user is-active --quiet "$SERVICE"; then
+            echo "CLI daemon restarted (session auto-resumed)."
+        else
+            echo "CLI restart failed. Check: stakectl logs-full"
+        fi
+    else
+        echo "  CLI bot not running: stakectl start"
+    fi
 }
 
 cmd_start_all() {
@@ -318,6 +937,7 @@ cmd_start_all() {
 
 cmd_stop_all() {
     echo "Stopping all services..."
+    stop_all_lanes
     systemctl --user stop "$SERVICE" 2>/dev/null || true
     systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
     systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
@@ -550,7 +1170,8 @@ case "${1:-}" in
     stop)         cmd_stop ;;
     restart)      cmd_restart ;;
     status)       cmd_status ;;
-    monitor)      cmd_monitor ;;
+    monitor)      cmd_monitor "${2:-}" ;;
+    lanes)        shift; cmd_lanes "$@" ;;
     logs)         cmd_logs ;;
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;
@@ -559,15 +1180,29 @@ case "${1:-}" in
     analytics)    cmd_analytics "${@:2}" ;;
     session)      cmd_session "${2:-}" ;;
     presets)      cmd_presets ;;
+    last-bets)    cmd_last_bets "${2:-}" ;;
     export)       cmd_export "${2:-}" "${3:-}" ;;
     backtest)     shift; cmd_backtest "$@" ;;
+    preset)       cmd_preset "${2:-}" ;;
+    config-show)  cmd_config_show ;;
+    config-set)   shift; cmd_config_set "$@" ;;
+    cleanup)      cmd_cleanup "${2:-}" ;;
+    benchmark)    shift; cmd_benchmark "$@" ;;
+    diagnose)     cmd_diagnose ;;
+    doctor)       shift; cmd_doctor "$@" ;;
+    reset)        shift; cmd_reset "$@" ;;
+    run-reset)    shift; cmd_run_reset "$@" ;;
+    archives)     cmd_archives ;;
+    refresh)      cmd_refresh ;;
+    version|--version|-v) cmd_version ;;
     update)       cmd_update ;;
-    tg)           cmd_tg "${2:-}" ;;
-    web)          cmd_web "${@:2}" ;;
-    flaresolverr) cmd_flaresolverr "${2:-}" ;;
     start-all)    cmd_start_all ;;
     stop-all)     cmd_stop_all ;;
     status-all)   cmd_status_all ;;
+    flaresolverr) cmd_flaresolverr "${2:-}" ;;
+    tg)           cmd_tg "${2:-}" ;;
+    web)          cmd_web "${@:2}" ;;
+    help|--help|-h) usage ;;
     *)            usage ;;
 esac
 exit

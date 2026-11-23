@@ -1,5 +1,35 @@
 # Changelog
 
+## stakectl v2.2 + installer v1.4 - wolfctl 3.12 operations (2026-11-23)
+
+Mirrors wolfctl 3.12 and WolfBet's installer at CLI v2.37.2, as goatedctl 1.1 does. `stakectl flaresolverr`, `warp-setup.sh` and `wireguard-setup.sh` are unchanged. `stake.py` is unchanged; every new command calls a flag it already has.
+
+### Lanes
+- `stakectl lanes [N] [--split none|budget|bet|both]` shows or sets the lane count. Lanes 2..N run as `stake-lane@K` and are enabled for boot; lanes above N are stopped and disabled. With the bot stopped, the kept lanes are only boot-enabled, so nothing starts while lane 1 is down.
+- `start`, `stop`, `restart`, `start-all`, `stop-all` and `update` act on every lane; `status` adds the per-lane table when there is more than one; `monitor K` attaches to lane K.
+- The `stake-lane@.service` template is written by the installer, and by `stakectl` when it is missing.
+
+### Statistics
+- `stakectl reset [--yes]` moves `~/.stake_autobot.db` to `~/.stake_autobot-<timestamp>.db` (never deletes it), removes the live-state files and the run files (`~/.stake_run*.json`) so the next start begins at session 1, and leaves the config alone. A running bot and its lanes are stopped, not restarted.
+- `stakectl archives` lists the archived DBs with session counts, date spans and sizes.
+- `stakectl run-reset [--yes]` starts a new run total for the run-wide profit increment and restarts the lanes that were running.
+
+### Health and upkeep
+- `stakectl doctor [--fix] [--yes]` checks the unit file, whether the CLI unit is enabled for boot (`[WARN]` with `systemctl --user enable stake`), the venv, the `casino-shared` import, config mode 0600, DB fragmentation and `integrity_check`, the journal, disk space, daemon priority stakectl drift, and FlareSolverr as `[INFO]` only (container running, and reachable at `FLARESOLVERR_URL` or `http://localhost:8191/v1`; no fix). On virtualized hosts the CPU governor advice is `[SKIP]`. `--fix` applies only safe fixes (enable the unit, chmod 600 the config, bet-row cleanup, VACUUM, journal vacuum); privileged ones are printed, never run.
+- `stakectl update` pulls with `--autostash` and lists what it stashed, keeps the pinned requirements install (stops before any restart if it fails), installs the ctl with `install -m 0755`, warns `stakectl was stale: X -> Y` when the repo copy is newer, migrates `Restart=always` to `on-failure` and adds `Nice=-5` + IO priority to the CLI unit, and restarts the web admin, the Telegram bot and the CLI with its lanes only when they were running.
+- `stakectl refresh` reinstalls stakectl from the repo copy in the current folder and prints the version change (no pull, no pip, no restart). `STAKECTL_VERSION=2.2` is the value it and `update` compare.
+- New pass-throughs: `version`, `config-show`, `config-set`, `cleanup [DAYS]`, `benchmark [N] [--lanes M] [--yes]`, `diagnose`, `last-bets [N]`, `preset NAME`.
+
+### Installer
+- The dead `../shared` copy is gone (casino-shared comes from the pinned requirements).
+- The CLI unit runs at `Nice=-5` with best-effort IO priority; the lane template is written next to it.
+- `systemctl --user enable stake` after `daemon-reload`, for boot only (no `--now`): a reboot brings the bot back, and a bot stopped by hand stays stopped.
+- The installer used to write its own inline copy of an older stakectl through a heredoc, so a fresh server got a ctl without export, backtest or lanes until the first update. It now installs the repo's `stakectl` with `install -m 0755`. The FlareSolverr container start (loopback only, pinned `v3.5.2`) is unchanged. Banner text uses plain ASCII dashes.
+
+N/A: `pipeline` (stake has no `pipeline_depth`).
+
+**Tests**: `tests/test_wolfbet_sync_e7.py` (60, the ctl run under bash against a temp HOME with stubbed systemctl and python). **489 total passing.**
+
 ## CLI v1.16.0 - exit reason, session export and offline backtest (2026-11-23)
 
 Mirrors WolfBet CLI v2.20.0 (export), v2.21.0 (backtest) and v2.37.1 (exit reason), as goated CLI v1.13.0 does.
