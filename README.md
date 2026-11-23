@@ -1,4 +1,4 @@
-# Stake AutoBot v1.9.0 + Telegram Bot v1.11.0
+# Stake AutoBot v1.16.0 + Telegram Bot v1.13.1
 
 High-speed multi-game auto-betting engine for Stake.com (Limbo + Dice) with a live terminal dashboard **and a Telegram bot**. Includes Cloudflare bypass for server via FlareSolverr + curl_cffi Chrome TLS fingerprinting.
 
@@ -253,6 +253,25 @@ python3 stake.py --stats           # Show all session history + totals + uptime
 python3 stake.py --stats --since 2026-08-01 --until 2026-08-15  # Date-windowed stats
 python3 stake.py --last-bets N     # Show last N bets across sessions
 python3 stake.py --session-bets N  # Full stats + streak distribution for session N
+python3 stake.py --version              # Print the version
+python3 stake.py --analytics            # Aggregates: by game, strategy, lane, top 5 best / worst (--since / --until / --lane K)
+python3 stake.py --config-show          # Print the saved config (secrets masked)
+python3 stake.py --config-set maxloss=5 delay=0  # Edit saved config; a running daemon reloads live keys (SIGHUP)
+python3 stake.py --config-set piscope=run pi=0.0001 pt=0.001  # Run-wide profit increment (piscope=session keeps it per session)
+python3 stake.py --benchmark 20         # Time N read-only probe requests (no bets)
+python3 stake.py --benchmark 20 --lanes 4  # Also probe 1..M concurrent clients and recommend a lane count
+python3 stake.py --diagnose             # Bottleneck analysis of the running daemon
+python3 stake.py --cleanup [DAYS]       # Purge bet rows of sessions ended > DAYS ago (default purge_days)
+python3 stake.py --config-set lanes=2 lane_split=budget  # Parallel lanes: count + money split (none / budget / bet / both)
+python3 stake.py --daemon --lane 2      # Run lane 2 (--status / --monitor / --stop / --stats --lane K act on lane K)
+python3 stake.py --lanes-status         # One row per lane + total bps
+python3 stake.py --run-reset [--lane K]  # New run total for the run-wide profit increment
+python3 stake.py --export ~/s12.csv --export-session-id 12  # Export a session (.json = JSON, else CSV; default latest)
+python3 stake.py --backtest --simulate 10000 --seed 42  # Offline backtest: no API calls, no real balance
+python3 stake.py --backtest --replay-session 12  # Replay a stored session's outcomes offline
+python3 stake.py --proxy socks5://host:1080  # Proxy for this run (http / https / socks5)
+python3 stake.py --api-base https://my-bot.example.workers.dev  # Send requests through a Cloudflare Worker proxy
+python3 stake.py --verbose              # Debug logging (dev mode)
 ```
 
 ---
@@ -276,6 +295,24 @@ stakectl stats          # View all-time statistics (--since/--until DATE to filt
 stakectl session ID     # Full stats + streak distribution
 stakectl presets        # List saved presets
 stakectl update         # Update bot from current directory
+stakectl lanes [N] [--split none|budget|bet|both]  # Show or set parallel lanes (1-10)
+stakectl diagnose           # Bottleneck analysis of the running session
+stakectl benchmark [N] [--lanes M]  # Time N probe requests
+stakectl doctor [--fix] [--yes]  # Health check; --fix applies safe fixes
+stakectl start-all          # Start CLI Bot + Telegram Bot + Web Admin
+stakectl stop-all           # Stop  CLI Bot + Telegram Bot + Web Admin
+stakectl status-all         # Show status of all three services
+stakectl config-set KEY=VALUE ...  # Change saved keys; a running daemon reloads
+stakectl analytics [--since DATE] [--until DATE] [--lane K]  # Aggregates: by game, strategy, lane, top 5
+stakectl last-bets [N]      # Last N bets across all sessions (default 20)
+stakectl export PATH [SID]  # Export a session (CSV, or JSON by .json extension)
+stakectl backtest [args]    # Backtest / replay offline (no API calls, no Cloudflare, no real balance)
+stakectl cleanup [DAYS]     # Purge bet rows of old sessions (default: purge_days)
+stakectl reset [--yes]      # Archive the stats DB and start fresh (never deletes)
+stakectl archives           # List archived stats DBs
+stakectl run-reset [--yes]  # New run total for the run-wide profit increment
+stakectl refresh            # Reinstall stakectl from the repo copy in this folder
+stakectl version            # Bot and stakectl versions
 ```
 
 ---
@@ -380,6 +417,14 @@ cd stake && PYTHONPATH=. python3 -m tg.bot
 | `/presets` / `/savepreset` / `/loadpreset` | Manage presets |
 | `/cleanup [days]` | Purge old bet records (default 3 days), keep session stats |
 | `/delsession <id>` | Delete a specific session and its bets |
+| `/start` | Welcome and quick start guide |
+| `/update` | Pull the latest code and restart the bot (owner only) |
+| `/runreset` | Start a new run total for `piscope run` (asks to confirm; stop sessions first) |
+| `/tweak <param> <value>` | Change a setting of a running session (e.g. `/tweak delay 0.1`) |
+| `/diagnose` | Bottleneck analysis of a running session |
+| `/analytics [since] [until]` | Lifetime or date-windowed analytics (e.g. `/analytics 2026-08-14`) |
+| `/web` | Open web dashboard |
+| `/benchmark` | Test API response speed |
 
 ### Architecture
 
