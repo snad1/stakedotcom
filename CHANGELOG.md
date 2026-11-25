@@ -1,5 +1,26 @@
 # Changelog
 
+## CLI v1.18.0 / TG v1.14.0 / stakectl v2.4 - the login in the vault, a lane on its own account and IP (2026-11-25)
+
+Ports WolfBet's key vault and per-lane accounts (WolfBet v2.51.0 to v2.53.0, v2.57.0), the same code as shuffle 1.15.0, for Stake's three secrets. Needs casino-shared 0.12.0 (the `account` vault kind); with an older one the CLI prints `casino-shared 0.12.0 or newer is needed: run stakectl update` and exits 1.
+
+### The login in the vault
+- When lane 1 starts with `--resume` or `--daemon`, it stores `access_token`, `lockdown_token` and `cookie` in the host vault as one account entry, `default` (`~/.casino-vault/stake/default.json`, 0600). Once it reads back equal, the three fields leave `~/.stake_autobot.json`; one 0600 copy stays at `.pre-vault`. Saving the config never writes them back. If the vault can't be used (`Key vault unavailable: <reason>` in the log), the config keeps its copy. Lanes 2+ only read. A `--preset` run takes the login from the vault too.
+- `stakectl key list | add ID [--label L] [--kind account|proxy|telegram] | rotate ID [--kind K] | delete ID`. An account is read through three hidden prompts (access token, lockdown token, the whole cookie header) and goes to the bot on stdin, never in argv, output or the log. A key in use can't be deleted; rotating with the wrong kind is refused before anything is read.
+- The Telegram bot reads its token from the vault (`telegram`) first, then `STAKE_TG_TOKEN`.
+
+### A lane on its own account and IP
+- A lane may set `key_ref` (a vault account), `currency`, `proxy` (no password) or `proxy_ref` (a vault proxy). `config-set` still refuses the three secrets and `token`, with or without a `laneK.` prefix. `currency` can now be set with `config-set` (restart to apply).
+- Saving a lane's key, currency or proxy restarts only the running lanes it changes: `Lane 3 restarted: its key, currency or proxy changed.`
+- A lane whose account or vault proxy is missing logs `Lane 3: key friend-a is not in the vault` and exits instead of betting from another account. `lane3.key_ref=nobody` is refused with `Invalid lane3 override: no key named nobody in the vault`; a lane proxy with a password is refused without being echoed.
+- The budget and bet splits count only the enabled lanes on the same account and currency. A vault proxy is never written to the config file.
+
+### Cloudflare per IP
+- cf_clearance is bound to the IP, so each proxy has its own cookie cache and re-auth lock (`~/.stake_cf_cookies.<hash>.json`); lanes with no proxy keep the host cache, as before. FlareSolverr and Playwright solve through the lane's proxy (with its login); nodriver gets `--proxy-server` and is skipped for a proxy with a password, which it can't send. A live proxy change drops the old IP's cookies.
+
+### Tests
+- `tests/test_lane_accounts.py` (login moved in with one backup, broken vault keeps the copy, lanes 2+ write nothing, own login/currency/proxy, split per account, missing key or proxy stops the lane, vault proxy kept out of the file, refusals without echo, only changed lanes restart, key verbs, Cloudflare cache and solver per proxy, Telegram token). `tests/test_stakectl_lanes.py` (`key` verbs send the secrets on stdin only). `tests/conftest.py` points the vault at each test's tmp dir. Lane tests updated where they pinned currency and proxy as lane-forbidden or set the lane count directly for the split.
+
 ## CLI v1.17.0 / stakectl v2.3 - named lanes, one lane at a time (2026-11-25)
 
 Ports WolfBet's lane registry and one-lane verbs (WolfBet v2.48.0 to v2.49.0, wolfctl 3.22 to 3.24), the same code as goated 1.15.0 and shuffle 1.14.0. Needs casino-shared 0.10.0; with an older one the CLI prints `casino-shared 0.10.0 or newer is needed: run stakectl update` and exits 1. Every lane still shares one account and one Cloudflare cookie cache.

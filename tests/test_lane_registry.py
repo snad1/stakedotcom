@@ -212,13 +212,13 @@ def test_an_older_casino_shared_is_named_instead_of_a_traceback(tmp_path):
     from shared.core import lanes
     real = os.path.dirname(os.path.dirname(lanes.__file__))
     shutil.copytree(real, tmp_path / "shared", ignore=shutil.ignore_patterns("tests", ".*"))
-    with open(tmp_path / "shared" / "core" / "lanes.py", "a") as f:
-        f.write("\ndel registry_block\n")
+    with open(tmp_path / "shared" / "core" / "vault.py", "a") as f:
+        f.write("\ndel vault_account\n")
     bot = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "stake.py")
     env = {**os.environ, "PYTHONPATH": f"{tmp_path}{os.pathsep}{os.path.dirname(bot)}",
            "APP_ENV": "testing", "HOME": str(tmp_path)}
     r = subprocess.run([sys.executable, bot, "--help"], cwd=str(tmp_path), env=env,
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 1
-    assert r.stderr.strip() == "casino-shared 0.10.0 or newer is needed: run stakectl update"
+    assert r.stderr.strip() == "casino-shared 0.12.0 or newer is needed: run stakectl update"
 

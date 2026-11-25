@@ -27,8 +27,7 @@ from shared.core.session_rules import should_restart
 
 from .fakes import FakeCasino, FakeResponse, GQL, CF_PAGE
 
-FORBIDDEN = ("access_token", "lockdown_token", "cookie", "currency", "game",
-             "proxy", "purge_days", "db_write_mode")
+FORBIDDEN = ("access_token", "lockdown_token", "cookie", "game", "purge_days", "db_write_mode")
 
 
 @pytest.fixture(autouse=True)
@@ -145,12 +144,14 @@ def test_load_config_applies_lane_overrides(saved_config):
     _write_lanes(saved_config, count=3,
                  overrides={"2": {"max_loss": 1.5, "multiplier_target": 3.0,
                                   "streak_delay_loss": "3:2.5",
-                                  "currency": "btc", "proxy": "socks5://x:1"}})
+                                  "currency": "btc", "proxy": "socks5://10.0.0.1:1080",
+                                  "game": "dice"}})
     s = _fresh_load(2)
     assert s.lanes_count == 3
     assert s.max_loss == 1.5 and s.multiplier_target == 3.0
     assert s.streak_delay_loss == (3, 2.5)
-    assert s.currency == "usdt" and s.proxy == ""     # forbidden keys ignored
+    assert s.currency == "btc" and s.proxy == "socks5://10.0.0.1:1080"   # a lane's own account
+    assert s.game == "limbo"                                             # forbidden: base wins
     s1 = _fresh_load(1)
     assert s1.max_loss is None and s1.multiplier_target == 2.0
 
@@ -283,7 +284,7 @@ def test_split_bet_save_config_writes_full_bet(saved_config):
 
 
 def test_split_basebet_pct_divided(cli_state):
-    s = cli_state(basebet_pct=0.01, current_balance=10.0, lanes_count=4, lane_split="bet")
+    s = cli_state(basebet_pct=0.01, current_balance=10.0, lanes_count=4, split_lanes=4, lane_split="bet")
     assert st._apply_basebet_pct()
     assert s.base_bet == pytest.approx(0.025)
 
@@ -300,13 +301,13 @@ def test_split_live_reload_no_spurious_base_bet_warning(saved_config, caplog):
 
 def test_init_lane_budget():
     s = st.state
-    s.current_balance, s.lanes_count, s.lane_split = 9.0, 3, "budget"
+    s.current_balance, s.lanes_count, s.split_lanes, s.lane_split = 9.0, 3, 3, "budget"
     st._init_lane_budget()
     assert s.lane_share == pytest.approx(3.0)
     s.lane_split = "none"
     st._init_lane_budget()
     assert s.lane_share is None
-    s.lanes_count, s.lane_split = 1, "both"
+    s.lanes_count, s.split_lanes, s.lane_split = 1, 1, "both"
     st._init_lane_budget()
     assert s.lane_share is None
 
@@ -341,7 +342,7 @@ def test_risky_config_uses_lane_share_only_with_budget():
     s = st.state
     s.strategy_key, s.loss_mult, s.base_bet = "2", 2.0, 1.0
     s.streak_reset_losses, s.max_loss = 3, None
-    s.current_balance, s.lanes_count = 64.0, 4
+    s.current_balance, s.lanes_count, s.split_lanes = 64.0, 4, 4
 
     def chain():
         return next(w for w in st._check_risky_config() if w.startswith("Streak reset"))
@@ -353,7 +354,7 @@ def test_risky_config_uses_lane_share_only_with_budget():
 
 
 def test_state_file_has_lane_fields(cli_state):
-    s = cli_state(lane=2, lanes_count=2, lane_split="budget", lane_share=5.0)
+    s = cli_state(lane=2, lanes_count=2, split_lanes=2, lane_split="budget", lane_share=5.0)
     s.lane_run_profit = 0.5
     st._save_state_file()
     d = _raw(st.STATE_PATH)
@@ -368,7 +369,7 @@ class _Started(Exception):
 
 
 def test_lane_start_stagger_and_budget(cli_state, monkeypatch, sleeps):
-    cli_state(lanes_count=3, lane_split="budget")
+    cli_state(lanes_count=3, split_lanes=3, lane_split="budget")
     sleeps.clear()
     monkeypatch.setattr(st, "_load_and_connect", lambda **k: None)
     monkeypatch.setattr(st, "_start_bet_writer", lambda: None)
@@ -466,7 +467,7 @@ def _setup_lane(mod, lane, casino, monkeypatch, **kw):
     s.multiplier_target, s.strategy, s.strategy_key = 2.0, "Flat Bet", "1"
     s.base_bet = s.current_bet = st.MIN_BET
     s.db_write_mode = "sync"
-    s.lanes_count, s.lane_split = 2, "budget"
+    s.lanes_count, s.split_lanes, s.lane_split = 2, 2, "budget"
     for k, v in kw.items():
         setattr(s, k, v)
     s.start_balance = s.current_balance = casino.balance

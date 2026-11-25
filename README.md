@@ -298,6 +298,9 @@ stakectl update         # Update bot from current directory
 stakectl lanes [N] [--split none|budget|bet|both] [--max N]  # Show or set parallel lanes; only the difference starts or stops
 stakectl lane add NAME [--from K] | remove K | rename K NAME  # Change one lane; the others keep betting
 stakectl start|stop|restart K  # One lane alone (lane 1 is the stake service)
+stakectl key add friend-a      # A friend's login (access token, lockdown token, cookie) at hidden prompts, kept in the host vault
+stakectl key list | rotate ID | delete ID   # Vault logins, proxies (--kind proxy) and the Telegram token (--kind telegram)
+stakectl config-set lane3.key_ref=friend-a lane3.currency=trx lane3.proxy=socks5://10.0.0.9:1080  # Lane 3 on a friend's account and IP; only lane 3 restarts
 stakectl diagnose           # Bottleneck analysis of the running session
 stakectl benchmark [N] [--lanes M]  # Time N probe requests
 stakectl doctor [--fix] [--yes]  # Health check; --fix applies safe fixes

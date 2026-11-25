@@ -1,11 +1,11 @@
-"""WolfBet sync E9-S4: stakedotcom CLI lane money split (CLI v1.14.0).
+"""Stakedotcom CLI lane money split (CLI v1.14.0).
 
 Mirrors WolfBet v2.36.0 (`lane_split`, `6174b96`). Most of it shipped in
 1.13.0 and is tested in test_wolfbet_sync_e5_lanes.py (modes, override kept,
 round-to-0, save keeps the full bet, basebet_pct divided, live reload,
 config-set / config-show, chain warning). This file adds the stake adapt:
 a split bet below MIN_BET stays full (logged), for base_bet and basebet_pct.
-Reference test: wolfbet/tests/test_phase10_lanes.py; ported shape: goated E9-S2.
+Reference test: wolfbet/tests/test_phase10_lanes.py; ported shape: goated's lane split tests.
 
 Run: APP_ENV=testing .venv-test/bin/python -m pytest stakedotcom/tests -q
 """
@@ -100,7 +100,7 @@ def test_live_reload_below_min_keeps_full_no_warning(saved_config, caplog):
 
 def test_basebet_pct_below_min_keeps_full(cli_state, caplog):
     # 10 x 0.00003 = 0.0003; / 4 = 0.000075 < MIN_BET
-    s = cli_state(basebet_pct=0.00003, current_balance=10.0, lanes_count=4, lane_split="both")
+    s = cli_state(basebet_pct=0.00003, current_balance=10.0, lanes_count=4, split_lanes=4, lane_split="both")
     with caplog.at_level(logging.WARNING, logger="stake"):
         assert st._apply_basebet_pct()
     assert s.base_bet == pytest.approx(0.0003) and s.current_bet == pytest.approx(0.0003)
@@ -108,14 +108,14 @@ def test_basebet_pct_below_min_keeps_full(cli_state, caplog):
 
 
 def test_basebet_pct_above_min_divided(cli_state):
-    s = cli_state(basebet_pct=0.001, current_balance=10.0, lanes_count=2, lane_split="bet")
+    s = cli_state(basebet_pct=0.001, current_balance=10.0, lanes_count=2, split_lanes=2, lane_split="bet")
     assert st._apply_basebet_pct()
     assert s.base_bet == pytest.approx(0.005)
 
 
 @pytest.mark.parametrize("mode", ["none", "budget"])
 def test_basebet_pct_not_divided_without_bet_split(cli_state, mode):
-    s = cli_state(basebet_pct=0.001, current_balance=10.0, lanes_count=2, lane_split=mode)
+    s = cli_state(basebet_pct=0.001, current_balance=10.0, lanes_count=2, split_lanes=2, lane_split=mode)
     assert st._apply_basebet_pct()
     assert s.base_bet == pytest.approx(0.01)
 

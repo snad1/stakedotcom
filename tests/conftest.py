@@ -53,6 +53,10 @@ def _sandbox(tmp_path, monkeypatch, sleeps):
     monkeypatch.setattr(tg_database, "DATA_DIR", str(tmp_path / "tg"))
     monkeypatch.setattr(st, "state", st.BotState())
     monkeypatch.setattr(st, "_log_tag", st._log_tag)
+    monkeypatch.setenv("CASINO_VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.setenv("CASINO_VAULT_KEY_FILE", str(tmp_path / "agent" / "vault.key"))
+    monkeypatch.setenv("CASINO_VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.setenv("CASINO_VAULT_KEY_FILE", str(tmp_path / "agent" / "vault.key"))
 
     for name in ("_flaresolverr_available", "_playwright_available",
                  "_solve_cloudflare", "_solve_cf_playwright", "_solve_cf_nodriver"):

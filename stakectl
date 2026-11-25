@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stake AutoBot: Management Command v2.3
+# Stake AutoBot: Management Command v2.4
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -22,7 +22,7 @@ DB="$HOME/.stake_autobot.db"
 SCRIPT_NAME="stakectl"
 # Grep-parsed by update / refresh / doctor to spot an installed copy older
 # than the repo copy: keep the format `STAKECTL_VERSION=X.Y`.
-STAKECTL_VERSION=2.3
+STAKECTL_VERSION=2.4
 
 usage() {
     echo ""
@@ -38,6 +38,8 @@ usage() {
     echo "    stakectl lanes [N] [--split none|budget|bet|both] [--max N]   Show or set parallel lanes"
     echo "    stakectl lane add NAME [--from K] | remove K | rename K NAME   Change one lane; the others keep betting"
     echo "    stakectl preset NAME Load a named preset and start as a daemon"
+    echo "    stakectl key list | add ID [--label L] [--kind account|proxy|telegram] | rotate ID [--kind K] | delete ID"
+    echo "                          Vault logins, proxies and the Telegram token (hidden prompts)"
     echo ""
     echo "  MONITORING:"
     echo "    stakectl monitor [K] Attach live TUI to running daemon, lane K (Q=detach, S=stop)"
@@ -365,6 +367,66 @@ cmd_lane() {
             ;;
         *)
             echo "Usage: stakectl lane add NAME [--from K] | remove K | rename K NAME" >&2
+            exit 2
+            ;;
+    esac
+}
+
+# Read one secret without echo; the caller pipes it to the bot's stdin, never into argv.
+read_secret() {
+    local secret=""
+    if [ -t 0 ]; then
+        read -rs -p "$1: " secret || true
+        echo >&2
+    else
+        IFS= read -r secret || true
+    fi
+    printf '%s\n' "$secret"
+}
+
+cmd_key() {
+    local sub="${1:-}" id="" label="" kind="account" secret
+    local usage_line="Usage: stakectl key list | add ID [--label L] [--kind account|proxy|telegram] | rotate ID [--kind account|proxy|telegram] | delete ID"
+    [ $# -gt 0 ] && shift
+    case "$sub" in
+        list)
+            [ $# -eq 0 ] || { echo "$usage_line" >&2; exit 2; }
+            "$PYTHON" "$BOT" --key-list
+            ;;
+        add|rotate)
+            id="${1:-}"
+            [ -n "$id" ] || { echo "$usage_line" >&2; exit 2; }
+            shift
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --label) [ "$sub" = add ] || { echo "$usage_line" >&2; exit 2; }
+                             label="${2:-}"; shift 2 || { echo "$usage_line" >&2; exit 2; } ;;
+                    --kind) kind="${2:-}"; shift 2 || { echo "$usage_line" >&2; exit 2; } ;;
+                    *) echo "$usage_line" >&2; exit 2 ;;
+                esac
+            done
+            case "$kind" in
+                account)
+                    secret="$(read_secret "Paste the x-access-token for $id (hidden)")"$'\n'
+                    secret+="$(read_secret "Paste the x-lockdown-token for $id (hidden)")"$'\n'
+                    secret+="$(read_secret "Paste the whole cookie header for $id (hidden)")" ;;
+                proxy) secret=$(read_secret "Paste the proxy URL for $id (hidden)") ;;
+                telegram) secret=$(read_secret "Paste the Telegram bot token (hidden)") ;;
+                *) echo "$usage_line" >&2; exit 2 ;;
+            esac
+            if [ "$sub" = add ]; then
+                printf '%s\n' "$secret" | "$PYTHON" "$BOT" --key-put "$id" --key-kind "$kind" \
+                    ${label:+--key-label "$label"} || exit $?
+            else
+                printf '%s\n' "$secret" | "$PYTHON" "$BOT" --key-rotate "$id" --key-kind "$kind" || exit $?
+            fi
+            ;;
+        delete)
+            [ $# -eq 1 ] || { echo "$usage_line" >&2; exit 2; }
+            "$PYTHON" "$BOT" --key-delete "$1" || exit $?
+            ;;
+        *)
+            echo "$usage_line" >&2
             exit 2
             ;;
     esac
@@ -1307,6 +1369,7 @@ case "${1:-}" in
     monitor)      cmd_monitor "${2:-}" ;;
     lanes)        shift; cmd_lanes "$@" ;;
     lane)         shift; cmd_lane "$@" ;;
+    key)          shift; cmd_key "$@" ;;
     logs)         cmd_logs ;;
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;

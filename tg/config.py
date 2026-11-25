@@ -3,9 +3,22 @@
 import os
 import logging
 
+TG_KEY_ID = "telegram"
+
+
+def bot_token() -> str:
+    """The bot token from the host key vault, else STAKE_TG_TOKEN; never logged."""
+    try:
+        from shared.core.vault import vault_secret
+    except ImportError:
+        return os.environ.get("STAKE_TG_TOKEN", "")
+    token = vault_secret("stake", TG_KEY_ID, "telegram", log=logging.getLogger("stakebot"))
+    return token or os.environ.get("STAKE_TG_TOKEN", "")
+
+
 # ── Environment ──────────────────────────────────────────
 APP_ENV   = os.environ.get("APP_ENV", "production")
-BOT_TOKEN = os.environ.get("STAKE_TG_TOKEN", "")
+BOT_TOKEN = bot_token()
 DATA_DIR  = os.environ.get("STAKE_TG_DATA", os.path.expanduser("~/.stakebot_tg"))
 WEB_URL   = os.environ.get("STAKE_WEB_URL", "")          # e.g. http://IP:8001
 WEB_SECRET = os.environ.get("STAKE_WEB_SECRET_KEY", "")   # must match web app

@@ -98,3 +98,43 @@ def test_lanes_max_only_sets_the_limit(env):
     assert res.returncode == 0 and "Lane limit set to 5." in res.stdout
     assert "--config-set lanes_max=5" in _log(env, "py.log")
     assert "stake-lane@2.active" in _units(env)
+
+
+TOKEN = "stake-friend-token-fedcba9876543210"
+LOCKDOWN = "lockdown-0123456789"
+COOKIE = "session=abc; cf_clearance=xyz-123"
+
+
+def test_key_add_sends_the_three_account_secrets_on_stdin_only(env):
+    res = _ctl(env, "key", "add", "friend-a", "--label", "Friend A",
+               stdin=f"{TOKEN}\n{LOCKDOWN}\n{COOKIE}\n")
+    assert res.returncode == 0, res.stderr
+    log = _log(env, "py.log")
+    assert "--key-put friend-a --key-kind account --key-label Friend A" in log
+    for secret in (TOKEN, LOCKDOWN, COOKIE):
+        assert secret not in log and secret not in res.stdout and secret not in res.stderr
+    assert _log(env, "stdin.txt") == f"{TOKEN}\n{LOCKDOWN}\n{COOKIE}\n"
+
+
+def test_key_add_of_a_proxy_or_telegram_sends_one_line(env):
+    assert _ctl(env, "key", "add", "px", "--kind", "proxy", stdin="socks5://u:p@1.2.3.4:1080\n").returncode == 0
+    assert _log(env, "stdin.txt") == "socks5://u:p@1.2.3.4:1080\n"
+    assert "--key-put px --key-kind proxy" in _log(env, "py.log")
+
+
+def test_key_rotate_list_and_delete_reach_the_bot(env):
+    assert _ctl(env, "key", "rotate", "friend-a", stdin=f"{TOKEN}\n{LOCKDOWN}\n{COOKIE}\n").returncode == 0
+    assert _log(env, "stdin.txt") == f"{TOKEN}\n{LOCKDOWN}\n{COOKIE}\n"
+    assert _ctl(env, "key", "list").returncode == 0
+    assert _ctl(env, "key", "delete", "friend-a").returncode == 0
+    log = _log(env, "py.log")
+    assert "--key-rotate friend-a --key-kind account" in log
+    assert "--key-list" in log and "--key-delete friend-a" in log
+    assert TOKEN not in log
+
+
+def test_bad_key_arguments_exit_2_and_reach_no_bot(env):
+    for args in (("key",), ("key", "add"), ("key", "add", "x", "--kind", "cookie"),
+                 ("key", "rotate", "x", "--label", "y"), ("key", "delete"), ("key", "list", "x")):
+        assert _ctl(env, *args, stdin=TOKEN + "\n").returncode == 2, args
+    assert "--key-" not in _log(env, "py.log")
