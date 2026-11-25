@@ -138,3 +138,63 @@ def test_bad_key_arguments_exit_2_and_reach_no_bot(env):
                  ("key", "rotate", "x", "--label", "y"), ("key", "delete"), ("key", "list", "x")):
         assert _ctl(env, *args, stdin=TOKEN + "\n").returncode == 2, args
     assert "--key-" not in _log(env, "py.log")
+
+
+def test_restart_at_the_boundary_asks_the_bot_and_touches_no_unit(env):
+    _config(env, lanes=3)
+    _running(env, "stake", "stake-lane@2", "stake-lane@3")
+    assert _ctl(env, "restart", "2", "--at-boundary").returncode == 0
+    assert _ctl(env, "restart", "2", "--cancel-boundary").returncode == 0
+    assert _ctl(env, "lane", "remove", "3", "--after-session").returncode == 0
+    log = _log(env, "py.log")
+    assert "--lane-drain 2 restart" in log and "--lane-drain 2 cancel" in log
+    assert "--lane-drain 3 remove" in log
+    assert "restart stake-lane@2" not in _log(env, "systemctl.log") and _no_restarts(env)
+    assert "stake-lane@3.active" in _units(env)
+    for args in (("restart", "x", "--at-boundary"), ("restart", "2", "--soon"),
+                 ("restart", "2", "--at-boundary", "x")):
+        assert _ctl(env, *args).returncode == 2, args
+
+
+def _checkout(env, tmp_path):
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    (repo / "stake.py").write_text("VERSION = 'new'\n")
+    (repo / "requirements.txt").write_text("")
+    return repo
+
+
+def test_an_update_asks_each_running_lane_to_restart_at_its_session_end(env, tmp_path):
+    _config(env, lanes=3)
+    _running(env, "stake", "stake-lane@3")
+    res = _ctl(env, "update", cwd=_checkout(env, tmp_path))
+    assert res.returncode == 0, res.stderr
+    assert "Lane 1 restarts on the new code when its session ends." in res.stdout
+    assert "Lane 3 restarts on the new code when its session ends." in res.stdout
+    assert "Lane 2 restarts" not in res.stdout
+    assert "Betting goes on; use stakectl update --critical to restart every lane now." in res.stdout
+    drains = [line for line in _log(env, "py.log").splitlines() if "--lane-drain" in line]
+    assert [d.split("stake.py ")[1] for d in drains] == ["--lane-drain 1 restart",
+                                                          "--lane-drain 3 restart"]
+    assert _no_restarts(env)
+
+
+def test_a_critical_update_restarts_every_lane_now(env, tmp_path):
+    _config(env, lanes=2)
+    _running(env, "stake", "stake-lane@2")
+    res = _ctl(env, "update", "--critical", cwd=_checkout(env, tmp_path))
+    assert res.returncode == 0, res.stderr
+    assert "--user restart stake" in _log(env, "systemctl.log")
+    assert "--lane-drain" not in _log(env, "py.log") and "Betting goes on" not in res.stdout
+
+
+def test_an_update_of_a_stopped_bot_asks_no_lane(env, tmp_path):
+    _config(env, lanes=2)
+    res = _ctl(env, "update", cwd=_checkout(env, tmp_path))
+    assert res.returncode == 0 and "CLI bot not running: stakectl start" in res.stdout
+    assert "--lane-drain" not in _log(env, "py.log")
+
+
+def test_an_unknown_update_option_exits_2(env):
+    res = _ctl(env, "update", "--soon")
+    assert res.returncode == 2 and "Usage: stakectl update [--critical]" in res.stderr

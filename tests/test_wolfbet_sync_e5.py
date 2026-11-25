@@ -1,4 +1,4 @@
-"""E5-S3 — stakedotcom CLI observability and tooling (WolfBet v2.17.0 .. v2.30.5).
+"""Stakedotcom CLI observability and tooling (WolfBet v2.17.0 to v2.30.5).
 
 API / cycle metrics, --benchmark (GraphQL UserBalances) / --diagnose,
 retention (purge_days, --cleanup, worker), proxy (incl. the saved-proxy-on-
@@ -773,7 +773,7 @@ def test_config_set_saves_and_reports(saved_config, capsys):
         cfg = json.load(f)
     assert cfg["max_profit"] == 0.5 and cfg["purge_days"] == 30 and cfg["multiplier_target"] == 3.0
     assert "⚠ purge_days clamped" in out
-    assert "need a full restart" in out and "multiplier_target" in out
+    assert "Restart every lane to apply: multiplier_target" in out
     assert "Daemon not running" in out
 
 

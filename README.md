@@ -294,10 +294,12 @@ stakectl tmux           # Monitor in detachable tmux session
 stakectl stats          # View all-time statistics (--since/--until DATE to filter)
 stakectl session ID     # Full stats + streak distribution
 stakectl presets        # List saved presets
-stakectl update         # Update bot from current directory
+stakectl update         # Update bot from current directory; each lane restarts on the new code at its session end
 stakectl lanes [N] [--split none|budget|bet|both] [--max N]  # Show or set parallel lanes; only the difference starts or stops
 stakectl lane add NAME [--from K] | remove K | rename K NAME  # Change one lane; the others keep betting
 stakectl start|stop|restart K  # One lane alone (lane 1 is the stake service)
+stakectl restart K --at-boundary  # Restart lane K when its session ends (--cancel-boundary drops it); lane remove K --after-session removes it then
+stakectl update --critical     # Update and restart every lane now (plain update rolls each lane at its session end)
 stakectl key add friend-a      # A friend's login (access token, lockdown token, cookie) at hidden prompts, kept in the host vault
 stakectl key list | rotate ID | delete ID   # Vault logins, proxies (--kind proxy) and the Telegram token (--kind telegram)
 stakectl config-set lane3.key_ref=friend-a lane3.currency=trx lane3.proxy=socks5://10.0.0.9:1080  # Lane 3 on a friend's account and IP; only lane 3 restarts

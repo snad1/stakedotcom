@@ -1,5 +1,23 @@
 # Changelog
 
+## CLI v1.19.0 / stakectl v2.5 - what a change costs, restarts at a session end, rolling updates (2026-11-25)
+
+Ports WolfBet's restart classes, pending restarts, session-end restarts and rolling update (WolfBet v2.55.0, v2.56.0, v2.58.0 to v2.60.0), the same code as shuffle 1.16.0. Stake has no events feed, so that part is N/A.
+
+### Restart classes
+- Every setting is classed live (a running lane re-reads it), lane (it applies when that lane restarts) or service (shared, every lane restarts). `config-set mult=3` prints `Restart every lane to apply: multiplier_target (stakectl restart).`; `lane2.loss_mult=3` prints `Restart lane 2 to apply: loss_mult (stakectl restart 2).`; live changes print no restart line. No setting changes how it applies.
+
+### What a lane waits on
+- A running lane lists the saved changes it has not picked up: `stakectl lanes` shows `Lane 2 waits for a restart: multiplier_target 2.0 -> 3.0 (stakectl restart 2)`. The access token, lockdown token and cookie are never listed. The state file carries `pending_restart` and `code_version`.
+- The lanes table has a Code column: `new`, `waiting for session end` or `old`.
+
+### Session-end restarts and rolling updates
+- `stakectl restart K --at-boundary` re-executes lane K in place when its session ends; `--cancel-boundary` drops the request; `stakectl lane remove K --after-session` removes lane K then. With recurring off the restart is dropped and the lane stops as usual. The request (`~/.stake_autobot.drain`, `.laneK`, 0600) is read once per session close, never per bet.
+- `stakectl update` asks each running lane to restart on the new code at its session end; betting goes on. `stakectl update --critical` restarts every lane now, as before.
+
+### Tests
+- `tests/test_lane_restarts.py`; `tests/test_stakectl_lanes.py` (`restart K --at-boundary`, `lane remove K --after-session`, rolling and critical update). Tests that pinned the old restart note or the versions updated.
+
 ## CLI v1.18.0 / TG v1.14.0 / stakectl v2.4 - the login in the vault, a lane on its own account and IP (2026-11-25)
 
 Ports WolfBet's key vault and per-lane accounts (WolfBet v2.51.0 to v2.53.0, v2.57.0), the same code as shuffle 1.15.0, for Stake's three secrets. Needs casino-shared 0.12.0 (the `account` vault kind); with an older one the CLI prints `casino-shared 0.12.0 or newer is needed: run stakectl update` and exits 1.
