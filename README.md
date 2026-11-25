@@ -295,7 +295,9 @@ stakectl stats          # View all-time statistics (--since/--until DATE to filt
 stakectl session ID     # Full stats + streak distribution
 stakectl presets        # List saved presets
 stakectl update         # Update bot from current directory
-stakectl lanes [N] [--split none|budget|bet|both]  # Show or set parallel lanes (1-10)
+stakectl lanes [N] [--split none|budget|bet|both] [--max N]  # Show or set parallel lanes; only the difference starts or stops
+stakectl lane add NAME [--from K] | remove K | rename K NAME  # Change one lane; the others keep betting
+stakectl start|stop|restart K  # One lane alone (lane 1 is the stake service)
 stakectl diagnose           # Bottleneck analysis of the running session
 stakectl benchmark [N] [--lanes M]  # Time N probe requests
 stakectl doctor [--fix] [--yes]  # Health check; --fix applies safe fixes

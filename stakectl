@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stake AutoBot: Management Command v2.2
+# Stake AutoBot: Management Command v2.3
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -10,9 +10,9 @@ WEB_DIR="$HOME/stake-web"
 SERVICE="stake"
 TG_SERVICE="stake-tg"
 WEB_SERVICE="stake-web"
-# Parallel lanes: lane 1 = $SERVICE, lanes 2..N = stake-lane@K
+# Parallel lanes: lane 1 = $SERVICE, every other lane id K = stake-lane@K
 LANE_SERVICE="stake-lane"
-LANES_MAX=10
+LANE_ID_MAX=99
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/stake.py"
@@ -22,7 +22,7 @@ DB="$HOME/.stake_autobot.db"
 SCRIPT_NAME="stakectl"
 # Grep-parsed by update / refresh / doctor to spot an installed copy older
 # than the repo copy: keep the format `STAKECTL_VERSION=X.Y`.
-STAKECTL_VERSION=2.2
+STAKECTL_VERSION=2.3
 
 usage() {
     echo ""
@@ -32,10 +32,11 @@ usage() {
     echo "    stakectl setup       Run wizard to configure (saves config, doesn't start)"
     echo ""
     echo "  RUNNING:"
-    echo "    stakectl start       Start bot as background daemon (every lane)"
-    echo "    stakectl stop        Stop the bot (every lane)"
-    echo "    stakectl restart     Restart the bot (every lane)"
-    echo "    stakectl lanes [N] [--split none|budget|bet|both]   Show or set parallel lanes (1-$LANES_MAX)"
+    echo "    stakectl start [K]   Start the bot as a daemon (every lane, or lane K alone)"
+    echo "    stakectl stop [K]    Stop the bot (every lane, or lane K alone)"
+    echo "    stakectl restart [K] Restart the bot (every lane, or lane K alone)"
+    echo "    stakectl lanes [N] [--split none|budget|bet|both] [--max N]   Show or set parallel lanes"
+    echo "    stakectl lane add NAME [--from K] | remove K | rename K NAME   Change one lane; the others keep betting"
     echo "    stakectl preset NAME Load a named preset and start as a daemon"
     echo ""
     echo "  MONITORING:"
@@ -111,16 +112,25 @@ cmd_setup() {
 }
 
 # ── Parallel lanes ────────────────────────────────────
-# Configured lane count from the config file (1 when unset / unreadable).
+# Lane ids from the config registry: the enabled ones, or every id with "all" (1 when unreadable).
+lane_ids() {
+    local ids
+    ids=$("$PYTHON" "$BOT" --lane-ids "${1:-enabled}" 2>/dev/null) || ids=""
+    echo "${ids:-1}"
+}
+
 lane_count() {
-    "$PYTHON" - "$CONFIG" <<'PY' 2>/dev/null || echo 1
-import json, sys
-try:
-    n = int((json.load(open(sys.argv[1])).get("lanes") or {}).get("count") or 1)
-except Exception:
-    n = 1
-print(max(1, min(10, n)))
-PY
+    set -- $(lane_ids)
+    echo "$#"
+}
+
+# True when lane $1 is in the registry (enabled lanes, or every lane with "all").
+has_lane() {
+    local k
+    for k in $(lane_ids "${2:-enabled}"); do
+        [ "$k" = "$1" ] && return 0
+    done
+    return 1
 }
 
 # Write the systemd template for lanes 2..N (same unit as lane 1 + --lane %i).
@@ -159,30 +169,93 @@ UNITEOF
     systemctl --user daemon-reload
 }
 
-# Start and boot-enable lanes 2..count; stop and disable every lane above
-# count. With --no-start the kept lanes are only boot-enabled (bot stopped).
+# Start and boot-enable every enabled lane 2+; stop and disable the disabled ones.
+# With --no-start the enabled lanes are only boot-enabled (bot stopped).
 sync_lanes() {
-    local n="$1" k now="--now"
-    [ "${2:-}" = "--no-start" ] && now=""
-    if [ "$n" -gt 1 ]; then
-        ensure_lane_unit
-    fi
-    for k in $(seq 2 "$LANES_MAX"); do
-        if [ "$k" -le "$n" ]; then
-            systemctl --user enable $now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
-        elif systemctl --user is-enabled --quiet "${LANE_SERVICE}@${k}" 2>/dev/null \
-                || systemctl --user is-active --quiet "${LANE_SERVICE}@${k}" 2>/dev/null; then
-            systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
-            echo "  lane $k stopped"
+    local k enabled now="--now"
+    [ "${1:-}" = "--no-start" ] && now=""
+    enabled=" $(lane_ids) "
+    [ "$enabled" = " 1 " ] || ensure_lane_unit
+    for k in $(lane_ids all); do
+        [ "$k" -gt 1 ] || continue
+        case "$enabled" in
+            *" $k "*) systemctl --user enable $now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true ;;
+            *)
+                if systemctl --user is-enabled --quiet "${LANE_SERVICE}@${k}" 2>/dev/null \
+                        || systemctl --user is-active --quiet "${LANE_SERVICE}@${k}" 2>/dev/null; then
+                    systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+                    echo "  lane $k stopped"
+                fi ;;
+        esac
+    done
+}
+
+# Stop the lanes in $1 that are not in $2 and start the ones that are new; the rest keep running.
+apply_lane_delta() {
+    local before=" $1 " after=" $2 " k
+    for k in $1; do
+        [ "$k" -gt 1 ] || continue
+        case "$after" in
+            *" $k "*) ;;
+            *) systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+               echo "  lane $k stopped" ;;
+        esac
+    done
+    for k in $2; do
+        case "$before" in *" $k "*) continue ;; esac
+        if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+            ensure_lane_unit
+            systemctl --user enable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+            echo "  lane $k started"
+        else
+            echo "  lane $k ready; start it with: stakectl start $k"
         fi
     done
 }
 
 stop_all_lanes() {
     local k
-    for k in $(seq 2 "$LANES_MAX"); do
+    for k in $(lane_ids all); do
+        [ "$k" -gt 1 ] || continue
         systemctl --user stop "${LANE_SERVICE}@${k}" 2>/dev/null || true
     done
+}
+
+# The systemd unit of lane K: lane 1 is the main service, lanes 2+ the lane template.
+lane_unit() {
+    if [ "$1" -eq 1 ]; then echo "$SERVICE"; else echo "${LANE_SERVICE}@$1"; fi
+}
+
+# Start, stop or restart one enabled lane alone; every other lane keeps betting.
+cmd_lane_unit() {
+    local verb=$1 k=$2 unit state
+    case "$k" in ''|*[!0-9]*) echo "Usage: stakectl $verb [K]  (K = a lane id from 'stakectl lanes')" >&2; exit 2 ;; esac
+    k=$((10#$k))
+    if ! has_lane "$k"; then
+        echo "No lane $k: this bot runs $(lane_count) lane(s)." >&2; exit 2
+    fi
+    if [ "$verb" != stop ] && [ ! -f "$CONFIG" ]; then
+        echo "No config found. Run 'stakectl setup' first." >&2; exit 1
+    fi
+    unit=$(lane_unit "$k")
+    [ "$k" -eq 1 ] || ensure_lane_unit
+    systemctl --user "$verb" "$unit" 2>/dev/null || true
+    [ "$verb" = stop ] || sleep 1
+    state=$(systemctl --user is-active "$unit" 2>/dev/null || true)
+    if [ -z "$state" ]; then
+        echo "Cannot reach the user's systemd to check $unit (is XDG_RUNTIME_DIR set?)." >&2; exit 1
+    fi
+    case "$verb" in
+        start)
+            [ "$state" = active ] || { echo "Lane $k did not start ($state)." >&2; exit 1; }
+            echo "Lane $k started." ;;
+        restart)
+            [ "$state" = active ] || { echo "Lane $k did not start ($state)." >&2; exit 1; }
+            echo "Lane $k restarted. Other lanes keep betting." ;;
+        *)
+            case "$state" in inactive|failed) ;; *) echo "Lane $k is still $state." >&2; exit 1 ;; esac
+            echo "Lane $k stopped. Other lanes keep betting." ;;
+    esac
 }
 
 lane_split_mode() {
@@ -196,50 +269,109 @@ PY
 }
 
 cmd_lanes() {
-    local n="${1:-}" split=""
-    shift || true
+    local n="" split="" max="" before out
+    local pairs=()
     while [ $# -gt 0 ]; do
         case "$1" in
             --split) split="${2:-}"; shift 2 || { echo "Usage: stakectl lanes N --split none|budget|bet|both"; exit 1; } ;;
             --split=*) split="${1#--split=}"; shift ;;
-            *) echo "Unknown option: $1"; exit 1 ;;
+            --max) max="${2:-}"; shift 2 || { echo "Usage: stakectl lanes --max N  (1-$LANE_ID_MAX)"; exit 1; } ;;
+            --max=*) max="${1#--max=}"; shift ;;
+            -*) echo "Unknown option: $1"; exit 1 ;;
+            *) [ -z "$n" ] || { echo "Unknown option: $1"; exit 1; }; n="$1"; shift ;;
         esac
     done
+    if [ -z "$n" ] && [ -n "$split" ]; then
+        echo "Usage: stakectl lanes N --split none|budget|bet|both"; exit 1
+    fi
     if [ -n "$split" ]; then
         case "$split" in none|budget|bet|both) ;; *) echo "--split must be none, budget, bet or both"; exit 1 ;; esac
     fi
-    if [ -z "$n" ]; then
+    if [ -n "$max" ]; then
+        case "$max" in ''|*[!0-9]*) echo "Usage: stakectl lanes --max N  (1-$LANE_ID_MAX)"; exit 1 ;; esac
+        pairs+=("lanes_max=$max")
+    fi
+    if [ -z "$n" ] && [ -z "$max" ]; then
         echo "Configured lanes: $(lane_count)"
         "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
         echo "  Split: $(lane_split_mode)"
-        echo "  Change with: stakectl lanes N [--split none|budget|bet|both]   (1-$LANES_MAX)"
+        echo "  Change with: stakectl lanes N [--split none|budget|bet|both] [--max N]"
         return
     fi
-    case "$n" in ''|*[!0-9]*) echo "Usage: stakectl lanes N  (1-$LANES_MAX)"; exit 1 ;; esac
-    if [ "$n" -lt 1 ] || [ "$n" -gt "$LANES_MAX" ]; then
-        echo "lanes must be 1-$LANES_MAX"; exit 1
+    if [ -n "$n" ]; then
+        case "$n" in *[!0-9]*) echo "Usage: stakectl lanes N"; exit 1 ;; esac
+        pairs+=("lanes=$n")
     fi
-    if [ -n "$split" ]; then
-        "$PYTHON" "$BOT" --config-set "lanes=$n" "lane_split=$split" >/dev/null
-    else
-        "$PYTHON" "$BOT" --config-set "lanes=$n" >/dev/null
+    [ -z "$split" ] || pairs+=("lane_split=$split")
+    before=$(lane_ids)
+    if ! out=$("$PYTHON" "$BOT" --config-set "${pairs[@]}" 2>&1); then
+        echo "$out" >&2
+        exit 2
     fi
+    [ -z "$max" ] || echo "Lane limit set to $max."
+    [ -n "$n" ] || return 0
     echo "Lanes set to $n - split: $(lane_split_mode)."
-    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
-        # Restart every lane so each recomputes its budget share.
-        echo "Restarting lanes (each running chain is saved and ended)..."
-        stop_all_lanes
-        systemctl --user restart "$SERVICE"
-        sync_lanes "$n"
-        sleep 2
-        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
-    else
-        sync_lanes "$n" --no-start
-        echo "Bot not running - start all $n lane(s) with: stakectl start"
+    apply_lane_delta "$before" "$(lane_ids)"
+    if [ "$before" != "$(lane_ids)" ]; then
+        case "$(lane_split_mode)" in
+            budget|both) echo "Budget shares update when each lane restarts: stakectl restart K." ;;
+        esac
     fi
+    "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+}
+
+# Add, remove or rename one lane; every other lane keeps betting.
+cmd_lane() {
+    local sub="${1:-}" name="" from="" k before
+    [ $# -gt 0 ] && shift
+    case "$sub" in
+        add)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --from) from="${2:-}"; shift 2 || { echo "Usage: stakectl lane add NAME [--from K]" >&2; exit 2; } ;;
+                    --from=*) from="${1#--from=}"; shift ;;
+                    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+                    *) [ -z "$name" ] || { echo "Usage: stakectl lane add NAME [--from K]" >&2; exit 2; }; name="$1"; shift ;;
+                esac
+            done
+            [ -n "$name" ] || { echo "Usage: stakectl lane add NAME [--from K]" >&2; exit 2; }
+            if [ -n "$from" ]; then
+                case "$from" in *[!0-9]*) echo "Usage: stakectl lane add NAME [--from K]" >&2; exit 2 ;; esac
+            fi
+            before=$(lane_ids)
+            "$PYTHON" "$BOT" --lane-add "$name" ${from:+--lane-from "$((10#$from))"} || exit $?
+            apply_lane_delta "$before" "$(lane_ids)"
+            echo "Other lanes keep betting."
+            ;;
+        remove)
+            k="${1:-}"
+            case "$k" in ''|*[!0-9]*) echo "Usage: stakectl lane remove K" >&2; exit 2 ;; esac
+            [ $# -eq 1 ] || { echo "Usage: stakectl lane remove K" >&2; exit 2; }
+            k=$((10#$k))
+            "$PYTHON" "$BOT" --lane-remove "$k" || exit $?
+            systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+            case "$(systemctl --user is-active "${LANE_SERVICE}@${k}" 2>/dev/null || true)" in
+                active|activating|deactivating) echo "Lane $k is still running." >&2; exit 1 ;;
+            esac
+            echo "Lane $k stopped. Other lanes keep betting."
+            ;;
+        rename)
+            k="${1:-}" name="${2:-}"
+            case "$k" in ''|*[!0-9]*) echo "Usage: stakectl lane rename K NAME" >&2; exit 2 ;; esac
+            [ $# -eq 2 ] || { echo "Usage: stakectl lane rename K NAME" >&2; exit 2; }
+            k=$((10#$k))
+            has_lane "$k" all || { echo "No lane $k." >&2; exit 2; }
+            "$PYTHON" "$BOT" --config-set "lane${k}.name=$name"
+            ;;
+        *)
+            echo "Usage: stakectl lane add NAME [--from K] | remove K | rename K NAME" >&2
+            exit 2
+            ;;
+    esac
 }
 
 cmd_start() {
+    if [ -n "${1:-}" ]; then cmd_lane_unit start "$1"; return; fi
     if [ ! -f "$CONFIG" ]; then
         echo "No config found. Run 'stakectl setup' first."
         exit 1
@@ -253,7 +385,7 @@ cmd_start() {
     if systemctl --user is-active --quiet "$SERVICE"; then
         local n
         n=$(lane_count)
-        sync_lanes "$n"
+        sync_lanes
         if [ "$was_active" -eq 1 ]; then
             echo "CLI bot was already running - nothing restarted."
             echo "  Apply a saved config:  stakectl restart"
@@ -271,6 +403,7 @@ cmd_start() {
 }
 
 cmd_stop() {
+    if [ -n "${1:-}" ]; then cmd_lane_unit stop "$1"; return; fi
     stop_all_lanes
     systemctl --user stop "$SERVICE"
     echo "Bot stopped."
@@ -278,10 +411,11 @@ cmd_stop() {
 }
 
 cmd_restart() {
+    if [ -n "${1:-}" ]; then cmd_lane_unit restart "$1"; return; fi
     stop_all_lanes
     systemctl --user restart "$SERVICE"
     sleep 1
-    sync_lanes "$(lane_count)"
+    sync_lanes
     echo "Bot restarted."
     "$PYTHON" "$BOT" --status 2>/dev/null || true
 }
@@ -533,7 +667,7 @@ cmd_run_reset() {
     "$PYTHON" "$BOT" --run-reset
     if [ "$was_running" = "1" ]; then
         systemctl --user start "$SERVICE"
-        sync_lanes "$(lane_count)"
+        sync_lanes
         echo "Lanes restarted on a new run."
     fi
 }
@@ -913,7 +1047,7 @@ cmd_update() {
         stop_all_lanes
         systemctl --user restart "$SERVICE"
         sleep 1
-        sync_lanes "$(lane_count)"
+        sync_lanes
         if systemctl --user is-active --quiet "$SERVICE"; then
             echo "CLI daemon restarted (session auto-resumed)."
         else
@@ -1166,12 +1300,13 @@ cmd_web() {
 # ── Dispatch ──────────────────────────────────────────
 case "${1:-}" in
     setup)        cmd_setup ;;
-    start)        cmd_start ;;
-    stop)         cmd_stop ;;
-    restart)      cmd_restart ;;
+    start)        cmd_start "${2:-}" ;;
+    stop)         cmd_stop "${2:-}" ;;
+    restart)      cmd_restart "${2:-}" ;;
     status)       cmd_status ;;
     monitor)      cmd_monitor "${2:-}" ;;
     lanes)        shift; cmd_lanes "$@" ;;
+    lane)         shift; cmd_lane "$@" ;;
     logs)         cmd_logs ;;
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;

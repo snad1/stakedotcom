@@ -22,12 +22,21 @@ from shared.core.database import ensure_sessions_lane, cleanup_old_bets, cleanup
 from shared.core.diagnostics import percentile, benchmark_verdict
 from shared.core.net import validate_proxy, mask_proxy
 from shared.core.validation import finite_float
-from shared.core.lanes import (
-    LANES_MAX, LANE_SPLIT_HELP, LANE_UNSET_VALUES,
-    lane_path, validate_lane, lanes_count, lane_split, lane_config,
-    lane_overrides, split_budget_on, split_base_bet, split_lane_pairs,
-    check_lane_keys, lane_share, lane_equity, lane_budget_exceeded, recommend_lanes,
-)
+# The lane registry and its writers came with casino-shared 0.10.0; an older install lacks
+# them, so say how to fix it instead of a traceback.
+try:
+    from shared.core.lanes import (
+        LANES_MAX, LANE_SPLIT_HELP, LANE_UNSET_VALUES,
+        lane_path, lanes_count, lane_split, lane_config,
+        lane_overrides, split_budget_on, split_base_bet,
+        check_lane_keys, lane_share, lane_equity, lane_budget_exceeded, recommend_lanes,
+        LANE_ID_MAX, LANE_NAME_HELP, LANE_NAME_RE, default_lane_name, lane_file_ids, lane_ids,
+        lane_name, lane_registry, lanes_max, next_lane_id, registry_block,
+        set_enabled_count, split_registry_pairs,
+    )
+except ImportError:
+    print("casino-shared 0.10.0 or newer is needed: run stakectl update", file=sys.stderr)
+    sys.exit(1)
 from shared.core.run_increment import (
     PROFIT_INCREMENT_SCOPES, check_profit_increment, db_max_session_id,
     increment_on, load_run, next_milestone, parse_scope, resume_base_bet,
@@ -485,7 +494,7 @@ PID_PATH     = os.path.expanduser("~/.stake_autobot.pid")
 RUN_PATH     = os.environ.get("STAKE_RUN_PATH", os.path.expanduser("~/.stake_run.json"))
 PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.16.0"
+VERSION      = "1.17.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -521,18 +530,34 @@ _LANE_FORBIDDEN_KEYS = frozenset({
     "proxy", "purge_days", "db_write_mode",
 })
 
+_log_tag = ""
+
+
+def _set_lane_log_prefix(lane: int, name: str) -> None:
+    """`[L3]`, or `[L3 friend-A]` once the lane has its own name; lane 1 has none until named.
+    The formatter is replaced only when the tag changes (a reload usually changes nothing)."""
+    global _log_tag
+    named = name != default_lane_name(lane)
+    tag = "" if lane <= 1 and not named else f"[L{lane} {name}] " if named else f"[L{lane}] "
+    if tag == _log_tag:
+        return
+    _log_tag = tag
+    _log_handler.setFormatter(logging.Formatter(
+        f"%(asctime)s  %(levelname)-7s  {tag}%(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+
+
 def _apply_lane(lane) -> None:
-    """Switch this process to lane `lane`: state/pid paths + `[LK]` log prefix.
-    Raises ValueError outside 1..LANES_MAX."""
+    """Switch this process to lane `lane`: state/pid paths and the log prefix.
+    Raises ValueError outside 1..LANE_ID_MAX."""
     global STATE_PATH, PID_PATH
-    lane = validate_lane(lane)
+    lane = 1 if lane is None else int(lane)
+    if not 1 <= lane <= LANE_ID_MAX:
+        raise ValueError(f"--lane must be 1-{LANE_ID_MAX}, got {lane}")
     state.lane = lane
     if lane > 1:
         STATE_PATH = lane_path(_BASE_STATE_PATH, lane)
         PID_PATH = lane_path(_BASE_PID_PATH, lane)
-        _log_handler.setFormatter(logging.Formatter(
-            f"%(asctime)s  %(levelname)-7s  [L{lane}] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"))
+    _set_lane_log_prefix(lane, lane_name(_read_config_raw() or {}, lane))
 
 CURRENCIES = ["btc", "eth", "ltc", "doge", "trx", "bch", "xrp", "usdt", "bnb", "ada", "matic"]
 
@@ -866,6 +891,8 @@ def _reload_live_config() -> dict:
         return {}
     # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- this lane's overrides + bet split.
     raw, data = data, lane_config(data, state.lane, _LANE_FORBIDDEN_KEYS, MIN_BET)[0]
+    state.lanes_count = lanes_count(raw)
+    _set_lane_log_prefix(state.lane, lane_name(raw, state.lane))
     changed = {}
     with state.lock:
         for k in _LIVE_RELOAD_KEYS:
@@ -2454,7 +2481,7 @@ def _rebase_run_for_base_change(new_base: float) -> None:
 def cmd_run_reset(lane: int = None) -> int:
     """Delete the run file(s): the next start begins a new run. Returns count removed."""
     n = 0
-    for k in ([lane] if lane else range(1, LANES_MAX + 1)):
+    for k in ([lane] if lane else lane_file_ids(RUN_PATH)):
         try:
             os.remove(run_path(RUN_PATH, k))
             n += 1
@@ -5547,10 +5574,9 @@ def cmd_monitor():
 
 # ── cmd_status ────────────────────────────────────────────
 def _read_lane_states() -> list:
-    """v1.13.0 (wolfbet v2.35.0) -- [(lane, state-dict | None, alive)] for lanes
-    1..LANES_MAX that have a state file."""
+    """[(lane, state-dict | None, alive)] for registry lanes that have a state file."""
     out = []
-    for k in range(1, LANES_MAX + 1):
+    for k in lane_ids(_read_config_raw() or {}):
         path = lane_path(_BASE_STATE_PATH, k)
         if not os.path.exists(path):
             continue
@@ -5578,13 +5604,18 @@ def cmd_lanes_status():
     if not rows:
         console.print("[yellow]No lane state files found.[/]")
         return
+    names = {lane: entry["name"] for lane, entry in lane_registry(_read_config_raw() or {}).items()
+             if entry["name"] != default_lane_name(lane)}
     t = Table(title="Parallel lanes", title_style="bold cyan", box=box.SIMPLE)
-    for col in ("Lane", "State", "Session", "Uptime", "Run", "Profit", "Equity", "bps"):
-        t.add_column(col, justify="left" if col == "State" else "right")
+    cols = ("Lane",) + (("Name",) if names else ()) + (
+        "State", "Session", "Uptime", "Run", "Profit", "Equity", "bps")
+    for col in cols:
+        t.add_column(col, justify="left" if col in ("Name", "State") else "right")
     tot_bps = tot_profit = 0.0
     for k, d, alive in rows:
+        lead = (str(k), escape(names.get(k, ""))) if names else (str(k),)
         if d is None:
-            t.add_row(str(k), "[red]unreadable[/]", *["-"] * 6)
+            t.add_row(*lead, "[red]unreadable[/]", *["-"] * 6)
             continue
         p = float(d.get("profit", 0) or 0)
         bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
@@ -5595,7 +5626,7 @@ def cmd_lanes_status():
         if alive and int(d.get("pause_remaining_sec", 0) or 0) > 0:
             st = "[cyan]PAUSED[/]"
         run = d.get("run_uptime_sec")
-        t.add_row(str(k), st, f"#{d.get('session_id', '?')}",
+        t.add_row(*lead, st, f"#{d.get('session_id', '?')}",
                   str(timedelta(seconds=int(d.get("uptime_sec", 0) or 0))),
                   fmt_duration(run) if run is not None else "-",
                   f"[{'green' if p >= 0 else 'red'}]{p:+.8f}[/]",
@@ -6291,13 +6322,18 @@ def cmd_config_show():
     n_lanes, mode = lanes_count(raw), lane_split(raw)
     console.print(f"\n[dim]Lanes:[/] [bold]{n_lanes}[/]  [dim]split:[/] [bold]{mode}[/]"
                   + (f"  [dim]({LANE_SPLIT_HELP[mode]})[/]" if n_lanes > 1 else ""))
-    for lane in range(2, LANES_MAX + 1):
+    for lane, entry in sorted(lane_registry(raw).items()):
         ov = lane_overrides(raw, lane, _LANE_FORBIDDEN_KEYS)
-        if ov:
-            parts = ", ".join(
-                f"{k}={_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}"
-                for k, v in sorted(ov.items()))
-            console.print(f"  [magenta]lane{lane}[/] overrides: {parts}")
+        named = entry["name"] != default_lane_name(lane)
+        if not (ov or named or not entry["enabled"]):
+            continue
+        label = f"  [magenta]lane{lane}[/]" + (f" [bold]{escape(entry['name'])}[/]" if named else "")
+        if not entry["enabled"]:
+            label += " [dim](off)[/]"
+        parts = ", ".join(
+            f"{k}={_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}"
+            for k, v in sorted(ov.items()))
+        console.print(label + (f" overrides: {parts}" if parts else ""))
     console.print("[dim]Tweak with:[/] [cyan]python3 stake.py --config-set KEY=VALUE ...[/]")
 
 
@@ -6325,16 +6361,15 @@ def cmd_config_set(pairs: list):
             console.print("[dim]  Credentials are set in the wizard (python3 stake.py --setup-only), "
                           "never in shell history / process args.[/]")
             sys.exit(2)
-    # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- lanes=N, lane_split=MODE and
-    # laneK.key=value write the lanes block directly.
+    # lanes=N, lanes_max=N, lane_split=MODE, laneK.name=NAME and laneK.key=value write the
+    # lane registry directly.
     try:
-        pairs, per_lane, count, split = split_lane_pairs(pairs)
+        pairs, per_lane, block = split_registry_pairs(pairs)
     except ValueError as e:
         console.print(f"[red]Invalid --config-set argument:[/] {e}")
         sys.exit(2)
-    if per_lane or count is not None or split is not None:
-        console.print(Rule("[bold cyan]Lane config updated[/]"))
-        rc = _cmd_config_set_lanes(per_lane, count, split)
+    if per_lane or block:
+        rc = _cmd_config_set_lanes(per_lane, block)
         if rc:
             sys.exit(rc)
         if not pairs:
@@ -6384,8 +6419,8 @@ def cmd_config_set(pairs: list):
     except (OSError, ValueError):
         console.print("[dim]Daemon PID stale; changes apply on next start.[/]")
     finally:
-        # v1.13.0 (wolfbet v2.35.0) -- the base config is shared: reload lanes 2..N too.
-        n_lanes = _signal_lane_daemons(range(2, LANES_MAX + 1))
+        # The base config is shared: reload the other registry lanes too.
+        n_lanes = _signal_lane_daemons([k for k in lane_ids(_read_config_raw() or {}) if k > 1])
         if n_lanes:
             console.print(f"[dim]{n_lanes} more lane(s) reloaded live config.[/]")
 
@@ -6437,7 +6472,7 @@ def _signal_lane_daemons(lanes=None) -> int:
     if not hasattr(signal, "SIGHUP"):
         return 0
     n = 0
-    for k in (lanes or range(1, LANES_MAX + 1)):
+    for k in (lanes if lanes is not None else lane_ids(_read_config_raw() or {})):
         try:
             with open(lane_path(_BASE_PID_PATH, k)) as f:
                 os.kill(int(f.read().strip()), signal.SIGHUP)
@@ -6447,42 +6482,111 @@ def _signal_lane_daemons(lanes=None) -> int:
     return n
 
 
-def _cmd_config_set_lanes(per_lane: dict, count, split=None) -> int:
-    """Write lanes.count / lanes.split / lanes.overrides[K]; SIGHUP touched lanes."""
+def _backup_config_once(suffix: str, reason: str) -> None:
+    """Copy the config file to CONFIG_PATH + suffix (0600) unless that copy already exists."""
+    backup = CONFIG_PATH + suffix
+    if os.path.exists(backup) or not os.path.exists(CONFIG_PATH):
+        return
+    try:
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as out, open(CONFIG_PATH, "rb") as src:
+            out.write(src.read())
+    except OSError as e:
+        logger.warning("could not back up the config before %s: %s", reason, e)
+
+
+def _save_lane_registry(raw: dict, reg: dict, next_id: int, split=None, limit=None) -> None:
+    """Write the lane registry; a config still in the numbered-lanes shape is copied once to
+    `.pre-registry` first, so older code can be restored."""
+    old = raw.get("lanes")
+    if isinstance(old, dict) and "items" not in old:
+        _backup_config_once(".pre-registry", "the lane registry")
+    raw["lanes"] = registry_block(raw, reg, next_id, split, limit)
+    _write_config_raw(raw)
+
+
+def _signal_share_change(before: dict, after: dict) -> None:
+    """After the lane count changes, bring the remaining lanes their new share.
+
+    With the bet split each running lane reloads, so its base bet / lanes follows at once.
+    The budget share (balance / lanes) is fixed when a lane starts, so it waits for a restart.
+    """
+    if lanes_count(before) == lanes_count(after):
+        return
+    split = lane_split(after)
+    if split in ("bet", "both"):
+        enabled = [lane for lane, entry in lane_registry(after).items() if entry["enabled"]]
+        n = _signal_lane_daemons(enabled)
+        if n:
+            console.print(f"[dim]{n} running lane(s) reloaded their base bet share.[/]")
+    if split in ("budget", "both"):
+        console.print("[dim]Budget shares update when each lane restarts: "
+                      "[cyan]stakectl restart K[/].[/]")
+
+
+def _cmd_config_set_lanes(per_lane: dict, block: dict) -> int:
+    """Write lanes=N, lanes_max, lane_split, lane names and overrides to the registry; SIGHUP
+    the lanes touched. Nothing is written when any of it is refused."""
     raw = _read_config_raw()
     if raw is None:
         console.print("[yellow]No config saved yet -- run the wizard first.[/]")
         return 1
-    lanes = raw.get("lanes") if isinstance(raw.get("lanes"), dict) else {}
-    raw["lanes"] = lanes
-    overrides = lanes.get("overrides") if isinstance(lanes.get("overrides"), dict) else {}
-    lanes["overrides"] = overrides
+    before = json.loads(json.dumps(raw))
+    reg = lane_registry(raw)
+    next_id = next_lane_id(raw, reg)
+    count, split, limit = block.get("count"), block.get("split"), block.get("max")
+    lines = []
+    effective_limit = limit if limit is not None else lanes_max(raw)
+    if limit is not None:
+        lines.append(f"  [yellow]lanes_max[/]: [dim]{lanes_max(raw)}[/]  ->  [green]{limit}[/]")
     if count is not None:
-        old = lanes.get("count", 1)
-        lanes["count"] = count
-        console.print(f"  [yellow]lanes[/]: [dim]{old}[/]  ->  [green]{count}[/]")
+        if count > effective_limit:
+            console.print(f"[red]Invalid --config-set argument:[/] lanes must be "
+                          f"1-{effective_limit}, got {count}")
+            console.print("[dim]  Raise the limit with: stakectl lanes --max N[/]")
+            return 2
+        lines.append(f"  [yellow]lanes[/]: [dim]{lanes_count(raw)}[/]  ->  [green]{count}[/]")
+        try:
+            next_id = set_enabled_count(reg, count, next_id)
+        except ValueError as e:
+            console.print(f"[red]Invalid --config-set argument:[/] {e}")
+            return 2
+    running = sum(1 for entry in reg.values() if entry["enabled"])
+    if limit is not None and limit < running:
+        console.print(f"[red]Invalid --config-set argument:[/] lanes_max can't be below the "
+                      f"{running} lane(s) configured")
+        return 2
     if split is not None:
-        old = lane_split(raw)
-        lanes["split"] = split
-        console.print(f"  [yellow]lane_split[/]: [dim]{old}[/]  ->  [green]{split}[/]  "
-                      f"[dim]({LANE_SPLIT_HELP[split]})[/]")
+        lines.append(f"  [yellow]lane_split[/]: [dim]{lane_split(raw)}[/]  ->  [green]{split}[/]  "
+                     f"[dim]({LANE_SPLIT_HELP[split]})[/]")
     for lane, lane_pairs in sorted(per_lane.items()):
+        names = [p.split("=", 1)[1] for p in lane_pairs if p.startswith("name=")]
+        lane_pairs = [p for p in lane_pairs if not p.startswith("name=")]
+        entry = reg.setdefault(lane, {"name": default_lane_name(lane), "enabled": False,
+                                      "overrides": {}})
+        for name in names[-1:]:
+            lines.append(f"  [yellow]lane{lane}.name[/]: [dim]{escape(entry['name'])}[/]  ->  "
+                         f"[green]{escape(name)}[/]")
+            entry["name"] = name
+        if not lane_pairs:
+            continue
         try:
             sets, removals = _lane_override_changes(lane_pairs)
         except ValueError as e:
             console.print(f"[red]Invalid lane{lane} override:[/] {e}")
             return 2
-        ov = overrides.setdefault(str(lane), {})
+        ov = entry["overrides"]
         for k in sorted(removals):
             ov.pop(k, None)
-            console.print(f"  [yellow]lane{lane}.{k}[/]: [dim]override removed (uses base)[/]")
+            lines.append(f"  [yellow]lane{lane}.{k}[/]: [dim]override removed (uses base)[/]")
         for k, v in sets.items():
             ov[k] = v
             shown = parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v
-            console.print(f"  [yellow]lane{lane}.{k}[/]  ->  [green]{_fmt_config_value(k, shown)}[/]")
-        if not ov:
-            overrides.pop(str(lane), None)
-    _write_config_raw(raw)
+            lines.append(f"  [yellow]lane{lane}.{k}[/]  ->  [green]{_fmt_config_value(k, shown)}[/]")
+    _save_lane_registry(raw, reg, max(next_id, max(reg) + 1), split, limit)
+    console.print(Rule("[bold cyan]Lane config updated[/]"))
+    for line in lines:
+        console.print(line)
     console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
     if per_lane:
         n = _signal_lane_daemons(sorted(per_lane))
@@ -6490,11 +6594,66 @@ def _cmd_config_set_lanes(per_lane: dict, count, split=None) -> int:
             console.print(f"[dim]{n} running lane(s) reloaded live config "
                           "(restart-only fields apply on the next start).[/]")
     if count is not None:
-        console.print(f"[dim]Start lanes 2..{count} with [cyan]python3 stake.py --daemon --resume "
-                      "--lane K[/] (restart running lanes so each recomputes its budget share).[/]")
+        _signal_share_change(before, raw)
     elif split is not None:
         console.print("[dim]lane_split applies on the next lane start -- run "
                       "[cyan]stakectl restart[/].[/]")
+    return 0
+
+
+def cmd_lane_add(name: str, src=None) -> int:
+    """Add one enabled lane named `name`, copying lane `src`'s overrides (lane 1: none)."""
+    src = 1 if src is None else int(src)
+    name = (name or "").strip()
+    if not LANE_NAME_RE.match(name):
+        console.print(f"[red]{LANE_NAME_HELP}[/]")
+        return 2
+    raw = _read_config_raw()
+    if raw is None:
+        console.print("[yellow]No config saved yet -- run the wizard first.[/]")
+        return 1
+    before = json.loads(json.dumps(raw))
+    reg = lane_registry(raw)
+    if src not in reg:
+        console.print(f"[red]No lane {src}.[/]")
+        return 2
+    limit, running = lanes_max(raw), lanes_count(raw)
+    if running >= limit:
+        console.print(f"[red]This bot already runs {running} lane(s), the limit.[/]")
+        console.print("[dim]  Raise it with: stakectl lanes --max N[/]")
+        return 2
+    lane = next_lane_id(raw, reg)
+    if lane > LANE_ID_MAX:
+        console.print(f"[red]Lane ids run out at {LANE_ID_MAX}: removed ids are never reused.[/]")
+        return 2
+    overrides = dict(reg[src]["overrides"]) if src > 1 else {}
+    reg[lane] = {"name": name, "enabled": True, "overrides": overrides}
+    _save_lane_registry(raw, reg, lane + 1)
+    copied = f" with lane {src}'s overrides" if overrides else ""
+    console.print(f"Lane {lane} ({escape(name)}) added{copied}.")
+    _signal_share_change(before, raw)
+    return 0
+
+
+def cmd_lane_remove(lane: int) -> int:
+    """Drop lane `lane` from the registry; its id is never reused and its history stays."""
+    if lane == 1:
+        console.print("[red]Lane 1 holds the base config and can't be removed.[/]")
+        return 2
+    raw = _read_config_raw()
+    if raw is None:
+        console.print("[yellow]No config saved yet -- run the wizard first.[/]")
+        return 1
+    reg = lane_registry(raw)
+    if lane not in reg:
+        console.print(f"[red]No lane {lane}.[/]")
+        return 2
+    before = json.loads(json.dumps(raw))
+    next_id = next_lane_id(raw, reg)
+    name = reg.pop(lane)["name"]
+    _save_lane_registry(raw, reg, next_id)
+    console.print(f"Lane {lane} ({escape(name)}) removed.")
+    _signal_share_change(before, raw)
     return 0
 
 
@@ -6834,6 +6993,12 @@ def main():
                        help="Bottleneck analysis of the running session (reads the state file)")
     group.add_argument("--lanes-status", action="store_true",
                        help="One row per running lane (state, session, profit, equity, bps) + totals")
+    group.add_argument("--lane-ids", nargs="?", const="enabled", choices=("enabled", "all"),
+                       help="Print the enabled lane ids (or every registry id with 'all')")
+    group.add_argument("--lane-add", metavar="NAME",
+                       help="Add one lane named NAME; the other lanes keep betting")
+    group.add_argument("--lane-remove", type=int, metavar="K",
+                       help="Remove lane K from the registry (lane 1 can't be removed)")
     # Modifiers, not commands: they combine WITH --stats / --analytics, so they
     # stay outside the mutually-exclusive group (WolfBet v2.30.9).
     parser.add_argument("--since", metavar="DATE",
@@ -6843,9 +7008,11 @@ def main():
                         help="With --stats/--analytics: window end, same formats "
                              "(bare date = inclusive end of day)")
     parser.add_argument("--lane", type=int, metavar="K", default=None,
-                        help=f"Parallel lane to run or inspect (1-{LANES_MAX}, default 1): "
+                        help=f"Parallel lane to run or inspect (1-{LANE_ID_MAX}, default 1): "
                              "--daemon / --status / --monitor / --stop / --diagnose act on "
                              "that lane; with --stats/--analytics only its sessions")
+    parser.add_argument("--lane-from", type=int, metavar="K", default=None,
+                        help="With --lane-add: copy lane K's overrides (default: lane 1, none)")
     parser.add_argument("--lanes", type=int, metavar="M", default=None,
                         help=f"With --benchmark: probe at 1..M concurrent clients (2-{LANES_MAX}) "
                              "and recommend a lane count")
@@ -6953,6 +7120,14 @@ def main():
     if args.lanes_status:
         cmd_lanes_status()
         return
+    if args.lane_ids:
+        reg = lane_registry(_read_config_raw() or {})
+        print(" ".join(str(k) for k in sorted(reg) if args.lane_ids == "all" or reg[k]["enabled"]))
+        return
+    if args.lane_add is not None:
+        sys.exit(cmd_lane_add(args.lane_add, args.lane_from))
+    if args.lane_remove is not None:
+        sys.exit(cmd_lane_remove(args.lane_remove))
 
     if args.setup_only:
         init_db()

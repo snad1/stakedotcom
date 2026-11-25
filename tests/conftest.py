@@ -52,6 +52,7 @@ def _sandbox(tmp_path, monkeypatch, sleeps):
         monkeypatch.setattr(st, name, str(tmp_path / f"cli_{name.lower()}"))
     monkeypatch.setattr(tg_database, "DATA_DIR", str(tmp_path / "tg"))
     monkeypatch.setattr(st, "state", st.BotState())
+    monkeypatch.setattr(st, "_log_tag", st._log_tag)
 
     for name in ("_flaresolverr_available", "_playwright_available",
                  "_solve_cloudflare", "_solve_cf_playwright", "_solve_cf_nodriver"):

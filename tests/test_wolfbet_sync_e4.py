@@ -1,4 +1,4 @@
-"""E4-S3 — stakedotcom CLI stats and analytics (WolfBet v2.23.0 .. v2.35.0).
+"""Stakedotcom CLI stats and analytics (WolfBet v2.23.0 to v2.35.0).
 
 --stats / --analytics window (time-of-day fix, validation), wins / losses per
 session, time span vs bet time, the analytics report, the --lane filter and
@@ -150,7 +150,7 @@ def test_analytics_window(capsys):
     _seed_mix()
     out = _out(capsys, st.cmd_analytics, since="2026-11-13")
     assert "Range analytics" in out and "1 sessions" in out
-    assert "[2026-11-13 → …]" in out
+    assert "[2026-11-13 \u2192 \u2026]" in out
 
 
 def test_analytics_empty_db(capsys):
@@ -224,11 +224,11 @@ def test_main_dispatches_stats_and_analytics_with_lane(monkeypatch):
 
 
 def test_lane_out_of_range_exits_2(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["stake.py", "--stats", "--lane", "11"])
+    monkeypatch.setattr(sys, "argv", ["stake.py", "--stats", "--lane", "100"])
     with pytest.raises(SystemExit) as e:
         st.main()
     assert e.value.code == 2
-    assert "--lane must be 1-10" in capsys.readouterr().out
+    assert "--lane must be 1-99, got 100" in capsys.readouterr().out
 
 
 # ── Run header (item 5, shipped in 1.10.0) ────────────────
