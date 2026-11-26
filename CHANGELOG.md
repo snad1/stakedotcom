@@ -1,5 +1,11 @@
 # Changelog
 
+## TG v1.15.0 - CLI lanes from Telegram (2026-11-26)
+
+- `/lanes` lists every CLI lane with its state, key (label and last 4), session and profit, with one-lane buttons: pause, resume, restart now or at session end, stop, start, remove now or at session end, plus **Key** and **Proxy** on lanes 2+. `/laneadd NAME [from K]` and `/lanerename K NAME` ask first; `/sessions [lane]` pages recent sessions and opens one.
+- Owner only (`TG_OWNER_ID`); every change runs this bot's own ctl (argv, no shell, with a timeout) and answers with the ctl's own line. The picker shows saved entries by label and last 4 and never a secret. No dashboard link yet: this bot has no dashboard deployment.
+- The commands come from casino-shared 0.13.0 (`shared.tg.lanes`), shared with WolfBet; with an older casino-shared the TG bot stops at start and says to run the ctl's `update`.
+
 ## CLI v1.22.0 / stakectl v2.8 - lanes and sessions as JSON (2026-11-26)
 
 - `stakectl lanes --json` (`--lanes-status --json`) prints one document, `{"v":1,"lanes":[{"lane","alive","paused","state"}]}`: each registry lane's state file (`null` for a lane that never ran), the shape WolfBet prints. Telegram's lane commands read it.

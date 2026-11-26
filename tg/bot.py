@@ -21,7 +21,7 @@ from .handlers import (
     cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
     cmd_session, cmd_web,
-    cmd_cleanup, cmd_delsession,
+    cmd_cleanup, cmd_delsession, cmd_lanes, cmd_laneadd, cmd_lanerename, cmd_sessions,
     callback_handler,
     save_resume_state, load_resume_state,
 )
@@ -81,6 +81,10 @@ def main():
             BotCommand("settoken",    "Set Stake access tokens"),
             BotCommand("balance",     "Check balances"),
             BotCommand("update",      "Pull latest + restart bot (owner)"),
+            BotCommand("lanes",       "CLI lanes, their key and session"),
+            BotCommand("laneadd",     "Add a CLI lane: NAME [from K]"),
+            BotCommand("lanerename",  "Rename a CLI lane: K NAME"),
+            BotCommand("sessions",    "Recent CLI sessions: [lane]"),
             BotCommand("config",      "View current config"),
             BotCommand("set",         "Set a parameter"),
             BotCommand("strategies",  "List strategies"),
@@ -156,6 +160,10 @@ def main():
     app.add_handler(CommandHandler("savepreset", cmd_savepreset))
     app.add_handler(CommandHandler("loadpreset", cmd_loadpreset))
     app.add_handler(CommandHandler("web", cmd_web))
+    app.add_handler(CommandHandler("lanes", cmd_lanes))
+    app.add_handler(CommandHandler("laneadd", cmd_laneadd))
+    app.add_handler(CommandHandler("lanerename", cmd_lanerename))
+    app.add_handler(CommandHandler("sessions", cmd_sessions))
     app.add_handler(CommandHandler("benchmark", cmd_benchmark))
     app.add_handler(CommandHandler("cleanup", cmd_cleanup))
     app.add_handler(CommandHandler("delsession", cmd_delsession))

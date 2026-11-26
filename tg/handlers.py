@@ -34,6 +34,10 @@ from .database import (
 )
 from core.database import init_db, cleanup_old_bets
 from shared.core.validation import finite_float
+try:
+    from shared.tg.lanes import LaneCommands, LaneSite, default_key_label
+except ImportError:
+    raise SystemExit("casino-shared 0.13.0 or newer is needed: run stakectl update")
 from core.strategy import (
     STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME, StrategyRule,
     describe_rule, load_rules_from_text,
@@ -233,6 +237,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/presets -- List presets\n"
         "/savepreset -- Save current config\n"
         "/loadpreset -- Load preset\n\n"
+        "*CLI lanes* (owner)\n"
+        "/lanes -- CLI lanes, their key and session\n"
+        "/laneadd NAME [from K] -- Add a CLI lane\n"
+        "/lanerename K NAME -- Rename a CLI lane\n"
+        "/sessions [lane] -- Recent CLI sessions and their ids\n\n"
         "*Maintenance*\n"
         "/cleanup -- Purge old bet records (`/cleanup 3` for 3 days)\n"
         "/delsession -- Delete a session by ID\n\n"
@@ -405,6 +414,32 @@ def _validated_path(path: str, is_dir: bool) -> bool:
     return os.path.isabs(path) and (os.path.isdir(path) if is_dir else os.path.isfile(path))
 
 
+def _ctl_path() -> str | None:
+    """The installed stakectl, or None when it is missing or not executable."""
+    path = shutil.which(CTL_NAME) or f"/root/.local/bin/{CTL_NAME}"
+    if _validated_path(path, False) and os.access(path, os.X_OK):
+        return path
+    return None
+
+
+def _key_label(key_ref: str) -> str:
+    """A vault key as `label (...last4)`; the bare id when the vault doesn't hold it."""
+    return default_key_label("stake", key_ref, log=logger)
+
+
+# The CLI-lane commands live in casino-shared; the lambdas read these module names at call
+# time. This bot has no dashboard deployment yet, so no dashboard link is offered.
+LANES = LaneCommands(LaneSite(
+    service="stake", ctl_name=CTL_NAME, ctl_path=lambda: _ctl_path(),
+    is_owner=lambda user_id: _is_owner(user_id), app_env=lambda: APP_ENV,
+    key_label=lambda key_ref: _key_label(key_ref), dashboard_page=lambda path: None,
+    logger=logger, key_kind="account"))
+cmd_lanes = LANES.cmd_lanes
+cmd_laneadd = LANES.cmd_laneadd
+cmd_lanerename = LANES.cmd_lanerename
+cmd_sessions = LANES.cmd_sessions
+
+
 def _update_argv(ctl_path: str, repo_dir: str, log_file: str) -> list[str]:
     """Command for systemd-run: argv only, no shell, every value in its own element."""
     return [
@@ -433,8 +468,8 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(user_id):
         await update.message.reply_text("Owner only.")
         return
-    ctl_path = shutil.which(CTL_NAME) or f"/root/.local/bin/{CTL_NAME}"
-    if not _validated_path(ctl_path, False) or not os.access(ctl_path, os.X_OK):
+    ctl_path = _ctl_path()
+    if ctl_path is None:
         await update.message.reply_text(f"{CTL_NAME} not found in PATH.")
         return
     if not _validated_path(REPO_DIR, True):
@@ -1665,6 +1700,8 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if await LANES.handle_callback(query):
+        return
     await query.answer()
     user_id = query.from_user.id
 

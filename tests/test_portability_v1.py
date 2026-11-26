@@ -52,7 +52,7 @@ def test_cli_version():
 
 
 def test_tg_version():
-    assert tg.VERSION == "1.14.0"
+    assert tg.VERSION == "1.15.0"
 
 
 # ── PRAGMAs ───────────────────────────────────────────────
