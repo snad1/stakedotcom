@@ -1,5 +1,12 @@
 # Changelog
 
+## stakectl v2.6 - removed lanes leave nothing behind (2026-11-26)
+
+- `stakectl lane remove K` deletes lane K's state, pid, run and session-end files once its unit stops. Its history stays in the database, and a remove the bot refuses keeps them.
+- `lane remove K --after-session` on a stopped lane removes it now (`Lane K is not running, so it is removed now.`): a stopped lane never reaches its session end.
+- `restart K --at-boundary` on a stopped lane answers `Lane K is stopped; start it with: stakectl start K` (exit 1). `--cancel-boundary` still works on it.
+- `stakectl reset` moves the database's `-wal` and `-shm` with it to the archive name, so the new database never reads the old log, and drops every session-end request.
+
 ## CLI v1.19.0 / stakectl v2.5 - what a change costs, restarts at a session end, rolling updates (2026-11-25)
 
 Ports WolfBet's restart classes, pending restarts, session-end restarts and rolling update (WolfBet v2.55.0, v2.56.0, v2.58.0 to v2.60.0), the same code as shuffle 1.16.0. Stake has no events feed, so that part is N/A.

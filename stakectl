@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stake AutoBot: Management Command v2.5
+# Stake AutoBot: Management Command v2.6
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -22,7 +22,7 @@ DB="$HOME/.stake_autobot.db"
 SCRIPT_NAME="stakectl"
 # Grep-parsed by update / refresh / doctor to spot an installed copy older
 # than the repo copy: keep the format `STAKECTL_VERSION=X.Y`.
-STAKECTL_VERSION=2.5
+STAKECTL_VERSION=2.6
 
 usage() {
     echo ""
@@ -324,6 +324,15 @@ cmd_lanes() {
     "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
 }
 
+# A removed lane's state, pid, run and session-end files, once its unit is stopped; its
+# history stays in the database.
+forget_lane_files() {
+    local k=$1
+    [ "$k" -gt 1 ] || return 0
+    rm -f "$HOME/.stake_autobot_live.lane$k.json" "$HOME/.stake_autobot.lane$k.pid" \
+          "$HOME/.stake_run.lane$k.json" "$HOME/.stake_autobot.lane$k.drain"
+}
+
 # Add, remove or rename one lane; every other lane keeps betting.
 cmd_lane() {
     local sub="${1:-}" name="" from="" k before
@@ -351,8 +360,14 @@ cmd_lane() {
             k="${1:-}"
             case "$k" in ''|*[!0-9]*) echo "Usage: stakectl lane remove K [--after-session]" >&2; exit 2 ;; esac
             if [ "${2:-}" = "--after-session" ] && [ $# -eq 2 ]; then
-                "$PYTHON" "$BOT" --lane-drain "$((10#$k))" remove
-                exit $?
+                k=$((10#$k))
+                if [ "$k" -le 1 ] || systemctl --user is-active --quiet "$(lane_unit "$k")" 2>/dev/null; then
+                    "$PYTHON" "$BOT" --lane-drain "$k" remove
+                    exit $?
+                fi
+                # A stopped lane never reaches its session end, so the request would wait forever.
+                echo "Lane $k is not running, so it is removed now."
+                set -- "$k"
             fi
             [ $# -eq 1 ] || { echo "Usage: stakectl lane remove K [--after-session]" >&2; exit 2; }
             k=$((10#$k))
@@ -361,6 +376,7 @@ cmd_lane() {
             case "$(systemctl --user is-active "${LANE_SERVICE}@${k}" 2>/dev/null || true)" in
                 active|activating|deactivating) echo "Lane $k is still running." >&2; exit 1 ;;
             esac
+            forget_lane_files "$k"
             echo "Lane $k stopped. Other lanes keep betting."
             ;;
         rename)
@@ -485,6 +501,11 @@ cmd_restart() {
             [ $# -eq 2 ] || { echo "Usage: stakectl restart K [--at-boundary|--cancel-boundary]" >&2; exit 2; }
             local action=restart
             [ "$2" = "--cancel-boundary" ] && action=cancel
+            if [ "$action" = restart ] && has_lane "$((10#$1))" \
+                    && ! systemctl --user is-active --quiet "$(lane_unit "$((10#$1))")" 2>/dev/null; then
+                echo "Lane $((10#$1)) is stopped; start it with: stakectl start $((10#$1))" >&2
+                exit 1
+            fi
             "$PYTHON" "$BOT" --lane-drain "$((10#$1))" "$action"
             return $?
             ;;
@@ -712,6 +733,14 @@ cmd_reset() {
     ts=$(date +%Y%m%d-%H%M%S)
     archive="$HOME/.stake_autobot-$ts.db"
     mv "$DB" "$archive"
+    # The write-ahead log belongs to the archived file; left behind, SQLite would read it
+    # as part of the new, empty database.
+    local part
+    for part in wal shm; do
+        if [ -e "$DB-$part" ]; then mv "$DB-$part" "$archive-$part"; fi
+    done
+    # A session-end request points at a session the new statistics don't have.
+    rm -f "$HOME/.stake_autobot.drain" "$HOME"/.stake_autobot.lane*.drain
     rm -f "$HOME/.stake_autobot_live.json" "$HOME"/.stake_autobot_live.lane*.json
     # Session ids restart at 1, so the run-wide profit total starts over too.
     rm -f "$HOME/.stake_run.json" "$HOME"/.stake_run.lane*.json

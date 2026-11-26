@@ -198,3 +198,81 @@ def test_an_update_of_a_stopped_bot_asks_no_lane(env, tmp_path):
 def test_an_unknown_update_option_exits_2(env):
     res = _ctl(env, "update", "--soon")
     assert res.returncode == 2 and "Usage: stakectl update [--critical]" in res.stderr
+
+
+def _lane_files(k):
+    return [f".stake_autobot_live.lane{k}.json", f".stake_autobot.lane{k}.pid", f".stake_run.lane{k}.json",
+            f".stake_autobot.lane{k}.drain"]
+
+
+def _touch(env, names):
+    for name in names:
+        (env["home"] / name).write_text("{}")
+
+
+def _gone(env, names):
+    return not any((env["home"] / n).exists() for n in names)
+
+
+def test_removing_a_stopped_lane_at_session_end_removes_it_now(env):
+    _config(env, lanes=3)
+    _running(env, "stake", "stake-lane@2")
+    _touch(env, _lane_files(3) + [".stake_autobot_live.lane2.json"])
+    res = _ctl(env, "lane", "remove", "3", "--after-session")
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.splitlines()[0] == "Lane 3 is not running, so it is removed now."
+    assert "Lane 3 stopped. Other lanes keep betting." in res.stdout
+    log = _log(env, "py.log")
+    assert "--lane-remove 3" in log and "--lane-drain" not in log
+    assert _gone(env, _lane_files(3))
+    assert (env["home"] / ".stake_autobot_live.lane2.json").exists()
+
+
+def test_removing_a_lane_now_clears_its_files(env):
+    _config(env, lanes=2)
+    _running(env, "stake", "stake-lane@2")
+    _touch(env, _lane_files(2))
+    res = _ctl(env, "lane", "remove", "2")
+    assert res.returncode == 0, res.stderr
+    assert _gone(env, _lane_files(2))
+
+
+def test_a_refused_remove_keeps_the_lane_files(env):
+    _config(env, lanes=2)
+    py = env["home"] / "stake-bot" / "venv" / "bin" / "python3"
+    py.write_text(py.read_text().replace('echo "$*" >> "$HOME/py.log"\n',
+                                         'echo "$*" >> "$HOME/py.log"\n'
+                                         '[[ "$*" == *--lane-remove* ]] && { echo "No lane 5."; exit 2; }\n'))
+    _touch(env, [".stake_autobot_live.lane2.json"])
+    res = _ctl(env, "lane", "remove", "2")
+    assert res.returncode == 2
+    assert (env["home"] / ".stake_autobot_live.lane2.json").exists()
+    assert "disable --now stake-lane@2" not in _log(env, "systemctl.log")
+
+
+def test_restarting_a_stopped_lane_at_session_end_says_to_start_it(env):
+    _config(env, lanes=2)
+    res = _ctl(env, "restart", "2", "--at-boundary")
+    assert res.returncode == 1
+    assert "Lane 2 is stopped; start it with: stakectl start 2" in res.stderr
+    assert "--lane-drain" not in _log(env, "py.log")
+
+
+def test_cancelling_a_session_end_restart_works_on_a_stopped_lane(env):
+    _config(env, lanes=2)
+    res = _ctl(env, "restart", "2", "--cancel-boundary")
+    assert res.returncode == 0, res.stderr
+    assert "--lane-drain 2 cancel" in _log(env, "py.log")
+
+
+def test_reset_moves_the_wal_with_the_database_and_drops_session_end_requests(env):
+    _config(env)
+    h = env["home"]
+    (h / ".stake_autobot.db").write_text("db")
+    left = [".stake_autobot.db-wal", ".stake_autobot.db-shm", ".stake_autobot.lane3.drain", ".stake_autobot.drain"]
+    _touch(env, left)
+    res = _ctl(env, "reset", "--yes")
+    assert res.returncode == 0, res.stderr
+    archive = next(h.glob(".stake_autobot-*.db")).name
+    assert (h / f"{archive}-wal").exists() and (h / f"{archive}-shm").exists()
+    assert _gone(env, left) and not (h / ".stake_autobot.db").exists()
