@@ -276,3 +276,47 @@ def test_reset_moves_the_wal_with_the_database_and_drops_session_end_requests(en
     archive = next(h.glob(".stake_autobot-*.db")).name
     assert (h / f"{archive}-wal").exists() and (h / f"{archive}-shm").exists()
     assert _gone(env, left) and not (h / ".stake_autobot.db").exists()
+
+
+def test_restarting_lane_one_also_brings_up_lanes_that_are_not_running(env):
+    _config(env, lanes=3)
+    _running(env, "stake", "stake-lane@2")
+    res = _ctl(env, "restart", "1")
+    assert res.returncode == 0, res.stderr
+    log = _log(env, "systemctl.log")
+    assert "restart stake\n" in log and "enable --now stake-lane@3" in log
+    assert "stake-lane@3.active" in _units(env)
+    assert "restart stake-lane@2" not in log and "stop stake-lane@2" not in log
+
+
+def test_stopping_lane_one_touches_no_other_lane(env):
+    _config(env, lanes=2)
+    _running(env, "stake")
+    res = _ctl(env, "stop", "1")
+    assert res.returncode == 0, res.stderr
+    assert "stake-lane@2" not in _log(env, "systemctl.log")
+
+
+def test_rolling_restart_asks_each_running_lane_and_restarts_none_now(env):
+    _config(env, lanes=3)
+    _running(env, "stake", "stake-lane@2")
+    res = _ctl(env, "restart", "--rolling")
+    assert res.returncode == 0, res.stderr
+    assert "Lane 1 restarts on its saved config when its session ends." in res.stdout
+    assert "Lane 2 restarts on its saved config when its session ends." in res.stdout
+    assert "Lane 3 is not running; start it with: stakectl start 3" in res.stdout
+    assert "Every other lane keeps betting until its own session ends." in res.stdout
+    drains = [l.split("--lane-drain ")[1] for l in _log(env, "py.log").splitlines() if "--lane-drain" in l]
+    assert drains == ["1 restart", "2 restart"]
+    log = _log(env, "systemctl.log")
+    assert not any(f" {v} " in f" {l} " for l in log.splitlines()
+                   for v in ("restart", "stop", "start", "enable", "disable"))
+
+
+def test_rolling_restart_needs_a_running_bot(env):
+    _config(env, lanes=2)
+    res = _ctl(env, "restart", "--rolling")
+    assert res.returncode == 1
+    assert "The CLI bot is not running; start it with: stakectl start" in res.stderr
+    assert "--lane-drain" not in _log(env, "py.log")
+    assert _ctl(env, "restart", "--rolling", "x").returncode == 2

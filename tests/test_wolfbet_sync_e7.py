@@ -127,7 +127,7 @@ def test_scripts_parse():
 
 
 def test_version_constant_is_grep_parsable():
-    assert "\nSTAKECTL_VERSION=2.6\n" in _CTL.read_text()
+    assert "\nSTAKECTL_VERSION=2.7\n" in _CTL.read_text()
 
 
 @pytest.mark.parametrize("cmd", [
@@ -161,7 +161,7 @@ def test_pass_through_calls_the_bot_flag(env, args, flags):
 
 
 def test_version_prints_the_ctl_version(env):
-    assert "stakectl v2.6" in _ctl(env, "version").stdout
+    assert "stakectl v2.7" in _ctl(env, "version").stdout
 
 
 def test_config_set_without_pairs_shows_usage(env):
@@ -402,7 +402,7 @@ def test_update_autostashes_reinstalls_and_restarts_what_ran():
 def test_refresh_installs_a_newer_repo_copy(env, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    newer = _CTL.read_text().replace("\nSTAKECTL_VERSION=2.6\n", "\nSTAKECTL_VERSION=9.9\n")
+    newer = _CTL.read_text().replace("\nSTAKECTL_VERSION=2.7\n", "\nSTAKECTL_VERSION=9.9\n")
     (repo / "stakectl").write_text(newer)
     local_bin = env["home"] / ".local" / "bin"
     local_bin.mkdir(parents=True)
@@ -412,7 +412,7 @@ def test_refresh_installs_a_newer_repo_copy(env, tmp_path):
 
     res = _ctl(env, "refresh", cwd=repo)
 
-    assert "stakectl 2.6 -> 9.9 installed at" in res.stdout
+    assert "stakectl 2.7 -> 9.9 installed at" in res.stdout
     assert installed.read_text() == newer
     assert stat.S_IMODE(installed.stat().st_mode) == 0o755
     assert "already current" in _ctl(env, "refresh", cwd=repo).stdout

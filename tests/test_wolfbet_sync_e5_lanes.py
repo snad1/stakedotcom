@@ -417,9 +417,23 @@ def test_lanes_status_table(monkeypatch, capsys):
     assert "lanes live 1/3" in out and "2.0 bps" in out
 
 
-def test_lanes_status_without_files(capsys):
+def test_lanes_status_without_files_lists_lane_one_not_running(monkeypatch, capsys):
+    monkeypatch.setattr(st.console, "width", 160)
     st.cmd_lanes_status()
-    assert "No lane state files" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "NOT RUNNING" in out and "lanes live 0/1" in out
+
+
+def test_a_lane_that_never_ran_is_listed_not_running(monkeypatch, capsys):
+    import os
+    monkeypatch.setattr(st.console, "width", 160)
+    Path(st.CONFIG_PATH).write_text(json.dumps({"lanes": {"count": 2}}))
+    Path(st.STATE_PATH).write_text(json.dumps({"pid": os.getpid(), "session_id": 3, "profit": 0.0}))
+    assert [(k, d is None, alive) for k, d, alive in st._read_lane_states()] == [
+        (1, False, True), (2, True, False)]
+    st.cmd_lanes_status()
+    out = capsys.readouterr().out
+    assert "NOT RUNNING" in out and "unreadable" not in out and "lanes live 1/2" in out
 
 
 # ── two lanes on one account ───────────────────────────────────────────

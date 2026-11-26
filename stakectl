@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stake AutoBot: Management Command v2.6
+# Stake AutoBot: Management Command v2.7
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -22,7 +22,7 @@ DB="$HOME/.stake_autobot.db"
 SCRIPT_NAME="stakectl"
 # Grep-parsed by update / refresh / doctor to spot an installed copy older
 # than the repo copy: keep the format `STAKECTL_VERSION=X.Y`.
-STAKECTL_VERSION=2.6
+STAKECTL_VERSION=2.7
 
 usage() {
     echo ""
@@ -36,6 +36,7 @@ usage() {
     echo "    stakectl stop [K]    Stop the bot (every lane, or lane K alone)"
     echo "    stakectl restart [K] Restart the bot (every lane, or lane K alone)"
     echo "    stakectl restart K --at-boundary | --cancel-boundary   Restart lane K when its session ends"
+    echo "    stakectl restart --rolling   Restart every running lane at its own session end"
     echo "    stakectl lanes [N] [--split none|budget|bet|both] [--max N]   Show or set parallel lanes"
     echo "    stakectl lane add NAME [--from K] | remove K [--after-session] | rename K NAME   Change one lane; the others keep betting"
     echo "    stakectl preset NAME Load a named preset and start as a daemon"
@@ -260,6 +261,11 @@ cmd_lane_unit() {
             case "$state" in inactive|failed) ;; *) echo "Lane $k is still $state." >&2; exit 1 ;; esac
             echo "Lane $k stopped. Other lanes keep betting." ;;
     esac
+    # Lanes 2+ run beside lane 1: bringing lane 1 up starts the enabled lanes that are not
+    # running yet, and leaves the running ones alone.
+    if [ "$k" -eq 1 ] && [ "$verb" != stop ]; then
+        sync_lanes
+    fi
 }
 
 lane_split_mode() {
@@ -512,6 +518,14 @@ cmd_restart() {
         '') ;;
         *) echo "Usage: stakectl restart K [--at-boundary|--cancel-boundary]" >&2; exit 2 ;;
     esac
+    if [ "${1:-}" = "--rolling" ]; then
+        [ $# -eq 1 ] || { echo "Usage: stakectl restart --rolling" >&2; exit 2; }
+        systemctl --user is-active --quiet "$SERVICE" 2>/dev/null \
+            || { echo "The CLI bot is not running; start it with: stakectl start" >&2; exit 1; }
+        roll_lanes "on its saved config"
+        echo "Every other lane keeps betting until its own session ends."
+        return
+    fi
     if [ -n "${1:-}" ]; then cmd_lane_unit restart "$1"; return; fi
     stop_all_lanes
     systemctl --user restart "$SERVICE"
@@ -1041,16 +1055,18 @@ cmd_refresh() {
 
 # Ask every running lane to restart on the new code when its own session ends.
 roll_lanes() {
-    local k
+    local k what=${1:-on the new code}
     for k in $(lane_ids); do
-        systemctl --user is-active --quiet "$(lane_unit "$k")" 2>/dev/null || continue
+        if ! systemctl --user is-active --quiet "$(lane_unit "$k")" 2>/dev/null; then
+            [ "$what" = "on the new code" ] || echo "Lane $k is not running; start it with: stakectl start $k"
+            continue
+        fi
         if "$PYTHON" "$BOT" --lane-drain "$k" restart >/dev/null; then
-            echo "Lane $k restarts on the new code when its session ends."
+            echo "Lane $k restarts $what when its session ends."
         else
-            echo "Lane $k: could not ask for a restart; it stays on the old code until restarted." >&2
+            echo "Lane $k: could not ask for a restart; it keeps running as it is until restarted." >&2
         fi
     done
-    echo "Betting goes on; use stakectl update --critical to restart every lane now."
 }
 
 cmd_update() {
@@ -1175,6 +1191,7 @@ cmd_update() {
     # every lane now (--resume keeps the session).
     if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null && [ "$critical" = "0" ]; then
         roll_lanes
+        echo "Betting goes on; use stakectl update --critical to restart every lane now."
     elif systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
         stop_all_lanes
         systemctl --user restart "$SERVICE"

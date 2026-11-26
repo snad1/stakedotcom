@@ -299,6 +299,7 @@ stakectl lanes [N] [--split none|budget|bet|both] [--max N]  # Show or set paral
 stakectl lane add NAME [--from K] | remove K | rename K NAME  # Change one lane; the others keep betting
 stakectl start|stop|restart K  # One lane alone (lane 1 is the stake service)
 stakectl restart K --at-boundary  # Restart lane K when its session ends (--cancel-boundary drops it); lane remove K --after-session removes it then
+stakectl restart --rolling        # Restart every running lane at its own session end; starting or restarting lane 1 also starts the enabled lanes that are not running
 stakectl update --critical     # Update and restart every lane now (plain update rolls each lane at its session end)
 stakectl key add friend-a      # A friend's login (access token, lockdown token, cookie) at hidden prompts, kept in the host vault
 stakectl key list | rotate ID | delete ID   # Vault logins, proxies (--kind proxy) and the Telegram token (--kind telegram)

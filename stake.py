@@ -545,7 +545,7 @@ PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 DRAIN_PATH   = os.environ.get("STAKE_DRAIN_PATH", os.path.expanduser("~/.stake_autobot.drain"))
 STAKECTL     = os.environ.get("STAKE_STAKECTL", os.path.expanduser("~/.local/bin/stakectl"))
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.19.0"
+VERSION      = "1.20.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -5775,11 +5775,13 @@ def cmd_monitor():
 
 # ── cmd_status ────────────────────────────────────────────
 def _read_lane_states() -> list:
-    """[(lane, state-dict | None, alive)] for registry lanes that have a state file."""
+    """[(lane, state-dict | None, alive)] for every registry lane; a lane that never ran (no
+    state file) is listed as not alive, so a lane that should bet but doesn't is still seen."""
     out = []
     for k in lane_ids(_read_config_raw() or {}):
         path = lane_path(_BASE_STATE_PATH, k)
         if not os.path.exists(path):
+            out.append((k, None, False))
             continue
         try:
             with open(path) as f:
@@ -5816,7 +5818,8 @@ def cmd_lanes_status():
     for k, d, alive in rows:
         lead = (str(k), escape(names.get(k, ""))) if names else (str(k),)
         if d is None:
-            t.add_row(*lead, "[red]unreadable[/]", *["-"] * 7)
+            never = not os.path.exists(lane_path(_BASE_STATE_PATH, k))
+            t.add_row(*lead, "[red]NOT RUNNING[/]" if never else "[red]unreadable[/]", *["-"] * 7)
             continue
         p = float(d.get("profit", 0) or 0)
         bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
