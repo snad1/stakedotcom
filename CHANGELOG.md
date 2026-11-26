@@ -1,5 +1,11 @@
 # Changelog
 
+## CLI v1.21.0 - every session records its key (2026-11-26)
+
+- Each session row records the vault key its lane bet with (`sessions.key_ref`): the lane's own `key_ref`, else `default`. It is written once at session start, never per bet. Rows from before read NULL and count as the main key.
+- Schema: `sessions.key_ref TEXT`, added by an idempotent `ALTER` at start; a second start changes nothing.
+- The lane state file carries `key_ref` (the vault id, never the secret), so Telegram can name each lane's key.
+
 ## CLI v1.20.0 / stakectl v2.7 - every lane visible and started with the bot, rolling restart (2026-11-26)
 
 - `stakectl lanes` lists a registry lane that never ran (no state file yet) as `NOT RUNNING`, so a lane that should bet but doesn't is still seen; a broken state file still reads `unreadable`.

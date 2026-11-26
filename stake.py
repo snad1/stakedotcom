@@ -545,7 +545,7 @@ PRESET_PATH  = os.path.expanduser("~/.stake_presets.json")
 DRAIN_PATH   = os.environ.get("STAKE_DRAIN_PATH", os.path.expanduser("~/.stake_autobot.drain"))
 STAKECTL     = os.environ.get("STAKE_STAKECTL", os.path.expanduser("~/.local/bin/stakectl"))
 LOG_DIR      = os.path.expanduser("~/.stake_logs")
-VERSION      = "1.20.0"
+VERSION      = "1.21.0"
 MIN_BET      = 0.0001   # Stake.com minimum bet
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
@@ -804,6 +804,11 @@ def init_db():
         except sqlite3.OperationalError:
             pass
     ensure_sessions_lane(conn)  # v1.11.0 -- sessions.lane (WolfBet v2.35.0)
+    # The vault key each session bet with; rows from before it read NULL (the main key).
+    try:
+        c.execute("ALTER TABLE sessions ADD COLUMN key_ref TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -3022,13 +3027,14 @@ def _db_start_session() -> int:
     c = conn.cursor()
     c.execute("""
         INSERT INTO sessions
-            (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane)
-        VALUES (?,?,?,?,?,?,?,?)
+            (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane, key_ref)
+        VALUES (?,?,?,?,?,?,?,?,?)
     """, (
         datetime.now().isoformat(),
         state.currency, state.game, state.strategy,
         state.base_bet, state.multiplier_target, state.start_balance,
         state.lane,
+        state.key_ref or VAULT_KEY_ID,
     ))
     conn.commit()
     sid = c.lastrowid
@@ -3299,6 +3305,7 @@ def _save_state_file():
             # v1.13.0 (wolfbet v2.35.0 / v2.36.0) -- parallel lanes
             "lane":                state.lane,
             "lanes_count":         state.lanes_count,
+            "key_ref":             state.key_ref,
             "pending_restart":     state.pending_restart,
             "code_version":        VERSION,
             "lane_share":          state.lane_share,
