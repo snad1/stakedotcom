@@ -1,5 +1,12 @@
 # Changelog
 
+## CLI v1.22.0 / stakectl v2.8 - lanes and sessions as JSON (2026-11-26)
+
+- `stakectl lanes --json` (`--lanes-status --json`) prints one document, `{"v":1,"lanes":[{"lane","alive","paused","state"}]}`: each registry lane's state file (`null` for a lane that never ran), the shape WolfBet prints. Telegram's lane commands read it.
+- `stakectl stats --json [--lane K] [--since/--until] [--before ID]` prints `{"v":1,"sessions":[...]}`, newest first (20, or 50 for a date window), each with id, lane, times, bets, wins, losses, wagered, profit, currency, balances, strategy, multiplier and base bet. `--before ID` keeps only sessions older than #ID, so a caller can page back.
+- Errors come as `{"v":1,"error":{"code","message"}}`: `no_database` (no database file is created) and `invalid_window`.
+- `--json` works with `--stats` and `--lanes-status` only, and `--before` with `--stats --json` only; anything else exits 2. Without `--json` every output is unchanged.
+
 ## CLI v1.21.0 - every session records its key (2026-11-26)
 
 - Each session row records the vault key its lane bet with (`sessions.key_ref`): the lane's own `key_ref`, else `default`. It is written once at session start, never per bet. Rows from before read NULL and count as the main key.

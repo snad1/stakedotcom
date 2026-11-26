@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stake AutoBot: Management Command v2.7
+# Stake AutoBot: Management Command v2.8
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -22,7 +22,7 @@ DB="$HOME/.stake_autobot.db"
 SCRIPT_NAME="stakectl"
 # Grep-parsed by update / refresh / doctor to spot an installed copy older
 # than the repo copy: keep the format `STAKECTL_VERSION=X.Y`.
-STAKECTL_VERSION=2.7
+STAKECTL_VERSION=2.8
 
 usage() {
     echo ""
@@ -67,6 +67,7 @@ usage() {
     echo ""
     echo "  DATA:"
     echo "    stakectl stats [--since DATE] [--until DATE] [--lane K]      Session stats (optional window / lane)"
+    echo "    stakectl lanes --json / stats --json [--lane K] [--before ID]   Lanes or sessions as one JSON document"
     echo "    stakectl analytics [--since DATE] [--until DATE] [--lane K]  Aggregates: by game, strategy, lane, top 5"
     echo "    stakectl session ID  Full stats + streak distribution for a session"
     echo "    stakectl last-bets [N]  Last N bets across all sessions (default 20)"
@@ -279,7 +280,7 @@ PY
 }
 
 cmd_lanes() {
-    local n="" split="" max="" before out
+    local n="" split="" max="" json=0 before out
     local pairs=()
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -287,10 +288,16 @@ cmd_lanes() {
             --split=*) split="${1#--split=}"; shift ;;
             --max) max="${2:-}"; shift 2 || { echo "Usage: stakectl lanes --max N  (1-$LANE_ID_MAX)"; exit 1; } ;;
             --max=*) max="${1#--max=}"; shift ;;
+            --json) json=1; shift ;;
             -*) echo "Unknown option: $1"; exit 1 ;;
             *) [ -z "$n" ] || { echo "Unknown option: $1"; exit 1; }; n="$1"; shift ;;
         esac
     done
+    if [ "$json" = "1" ]; then
+        [ -z "$n" ] && [ -z "$split" ] && [ -z "$max" ] || { echo "--json works with 'stakectl lanes' alone" >&2; exit 2; }
+        "$PYTHON" "$BOT" --lanes-status --json
+        return
+    fi
     if [ -z "$n" ] && [ -n "$split" ]; then
         echo "Usage: stakectl lanes N --split none|budget|bet|both"; exit 1
     fi

@@ -296,6 +296,8 @@ stakectl session ID     # Full stats + streak distribution
 stakectl presets        # List saved presets
 stakectl update         # Update bot from current directory; each lane restarts on the new code at its session end
 stakectl lanes [N] [--split none|budget|bet|both] [--max N]  # Show or set parallel lanes; only the difference starts or stops
+stakectl lanes --json                                        # Every lane's state as one JSON document (Telegram reads it)
+stakectl stats --json [--lane K] [--before ID]               # Recent sessions as JSON, older than #ID when given
 stakectl lane add NAME [--from K] | remove K | rename K NAME  # Change one lane; the others keep betting
 stakectl start|stop|restart K  # One lane alone (lane 1 is the stake service)
 stakectl restart K --at-boundary  # Restart lane K when its session ends (--cancel-boundary drops it); lane remove K --after-session removes it then

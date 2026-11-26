@@ -320,3 +320,17 @@ def test_rolling_restart_needs_a_running_bot(env):
     assert "The CLI bot is not running; start it with: stakectl start" in res.stderr
     assert "--lane-drain" not in _log(env, "py.log")
     assert _ctl(env, "restart", "--rolling", "x").returncode == 2
+
+
+def test_lanes_json_asks_the_bot_for_one_document(env):
+    _config(env, lanes=2)
+    assert _ctl(env, "lanes", "--json").returncode == 0
+    assert "--lanes-status --json" in _log(env, "py.log")
+    res = _ctl(env, "lanes", "3", "--json")
+    assert res.returncode == 2 and "--json works with 'stakectl lanes' alone" in res.stderr
+
+
+def test_stats_json_passes_the_lane_and_the_page_through(env):
+    _config(env)
+    assert _ctl(env, "stats", "--json", "--lane", "2", "--before", "5").returncode == 0
+    assert "--stats --json --lane 2 --before 5" in _log(env, "py.log")

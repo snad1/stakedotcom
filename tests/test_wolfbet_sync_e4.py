@@ -218,7 +218,8 @@ def test_main_dispatches_stats_and_analytics_with_lane(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["stake.py", "--analytics", "--until", "2026-11-13"])
     st.main()
     assert calls == [
-        ("stats", {"since": "2026-11-13 14:00", "until": None, "lane": 2}),
+        ("stats", {"since": "2026-11-13 14:00", "until": None, "lane": 2, "as_json": False,
+                   "before": None}),
         ("analytics", {"since": None, "until": "2026-11-13", "lane": None}),
     ]
 
